@@ -117,6 +117,41 @@ See `references/implementation.md` → **ingestor.py** for the code sketch.
 - Cross-file context: embed 3-line caller/callee stubs inline — agents need
   the call signature without fetching another snippet.
 
+### Snippet IDs
+
+Use short sha256 IDs for readability: `sha256:{h[:6]}:{h[-6:]}` (e.g.
+`sha256:e812b9:ab0d84`). Full sha256 is unnecessarily verbose in logs and
+finding references.
+
+### Tree-sitter API Notes (v0.25+)
+
+The tree-sitter Python binding changed in 0.25.x:
+
+```python
+from tree_sitter import Language, Parser
+
+# Load compiled language
+C_LANG = Language("build/my-languages.so", "c")
+
+# Instantiate parser — 0.25.x uses property setter, not set_language()
+parser = Parser()
+parser.language = C_LANG  # NOT parser.set_language(C_LANG)
+
+# Parse
+tree = parser.parse(bytes(source, "utf8"))
+```
+
+If using pre-built wheels with the capsule API:
+
+```python
+# For 0.25.2+ with Language(capsule) constructor
+from tree_sitter_c import language as c_lang
+C_LANG = Language(c_lang())  # capsule, not path+name
+```
+
+Check your version: `import tree_sitter; print(tree_sitter.__version__)`.
+The API between 0.22.x and 0.25.x is **not backwards compatible.
+
 ### Security tags
 
 | Tag | Triggers |
@@ -175,6 +210,22 @@ Each pack must fit within **180k tokens** (leaving 20k for output). If a domain
 exceeds budget, split into sub-packs by directory prefix and run multiple
 instances in parallel.
 
+### Pack size observations (zlib, ~23K LOC, 594 snippets)
+
+| Domain | Tags | Pack size | Notes |
+|---|---|---|---|
+| `mem-safety` | memory, integer-arith, unsafe | ~150K tokens | Largest — most C functions touch memory |
+| `ipc` | ipc, external-input | ~147K tokens | Many functions tagged external-input inflates it |
+| `auth` | auth, external-input | ~128K tokens | Same inflation from external-input overlap |
+| `data-flow` | external-input | ~128K tokens | Single tag, still large |
+| `crypto` | crypto | ~65K tokens | Sparse in a compression library |
+| `format-str` | format-string | ~15K tokens | Very few printf-family calls in zlib |
+
+**Key takeaway:** `external-input` tag overlap inflates ipc/auth packs. In a
+pure C library, mem-safety dominates. Some domains will produce honest coverage
+gaps (auth, crypto, ipc) — this is normal for libraries with a narrow
+functional scope. The gapfill stage should re-queue these with narrowed scope.
+
 ---
 
 ## Stage 3 — Hunter Cluster
@@ -193,13 +244,152 @@ code that triggers it, compiling it in your scratch directory, and
 running it.
 ```
 
-Run agents in parallel (asyncio / multiprocessing). See
-`references/implementation.md` → **run_agents.py** for the async runner.
+Run agents in parallel. See `references/implementation.md` →
+**run_agents.py** for the code sketch.
 
-**Model selection:** Use your highest-capability model for `mem-safety`,
-`data-flow`, and `crypto` — these require deep reasoning. A faster/cheaper
-model tier is acceptable for `format-str` and `ipc`, which are more
-pattern-driven.
+### Model Selection
+
+Use your highest-capability model for `mem-safety`, `data-flow`, and
+`crypto` — these require deep reasoning. A faster/cheaper model tier is
+acceptable for `format-str` and `ipc`, which are more pattern-driven.
+
+Implement via `MODEL_BY_DOMAIN` dict:
+
+```python
+MODEL_BY_DOMAIN = {
+    "mem-safety":  "openrouter/nvidia-nemotron-nano-12b-v2-vl:free",
+    "data-flow":   "openrouter/nvidia-nemotron-nano-12b-v2-vl:free",
+    "crypto":      "openrouter/nvidia-nemotron-nano-12b-v2-vl:free",
+    "format-str":  "openrouter/google-gemma-3-12b-it:free",
+    "ipc":         "openrouter/google-gemma-3-12b-it:free",
+    "auth":        "openrouter/google-gemma-3-12b-it:free",
+}
+```
+
+Fall back to a shared default model for domains not in the dict.
+
+### Sync > Async (Practical Lesson)
+
+Use **sync urllib**, not async httpx. Key reasons from the zlib implementation:
+
+- Rate-limit handling is simpler in sync flow (no asyncio coordination)
+- OpenRouter free-tier has hidden per-connection rate limits that
+  async parallelism triggers more readily
+- `ThreadPoolExecutor` with 3-4 workers provides sufficient parallelism
+  without hitting rate limits
+- No dependency on `httpx` or `aiohttp`
+
+```python
+import urllib.request, json
+
+req = urllib.request.Request(
+    url="https://openrouter.ai/api/v1/chat/completions",
+    data=json.dumps(payload).encode(),
+    headers={
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    },
+)
+resp = urllib.request.urlopen(req, context=ssl_context)
+result = json.loads(resp.read().decode())
+```
+
+### OpenRouter-Specific Notes
+
+When using OpenRouter (`https://openrouter.ai/api/v1`) as the API provider:
+
+- **`openrouter/free` is a routing alias** — it auto-routes to whatever
+  free model is available. The actual model varies per call (nemotron,
+  liquid, baidu, z-ai, gemma, etc.). This makes behavior non-deterministic.
+- **Reasoning models** (e.g. `nvidia/llama-3.3-nemotron-super-49b-v1:free`)
+  put their output in the `message.reasoning` field, **not** in
+  `message.content`. Always concatenate both:
+  ```python
+  content = msg.get("content", "") or ""
+  reasoning = msg.get("reasoning", "") or ""
+  full_output = reasoning + " " + content
+  ```
+- **`fetch_model_limits()` must handle 404** — routing aliases like
+  `openrouter/free` return 404 on `/v1/models/{alias}`. Fall back to
+  scanning `/v1/models` for all free models and taking the minimum bounds.
+- **Proxy support**: Set `https_proxy` env var; urllib respects it natively.
+- **`max_tokens` must be 8192 minimum** — reasoning models consume large
+  output budgets for chain-of-thought. 4096 causes truncation.
+- **Auth**: Read API key from `~/.local/share/opencode/auth.json` (key:
+  `openrouter`) or `OPENROUTER_API_KEY` env var.
+
+### Output Parser Robustness
+
+Models produce wildly inconsistent JSON. The parser must handle:
+
+1. **JSON arrays** at top level: `[{...}, {...}]` (valid JSON, unwrap)
+2. **Wrapper objects**: `{"finding": {...}}` (unwrap the inner object)
+3. **Free-text contamination**: text before/after the JSON (strip)
+4. **Sentinel objects**: trailing `{"done": true}` or `{"coverage_gap": ...}`
+   — match by field presence, not position
+5. **Multiple JSON objects** on one line: split by `}\n{`
+6. **Truncated output** from `max_tokens`: detect missing closing `]` or `}`
+7. **Line-by-line JSONL** fallback: try parsing each line independently
+
+```python
+def parse_findings(text: str) -> tuple[list[dict], list[dict]]:
+    findings = []
+    gaps = []
+    # Strategy 1: try JSON array parse
+    try:
+        data = json.loads(text)
+        if isinstance(data, list):
+            findings = [f for f in data if "snippet_id" in f]
+            gaps = [g for g in data if "coverage_gap" in g]
+            return findings, gaps
+    except json.JSONDecodeError:
+        pass
+    # Strategy 2: line-by-line JSONL
+    for line in text.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if "coverage_gap" in obj:
+            gaps.append(obj)
+        elif "snippet_id" in obj:
+            findings.append(obj)
+    return findings, gaps
+```
+
+Every finding must include `status: "raw"` and `poc_confirmed: false` as
+defaults — the Validate stage updates these. If the model omits them, the
+parser should inject them.
+
+### Per-Domain System Prompts
+
+Domain guidance should be injected as a `guidance` field in the context pack
+(rather than a hardcoded system prompt) so it can vary per task:
+
+| Domain | Focus |
+|---|---|
+| `mem-safety` | Buffer overflow, OOB R/W, UAF, integer wrap → allocation |
+| `auth` | Bypass, privilege escalation, session fixation |
+| `crypto` | Weak primitives, IV reuse, padding oracle, key management |
+| `ipc` | TOCTOU, injection via pipes/sockets/shared-memory |
+| `data-flow` | Untrusted data reaching dangerous sinks |
+| `format-str` | Format string exploits with non-literal format arg |
+
+### Parallelism and Debugging
+
+- Use `ThreadPoolExecutor` with 3-4 workers (default: 3). Higher concurrency
+  increases rate-limit risk on free-tier API providers.
+- Implement `--max-run N` flag: process only the first N packs. Invaluable
+  for debugging a single domain.
+- Implement `--model MODEL` + `--validate-model MODEL` as separate flags so
+  Validate can use a different model/routing pool.
+- Progress bar via `\r` updates to stderr: print pack name, model, progress,
+  and finding count. Keeps the user informed without polluting JSONL output.
+- Print all status/log to **stderr**, findings JSONL to **stdout**.
+  This lets users pipe findings directly: `python run_agents.py > findings.jsonl`.
 
 ### Narrow Scope Principle (Core Audit Insight)
 
@@ -247,11 +437,45 @@ Assign severity conservatively based on real-world exploitability:
 
 Following the audit harness implementation, the Validate stage employs an independent agent with different prompt and model to attempt to *disprove* each finding:
 
-- **Different model requirement**: Use a different LLM model than the Hunt stage to reduce correlated biases
+- **Different model requirement**: Use a different LLM model than the Hunt stage to reduce correlated biases. At minimum use a different routing pool (e.g., `openrouter/free` maps to different actual models per call, so Hunt and Validate naturally see different models).
 - **Role separation critical**: Validate agent has **no ability to generate new findings** - only assess existing ones
 - **Deliberate disagreement**: Two agents in disagreement >> one agent self-reviewing for accuracy
-- **Output format**: `confirmed` / `rejected` / `needs-more-info` per finding
-- **Adversarial framing**: Explicitly instruct the validator: "Your job is to disprove this finding, not find new ones"
+- **Output format**: Add `status` field (`confirmed` / `rejected` / `needs-more-info`) and `validate_reason` to each finding
+- **Adversarial framing**: Explicitly instruct the validator: "Your job is to DISPROVE findings, not find new ones"
+
+### Validate Implementation Pattern
+
+Use the same sync urllib pattern as the Hunter:
+
+```python
+import urllib.request, json
+
+def validate_finding(finding: dict, api_key: str, model: str) -> dict:
+    prompt = f"""Your job is to DISPROVE this finding, not confirm it.
+
+Finding: {json.dumps(finding)}
+
+Be adversarial. Is there an alternative explanation? Is the call path
+implausible? Is the precondition not actually attacker-controllable?
+Can you construct a scenario where this is NOT exploitable?
+
+Output: {{"status": "confirmed"/"rejected"/"needs-more-info", "reason": "..."}}
+"""
+    payload = {
+        "model": model,
+        "max_tokens": 1024,
+        "messages": [
+            {"role": "user", "content": prompt},
+        ],
+    }
+    # ... urllib request same as Hunter ...
+    return {**finding, "status": result["status"], "validate_reason": result["reason"]}
+```
+
+- Use `--validate-model` flag separate from `--model` so each stage can target
+  a different routing pool
+- Merge validation status back into the original finding (don't keep separate)
+- Print progress to stderr; emit validated JSONL to stdout
 
 ### Gapfill (Coverage-Driven Re-queueing)
 
@@ -329,12 +553,32 @@ Following the audit harness implementation:
 ### Deduplication Criteria
 
 Findings are considered duplicates when they share:
-1. Same vulnerability class (e.g., `sql_injection`)
+1. Same vulnerability class (e.g., `buffer-overflow`)
 2. Same vulnerable function/snippet (same `snippet_id`)
 3. Similar root cause context (equivalent taint propagation paths)
 4. Same trust boundary crossing pattern
 
-This prevents overwhelming operators with redundant reports of the same underlying issue.
+### Composite Key Implementation
+
+In practice, dedup on `(snippet_id, class)` works well — it collapses
+reports of the same bug class in the same function from different hunters:
+
+```python
+def deduplicate(findings: list[dict]) -> list[dict]:
+    seen = {}
+    for f in findings:
+        key = (f["snippet_id"], f["class"])
+        if key not in seen or severity_rank(f["severity"]) > severity_rank(seen[key]["severity"]):
+            seen[key] = f
+    return list(seen.values())
+```
+
+Keep the highest-severity variant when collapsing duplicates. In the zlib
+run, 23 findings had zero duplicate keys — suggesting hunters are
+not overlapping on the same functions, which is a good signal.
+
+For deeper dedup, extend the key to `(file, class, source_lines_start)` to
+catch cases where different snippet continuations report the same issue.
 
 ---
 
@@ -526,25 +770,173 @@ Following audit's loop limits to prevent runaway costs:
 ## Quick-Start
 
 ```bash
+# 1. Setup
 pip install tree-sitter tiktoken   # swap tiktoken for any tokenizer you prefer
-python ingestor.py --root ./myrepo --out snippets.json
-python coordinator.py --db snippets.json --out packs/
-python run_agents.py --packs packs/ --model <your-model-id> --out findings.jsonl
-python chainer.py --findings findings.jsonl --db snippets.json --out chains.json
-python validator.py --findings findings.jsonl --chains chains.json --out report.json
+
+# 2. Ingest — extract functions as typed snippets
+python ingestor.py --root ./myrepo --out output/snippets.json
+
+# 3. Coordinate — build per-domain context packs
+python coordinator.py --db output/snippets.json --out output/packs/
+
+# 4. Hunt — run parallel hunter agents (one per domain pack)
+#    Prints findings JSONL to stdout, progress to stderr
+python run_agents.py \
+    --packs output/packs/ \
+    --model openrouter/openrouter/free \
+    --parallel 3 \
+    > output/findings.jsonl
+
+# 5. Validate — adversarial re-read of findings
+python validate.py \
+    --findings output/findings.jsonl \
+    --validate-model openrouter/openrouter/free \
+    > output/validated.jsonl
+
+# 6. Dedupe — collapse duplicates on (snippet_id, class)
+python dedupe.py --findings output/validated.jsonl > output/deduped.jsonl
+
+# 7. Chain — build exploit chains via call-graph BFS
+python chainer.py \
+    --findings output/deduped.jsonl \
+    --db output/snippets.json \
+    --out output/chains.json
+
+# 8. Report — structured report with triage buckets
+python reporter.py \
+    --findings output/deduped.jsonl \
+    --chains output/chains.json \
+    --repo git@github.com:org/repo.git \
+    --out output/report.json
+
+# Or run everything in one command:
+python run_pipeline.py \
+    --root ./myrepo \
+    --model openrouter/openrouter/free \
+    --validate-model openrouter/openrouter/free \
+    --parallel 3
 ```
+
+### Pipeline CLI flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--model` | — | LLM model for Hunt stage |
+| `--validate-model` | same as `--model` | Different model for Validate (recommended) |
+| `--parallel` | 3 | Max concurrent packs (ThreadPoolExecutor) |
+| `--max-run` | all | Debug: process only N packs |
+| `--reingest` | false | Re-run ingestor even if snippets.json exists |
+
+### Output structure
+
+```
+output/
+  snippets.json     # 594 snippets for ~23K LOC repo
+  packs/            # mem-safety, auth, crypto, ipc, data-flow, format-str
+  findings.jsonl    # raw findings with status:"raw" + poc_confirmed:false
+  validated.jsonl   # findings with updated status + validate_reason
+  deduped.jsonl     # collapsed on (snippet_id, class)
+  chains.json       # exploit chains with scores
+  report.json       # final triaged report
+```
+
+## Practical Implementation Notes
+
+Lessons from implementing this pipeline against zlib (C library, v1.3.2.1,
+~23K LOC, 594 snippets):
+
+### Findings Density Expectation
+
+Not every domain produces findings. In the zlib run:
+
+| Domain | Findings | Notes |
+|---|---|---|
+| mem-safety | 4 | Realistic for a mature C library |
+| data-flow | 19 | Most are "library accepts external input" — library-level FP |
+| auth | 0 | Coverage gap (zlib has no auth) |
+| crypto | 0 | Coverage gap (zlib has no crypto) |
+| ipc | 0 | Coverage gap (zlib has no IPC) |
+| format-str | 0 | Coverage gap (zlib has no printf calls) |
+
+- **Coverage gaps are honest output** from a well-behaved hunter. They mean
+  the domain isn't represented in the target, not that the pipeline failed.
+- **Auth/crypto/ipc packs** in a compression library will inflate on the
+  `external-input` tag overlap. Consider removing `external-input` from these
+  domains' tag filters when targeting a narrow-scope library.
+- **data-flow findings in a library** are mostly "attacker data enters library"
+  — these are reachability questions, not library bugs. They become useful in
+  the Trace stage when mapped to consumer repos.
+
+### Model Behavior Observations
+
+- **Free-tier model quality varies wildly.** Some responses are excellent
+  (correctly identifying UAF patterns); some hallucinate code that doesn't exist.
+- **Reasoning models** (nemotron, deepseek) produce longer, more thorough
+  analyses but take 30-60s per response on free tier.
+- **Standard models** (gemma, z-ai, baidu) respond in 5-15s but miss subtle
+  patterns.
+- **Paid models would reduce variance** significantly. Free tier is viable
+  for prototyping but not production auditing.
+
+### Pipeline Robustness Patterns
+
+- **Print all status to stderr, findings JSONL to stdout.** This is the most
+  important pattern — it lets users pipe findings directly and keeps logs
+  separate from data.
+- **`--reingest` flag** prevents accidental re-runs of expensive extraction.
+- **Output checking** before each stage: if output exists and `--reingest`
+  not set, skip the stage. This enables restartable pipelines.
+- **Each stage is a standalone script** that reads JSON(L) files and writes
+  JSON(L) files. This lets you rerun individual stages without the full pipeline.
+- **`--max-run N` flag** is essential for debugging — running all 6 packs
+  costs ~60 API calls on a target.
+- **3 concurrent workers** is the sweet spot for free-tier OpenRouter.
+  Higher concurrency triggers HTTP 429 rate limits.
+
+### PoC Compilation Blocker
+
+The PoC confirmation loop assumes a sandboxed compile+run environment.
+For C/C++ targets, this requires:
+- A compiler toolchain in the sandbox
+- The target library compiled as a shared object
+- A harness that links against it and triggers the finding
+- Network-isolated execution
+
+Without this infrastructure, PoC confirmation is speculative. The pipeline
+still produces useful findings, but they lack the strongest evidence level.
+
+### Entry-Point Anchoring for Library Targets
+
+Findings in a library like zlib have no intrinsic entry point — the library
+has no `main()`. Every function is callable. For `fix_now` classification:
+
+- A library finding needs a **consumer context** to be actionable
+- The Trace stage (consumer fan-out) is essential for library targets
+- Until traced, library findings should default to `backlog` unless CRITICAL
+
+---
 
 ## Checklist
 
 - [ ] Ingestor produces typed, tagged snippet DB with caller/callee stubs
+- [ ] Snippet IDs use short sha256 format (`sha256:{h[:6]}:{h[-6:]}`)
+- [ ] tree-sitter 0.25+ API used: `parser.language = lang` not `set_language()`
 - [ ] `SECURITY_CONTEXT.md` embedded in every context pack
 - [ ] Context packs budget-capped at 180k tokens; oversized domains split
 - [ ] Hunter agents scoped to one attack class × one component each
+- [ ] `MODEL_BY_DOMAIN` maps strongest models to mem-safety/data-flow/crypto
+- [ ] Hunter output parser handles: JSON arrays, wrapper objects, sentinel markers, free-text contamination, truncated output
+- [ ] Every finding has `status: "raw"` and `poc_confirmed: false` defaults
+- [ ] Reasoning model `reasoning` field concatenated with `content`
+- [ ] All status/log to stderr, findings JSONL to stdout
+- [ ] Sync urllib pattern (not async httpx)
+- [ ] `ThreadPoolExecutor` with 3-4 workers for parallel packs
 - [ ] Coverage gaps emitted by hunters, re-queued for Gapfill
-- [ ] Validate agent uses different prompt + model, no new-finding capability
-- [ ] Chainer uses call-graph traversal + scoring, not just co-occurrence
-- [ ] PoC loop runs in isolated scratch environment, no production access
-- [ ] Dedupe on root cause, not symptom
+- [ ] Validate agent uses different prompt + model/routing-pool, no new-finding capability
+- [ ] Chainer uses call-graph traversal (BFS ≤4 hops) + scoring, not just co-occurrence
+- [ ] PoC loop runs in isolated scratch environment, no production access (blocked for C/C++ without sandboxed compilation)
+- [ ] Dedupe on `(snippet_id, class)` composite key, keep highest severity
 - [ ] Trace fans out per consumer repo for shared library findings
 - [ ] Report schema defined; agent self-validates before emitting
-- [ ] Regression suite gates AI-generated patches before deploy
+- [ ] Library findings default to `backlog` unless CRITICAL (untraced)
+- [ ] `--max-run N` flag for debugging single packs
