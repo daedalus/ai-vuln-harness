@@ -165,12 +165,92 @@ See `references/stages.md` → Stage 9, `references/schemas.md` → Report schem
 
 ---
 
+## Hard-Won Rules (Directives from Practice)
+
+These rules came from running the full pipeline on a real target (zlib) and
+catching what the design missed. Apply them every time.
+
+### Tagging: avoid inflation
+- **`external-input` keyword-match is too broad for C libraries.** Keywords
+  `buf`, `arg`, `len`, `src` appear in almost every function signature. For
+  library targets, strip `external-input` from all domain tag filters
+  EXCEPT `data-flow`. For `data-flow`, detect actual I/O calls
+  (`read()`, `recv()`, `fgets()`) instead of parameter names.
+- **`integer-arith` keyword-match on `len`, `size`, `count`** matches every
+  buffer function. Narrow to operations on untrusted lengths only.
+
+### Context packs: filter noise directories
+- **Strip `contrib/`, `examples/`, `test/` from the snippet DB before
+  building packs.** These contain unmaintained or harness code that inflates
+  snippet counts without representing the real attack surface.
+- On zlib this cut ~200 of 608 snippets. Always do this filter before
+  the Coordinator stage.
+
+### Hunt concurrency: respect free-tier ceilings
+- **Free-tier OpenRouter: cap concurrent workers at 2-3.** Higher concurrency
+  triggers HTTP 429 on most models. The fallback chain is mandatory but adds
+  30-60s per model timeout. Expect 5-15 minutes wall-clock for 6 packs.
+- **Paid API** can go higher (50+ workers).
+
+### Validate model pool: must be disjoint from Hunt
+- **Validate MUST use models the Hunt stage cannot reach.** Shared models
+  produce correlated biases — if both stages use deepseek, format-string
+  false positives slip through. Split the model list at startup: Hunt gets
+  one half (deepseek, qwen, gemma), Validate gets the other (nemotron,
+  trinity, z-ai). Zero overlap.
+- If the model list is too small for a clean split, give the strongest
+  model to Validate — disagreement beats agreement:
+  ```
+  hunt_models = [m for m in models if "deepseek" in m or "qwen" in m]
+  validate_models = [m for m in models if "nemotron" in m or "trinity" in m]
+  ```
+
+### Zero findings: do not treat as pipeline failure
+- **Well-audited targets legitimately produce zero findings.** The zlib
+  mem-safety agent produced a 9.6KB analysis concluding no exploitable
+  vulnerabilities — this is correct behavior. Coverage gaps from hunters
+  ("no crypto in compression lib") are honest output, not errors.
+- **Gapfill re-queues coverage gaps with narrowed scope**, not as failures.
+
+### API-by-design findings: reject them
+- **Functions named `*printf*` intentionally accept caller-controlled format
+  strings.** This is not a vulnerability — it's the API contract. A "format
+  string vulnerability" requires attacker control of the format arg, which
+  means the caller is misusing the API.
+- Validate MUST check API contracts before accepting findings. Known
+  by-design patterns: `*printf*`, `*write*`, `*read*`, `execute*`, `*open*`.
+- Bucket: `backlog` at best (documentation improvement), never `fix_now`.
+
+### Reasoning models: concatenate both fields
+- **Always read both `message.content` and `message.reasoning`.** Deepseek
+  and other reasoning models put chain-of-thought in `reasoning` and the
+  final answer in `content`. If you only read `content`, you miss findings
+  embedded in the reasoning trace.
+- The line-by-line JSONL parser handles the extra text after `{done: true}`
+  by silently skipping non-JSON lines — do NOT strip text after the sentinel.
+
+### Cache: makes everything restartable
+- **Cache every API response** using key `stage:model:sha256(prompt)[:12]`.
+  First run cost ~14 calls for a zlib-size target. Subsequent runs load from
+  `cache.json` — zero API calls, completes in <1s.
+- Check cache before every API call. Save after every successful response.
+- Without this, every re-run burns the full API budget.
+
 ## Signal-to-Noise Control
 
 **Language noise**
 - C/C++ → higher FP rate; lower FP threshold for `memory` + `external-input` co-tags
 - Rust → `unsafe` blocks only; safe Rust memory bugs are logic-class
 - Python/JS → no memory class; focus on injection, deserialization, auth
+
+**Tag inflation (learned from zlib)**
+- `external-input` keyword-match on `buf`, `arg`, `len`, `src` matches
+  nearly every C function (99.9% in practice). For library targets, either
+  drop `external-input` from domain tag filters or use a smarter heuristic
+  (detect actual `read()`/`recv()` calls, not parameter names).
+- `integer-arith` keyword-match on `len`, `size`, `count` matches every
+  function that processes a buffer — i.e., almost every function in a C
+  library. Narrow to operations on untrusted lengths.
 
 **Model bias**
 - Models find bugs whether bugs exist or not; hedged findings vastly outnumber solid ones
@@ -215,7 +295,7 @@ dependents. Mitigations:
 |---|---|---|
 | Recon | Highest capability | Comprehensive repo mapping |
 | Hunt | Balanced | Parallel vulnerability hunting |
-| Validate | Highest, different from Hunt | Deliberate disagreement |
+| Validate | Highest, **disjoint from Hunt** | MUST use models the Hunt stage cannot access. Shared models → correlated biases slip through. In practice: if Hunt uses deepseek-v4-flash, Validate should use nemotron-nano or trinity. |
 | Gapfill | Same as Hunt | Coverage gap processing |
 | Dedupe | Efficient | Record collapsing |
 | Trace | Highest capability | "The stage that matters most" |
@@ -224,13 +304,13 @@ dependents. Mitigations:
 
 ### Concurrency
 
-| Stage | Concurrency | Notes |
-|---|---|---|
-| Recon | 1 | Foundational, can be lengthy |
-| Hunt | 50 | Parallel hunting across many targets |
-| Validate | 10 | Validating hunt outputs |
-| Gapfill/Dedupe/Feedback/Report | 1 | Sequential or lightweight |
-| Trace | 10 | Multiple consumer repos |
+| Stage | Concurrency (paid) | Concurrency (free tier) | Notes |
+|---|---|---|---|
+| Recon | 1 | 1 | Foundational, can be lengthy |
+| Hunt | 50 | **2-3** | Free-tier OpenRouter 429s above 3 concurrent workers. Paid API can go higher. |
+| Validate | 10 | **2-3** | Same rate-limit ceiling as Hunt on free tier. |
+| Gapfill/Dedupe/Feedback/Report | 1 | 1 | Sequential or lightweight |
+| Trace | 10 | **2-3** | Multiple consumer repos, but rate-limited the same. |
 
 ### Tool Allowlists
 
@@ -332,7 +412,9 @@ output/
 - [ ] Sync urllib pattern (not async httpx)
 - [ ] `ThreadPoolExecutor` with 3-4 workers for parallel packs
 - [ ] Coverage gaps emitted by hunters, re-queued for Gapfill
-- [ ] Validate agent uses different prompt + model/routing-pool, no new-finding capability
+- [ ] Validate agent uses **completely disjoint model pool** from Hunt (overlap → correlated biases slip through)
+- [ ] **`external-input` tag inflation checked** — for compiled libraries, verify it doesn't match 99%+ of functions. Strip from domain filters if so; only data-flow should use it.
+- [ ] **Contrib/examples/test directories stripped** before building packs (focuses on real attack surface)
 - [ ] Dedupe on `(snippet_id, class)` composite key, keep highest severity
 - [ ] Chainer uses call-graph traversal (BFS ≤4 hops) + scoring, not just co-occurrence
 - [ ] PoC loop runs in isolated scratch environment, no production access (blocked for C/C++ without sandboxed compilation)

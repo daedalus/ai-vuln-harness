@@ -74,6 +74,36 @@ The API between 0.22.x and 0.25.x is **not backwards compatible**.
 | `format-string` | `printf`-family with non-literal format arg |
 | `integer-arith` | ops on sizes/lengths/indices without bounds check |
 
+### Tag inflation warning (from zlib run)
+
+Simple keyword matching for `external-input` is **too aggressive for compiled
+libraries.** The keywords `buf`, `arg`, `len`, `src` appear in nearly every C
+function signature. On zlib, this tagged 607/608 functions (99.9%) with
+`external-input`, making `auth`, `ipc`, and `data-flow` packs identical to
+`mem-safety`.
+
+**Mitigation:** for library targets, either:
+1. Remove `external-input` from all domain tag filters EXCEPT `data-flow`, or
+2. Use a smarter heuristic for `data-flow`: detect actual I/O syscall wrappers
+   (`read()`, `recv()`, `fgets()`, `fread()`) rather than parameter names.
+
+Same applies to `integer-arith`: `len`, `size`, `count` match every
+buffer-processing function. Narrow to operations on untrusted lengths only.
+
+### Directory filtering (from zlib run)
+
+Contrib, examples, and test directories contain unmaintained or harness code
+that inflates snippet counts without representing the real attack surface.
+On zlib, ~200 of 608 snippets came from these directories.
+
+**Recommendation:** before building packs, filter the snippet DB to remove:
+- `contrib/` — third-party, unmaintained, or single-use code
+- `examples/` — demo/illustration code, not production
+- `test/` — test harnesses and fixtures
+- Any directory matching `^\.` — hidden/system directories
+
+This focuses hunters on the library's actual attack surface.
+
 ### Historical Context Mining (Recon Enhancement)
 
 Enhance the Ingestor stage by mining git history for past security patches:

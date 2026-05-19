@@ -15,6 +15,36 @@ Some domains may produce zero findings for a given target — this is
 honest coverage output, not a pipeline failure. The gapfill stage
 should re-queue these with narrowed scope.
 
+### Concrete numbers from the zlib run
+
+zlib: 608 functions from 49 files, C library, ~1.1M snippet DB.
+
+| Domain | Snippets | Findings | Validate result |
+|---|---|---|---|
+| mem-safety | 198 | 0 | N/A (0 findings to validate) |
+| auth | 198 | 0 (gaps: "no auth in compression lib") | N/A |
+| crypto | 173 | 0 (gaps: "no crypto primitives") | N/A |
+| ipc | 198 | 0 | N/A |
+| data-flow | 198 | 0 | N/A |
+| format-str | 150 | 3 (format-string in gzprintf) | 2 rejected, 1 backlog |
+
+Total: 3 raw findings → 1 backlog, 2 false_positive, 0 fix_now.
+
+This is the correct profile for a heavily-audited 30-year-old C library.
+A greenfield JavaScript app would produce very different numbers.
+
+### Tag inflation warning
+
+- **`external-input` keyword-match** on `buf`, `arg`, `len`, `src` in a C
+  library matches 607/608 functions (99.9%). This makes `auth`, `ipc`, and
+  `data-flow` packs identical to `mem-safety` — same snippets, same size,
+  wasted API calls. Fix: strip `external-input` from all domain filters
+  EXCEPT `data-flow` when targeting compiled libraries. For `data-flow`,
+  use a smarter heuristic (detect `read()`, `recv()`, `fgets()` calls).
+- **`integer-arith` keyword-match** on `len`, `size`, `count` matches
+  every buffer-processing function — essentially every function in a C
+  library. Narrow to operations on untrusted lengths only.
+
 - **data-flow findings in a library** are mostly "attacker data enters library"
   — these are reachability questions, not library bugs. They become useful in
   the Trace stage when mapped to consumer repos.
@@ -47,6 +77,18 @@ should re-queue these with narrowed scope.
   costs ~60 API calls on a target.
 - **3 concurrent workers** is the sweet spot for free-tier OpenRouter.
   Higher concurrency triggers HTTP 429 rate limits.
+
+### Timing expectations (free tier, zlib, 6 packs)
+
+| Operation | Wall clock | API calls | Notes |
+|---|---|---|---|
+| Model chain fetch | ~2s | 1 | First call, cached for rest of pipeline |
+| Hunt (6 packs, 3 workers) | 5-15 min | 6 | Most models 429; fallback chain adds 30-60s per skip |
+| Validate (3 findings) | 2-5 min | 3 | Faster because less context per call |
+| Trace (3 findings) | 2-5 min | 3 | Same as Validate |
+| Cache replay | <1s | 0 | All stages skip to cached output |
+
+Total first-run: ~15-25 minutes for a library of zlib's size. Re-runs: instant.
 
 ## Cache Strategy (Critical for Cost)
 
@@ -109,6 +151,29 @@ messages = [
 ]
 ```
 
+## Validate Model Chain Must Be Disjoint from Hunt
+
+A critical finding from the zlib run: **if Validate shares a model with Hunt,
+correlated biases slip through.** The Hunt stage used deepseek-v4-flash and
+reported gzprintf format strings as HIGH findings. The Validate stage used
+nemotron-nano (completely different model family) and correctly rejected them
+as by-design API behavior. If both stages had used deepseek, the shared
+bias toward reporting format-string patterns would have left false positives
+in the final triage.
+
+Implementation rule: fetch the model list once at startup, then split:
+- Hunt gets models A-J (e.g., deepseek, qwen, gemma)
+- Validate gets models K-Z (e.g., nemotron, trinity, z-ai)
+- No overlap. Not one model in common.
+
+If the model list is too small for a clean split (e.g., only 3-4 reliable
+models for free tier), prioritize: give the strongest model to Validate
+because disagreement beats agreement:
+```
+hunt_models = [m for m in sorted_models if "deepseek" in m or "qwen" in m or "gemma" in m]
+validate_models = [m for m in sorted_models if "nemotron" in m or "trinity" in m]
+```
+
 ## Validate Model Chain Should Be Curated
 
 Not all models work for validation. Many return empty bodies on OpenRouter's
@@ -130,6 +195,32 @@ For C/C++ targets, this requires:
 
 Without this infrastructure, PoC confirmation is speculative. The pipeline
 still produces useful findings, but they lack the strongest evidence level.
+
+## API-by-Design False Positives (Library-Specific)
+
+The most common misclassification in library targets: **findings where the
+library intentionally exposes a dangerous-looking API by design.**
+
+Example from zlib: `gzprintf(format, ...)` works like `printf(3)` — the
+caller provides the format string. This is not a format string vulnerability
+in zlib. The vulnerability would only exist if a *consumer* passes
+attacker-controlled data as the format argument, which is a misuse of the
+API at the call site, not a bug in zlib.
+
+How to catch these:
+1. **Validate stage** must check whether the alleged "attacker-controlled"
+   parameter is by-design caller-controlled (like printf's format arg).
+2. **Tag the API contract** in `SECURITY_CONTEXT.md`: "Functions named
+   `*printf*` intentionally accept caller-controlled format strings."
+3. **Bucket rule**: if the exploit requires the consumer to misuse the API,
+   it's `backlog` at best (documentation improvement), never `fix_now`.
+
+Known API patterns that produce this false positive:
+- `*printf*(format, ...)` — caller provides format string by design
+- `*write*(buf, len)` — caller provides data by design
+- `*read*(buf, len)` — caller provides buffer by design
+- `execute*(cmd)` — caller provides command by design
+- `*open*(path, ...)` — caller provides path by design
 
 ## Entry-Point Anchoring for Library Targets
 
