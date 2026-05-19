@@ -478,6 +478,13 @@ model to attempt to *disprove* each finding:
 - **Output format**: Add `status` field (`confirmed` / `rejected` /
   `needs-more-info`) and `validate_reason` to each finding.
 - **Adversarial framing**: "Your job is to DISPROVE findings, not find new ones"
+- **Include actual source code in the prompt**: Models cannot verify findings
+  from descriptions alone. Look up the code snippet by `snippet_id` from the
+  snippet DB and include it verbatim in the validate prompt. Add a fourth
+  criterion: "Is the model's claim consistent with what the code actually does?"
+  Without this, the validate model hallucinates confirmation of false positives
+  (e.g., confirming "MOD63 should be MOD65521" when MOD63 is mathematically
+  correct). With code context, the same model correctly rejects the finding.
 
 ### Validate Implementation Pattern
 

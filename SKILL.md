@@ -332,6 +332,26 @@ catching what the design missed. Apply them every time.
   `{"done": true} We analyzed everything...` never triggers `saw_done`
   because `json.loads` rejects the whole line.
 
+### Validate prompt must include the actual source code
+- **Models cannot verify findings from descriptions alone.** The validate prompt
+  must include the code snippet content (via `snippet_id` lookup in the JSON DB)
+  so the model can verify the claim against the real implementation.
+- Without the code, models hallucinate confirmation. For example, an adler32
+  finding claiming "MOD63 is wrong, should be MOD65521" was confirmed by
+  Nemotron — even though MOD63 is mathematically correct and intentional.
+  With the code in the prompt, Nemotron-3-Nano correctly rejected it.
+- The snippet lookup adds negligible cost (<1ms per finding via dict lookup)
+  and dramatically improves validate accuracy. The prompt should include:
+  ```
+  ACTUAL SOURCE CODE (file: {file}, lines {lines}):
+  ```c
+  {code}
+  ```
+  ```
+- **Add a fourth validate criterion**: "Is the model's claim consistent with
+  what the code actually does?" This catches hallucinations where the hunter
+  model misread or overinterpreted the code.
+
 ### API-by-design findings: reject them
 - **Functions named `*printf*` intentionally accept caller-controlled format
   strings.** This is not a vulnerability — it's the API contract. A "format
@@ -626,6 +646,7 @@ output/
 - [ ] `ThreadPoolExecutor` with 3-4 workers for parallel packs
 - [ ] Coverage gaps emitted by hunters, re-queued for Gapfill
 - [ ] Validate agent uses **completely disjoint model pool** from Hunt (overlap → correlated biases slip through)
+- [ ] **Validate prompt includes code snippet content** — lookup by `snippet_id`, not just the finding description (prevents hallucination confirmation)
 - [ ] **`external-input` tag inflation checked** — for compiled libraries, verify it doesn't match 99%+ of functions. Strip from domain filters if so; only data-flow should use it.
 - [ ] **Contrib/examples/test directories stripped** before building packs (focuses on real attack surface)
 - [ ] Dedupe on `(snippet_id, class)` composite key, keep highest severity
