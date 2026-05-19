@@ -379,6 +379,23 @@ catching what the design missed. Apply them every time.
 - The line-by-line JSONL parser handles the extra text after `{done: true}`
   by silently skipping non-JSON lines — do NOT strip text after the sentinel.
 
+### Test run_agents.py: not optional
+- **`run_agents.py` orchestrates model calls, JSONL parsing, sentinel detection,
+- and repair turns — write tests for every failure mode before deploying.**
+- The parser alone has 6+ edge cases that crash silently on real runs.
+- **Unit test checklist for `run_agents.py`:**
+  - Empty response → returns `([], [])`
+  - Pure sentinel `{"done": true}` → auto-generates coverage gap
+  - JSON + free text on same line → extracts JSON correctly
+  - Malformed JSON → falls through to next strategy silently
+  - Repair turn exhausts (max 2 attempts) → marks stage failed, continues
+  - Model returns empty content (no system message) → handled without crash
+  - Coverage gap in findings → separated from findings correctly
+  - `--validate-only` flag → skips hunt, loads cached files
+- **Run tests before every commit that touches `run_agents.py` or any parser
+  function.** A 30-second test run beats 15 minutes debugging a silent crash.
+- See `~/code/audit/tests/test_runner.py` and `~/code/audit/tests/test_json_utils.py`.
+
 ### str.format() brace trap: will crash your pipeline
 - **System prompts containing JSON examples with `{` `}` braces will crash
   `str.format()` with `KeyError`.** This is not theoretical — it happened on
