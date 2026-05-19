@@ -194,9 +194,11 @@ Returns `(findings, gaps)` — findings are vulnerability reports, gaps
 are coverage assessments from the hunter.
 
 ```python
-def parse_findings(text: str) -> tuple[list[dict], list[dict]]:
+def parse_findings(text: str, domain: str = "") -> tuple[list[dict], list[dict]]:
     findings = []
     gaps = []
+    saw_done = False
+
     # Strategy 1: try JSON array
     try:
         data = json.loads(text)
@@ -208,24 +210,70 @@ def parse_findings(text: str) -> tuple[list[dict], list[dict]]:
                     gaps.append(item)
                 elif "snippet_id" in item:
                     findings.append(item)
+            if not findings and not gaps:
+                gaps.append({
+                    "coverage_gap": domain,
+                    "reason": f"hunter returned empty JSON array for {domain}; "
+                              "no findings or gaps emitted",
+                })
             return findings, gaps
     except json.JSONDecodeError:
         pass
-    # Strategy 2: line-by-line JSONL
+
+    # Strategy 2: line-by-line JSONL (handles JSON + free text on same line)
     for line in text.strip().splitlines():
         line = line.strip()
         if not line:
             continue
+        # Try full line first
+        obj = None
         try:
             obj = json.loads(line)
         except json.JSONDecodeError:
+            pass
+        # If full line fails, extract the largest balanced-brace prefix.
+        # Models often emit {"done": true} followed by free-text reasoning
+        # on the same line — this handles that case.
+        if obj is None:
+            depth = 0
+            start = -1
+            for i, c in enumerate(line):
+                if c == "{":
+                    if depth == 0:
+                        start = i
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 0 and start >= 0:
+                        try:
+                            obj = json.loads(line[start:i+1])
+                            break
+                        except json.JSONDecodeError:
+                            pass
+        if obj is None:
             continue
+
         obj.setdefault("status", "raw")
         obj.setdefault("poc_confirmed", False)
-        if "coverage_gap" in obj:
+        if obj.get("done") is True:
+            saw_done = True
+        elif "coverage_gap" in obj:
             gaps.append(obj)
         elif "snippet_id" in obj:
             findings.append(obj)
+
+    # Sentinel-only detection: model returned {"done": true} as the only JSON
+    # object with no findings and no coverage gaps. Auto-generate a gap so this
+    # is distinguishable from "pipeline error / model didn't analyze."
+    if saw_done and not findings and not gaps:
+        gaps.append({
+            "coverage_gap": domain,
+            "reason": f"hunter for {domain} returned sentinel-only output "
+                      "(no findings, no gaps). All code paths in scope were "
+                      "analyzed and no vulnerabilities found, or model skipped "
+                      "structured reporting.",
+        })
+
     return findings, gaps
 ```
 

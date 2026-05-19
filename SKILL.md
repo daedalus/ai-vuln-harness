@@ -300,6 +300,38 @@ catching what the design missed. Apply them every time.
   ("no crypto in compression lib") are honest output, not errors.
 - **Gapfill re-queues coverage gaps with narrowed scope**, not as failures.
 
+### Sentinel-only output: auto-generate coverage gaps
+- **"0 findings, 0 gaps" is ambiguous.** It could mean the model analyzed
+  everything and found nothing, or that the pipeline never reached the model.
+  The parser must distinguish these.
+- **Detect sentinel-only responses in `parse_findings`**: when the only JSON
+  object in the response is `{"done": true}` with no findings and no gaps,
+  auto-generate a coverage gap record. This makes "analyzed, found nothing"
+  visible as `1 gap` rather than silently vanishing into `0/0`.
+- **Add a `domain` parameter to `parse_findings`** so the auto-generated gap
+  identifies which domain produced the sentinel-only output. Log a warning
+  to stderr when sentinel-only detection triggers.
+- On a zlib run this caught `format-str` — the model produced a 2.9KB
+  analysis concluding no vulnerabilities (all format strings are by-design
+  API), but emitted only `{"done": true}`. Before the fix: `0/0` (silent).
+  After: `0/1` with `⚠ sentinel-only output` warning.
+
+### Mixed-line JSON extraction: handle JSON+prose on one line
+- **Models often emit a JSON object followed by free-text reasoning on the
+  same line**, e.g. `{"done": true} We are tasked with analyzing...`.
+  `json.loads()` fails on the whole line because of the trailing text.
+- **Fix**: in the line-by-line parser, when `json.loads(line)` fails, attempt
+  to extract a JSON object using balanced-brace prefix matching. Walk the line
+  character by character tracking `{`/`}` depth; at depth 0 after a `}`, try
+  `json.loads()` on the substring from the last `{` start. The first valid
+  parse wins.
+- This is distinct from the three-fallback strategy (which operates on the
+  full response). This operates **per line** and catches the common pattern
+  where the model places the sentinel and its reasoning on one line.
+- Without this fix, sentinel-only detection fails silently — the line
+  `{"done": true} We analyzed everything...` never triggers `saw_done`
+  because `json.loads` rejects the whole line.
+
 ### API-by-design findings: reject them
 - **Functions named `*printf*` intentionally accept caller-controlled format
   strings.** This is not a vulnerability — it's the API contract. A "format
@@ -585,6 +617,8 @@ output/
 - [ ] Hunter agents scoped to one attack class × one component each
 - [ ] `MODEL_BY_DOMAIN` maps strongest models to mem-safety/data-flow/crypto
 - [ ] Hunter output parser handles: JSON arrays, wrapper objects, sentinel markers, free-text contamination, truncated output
+- [ ] **Sentinel-only detection**: parser auto-generates coverage gap when `{"done": true}` is the only output (no findings, no gaps)
+- [ ] **Mixed-line JSON extraction**: per-line balanced-brace prefix matching catches `{"done": true} free text...` on same line
 - [ ] Every finding has `status: "raw"` and `poc_confirmed: false` defaults
 - [ ] Reasoning model `reasoning` field concatenated with `content`
 - [ ] All status/log to stderr, findings JSONL to stdout
