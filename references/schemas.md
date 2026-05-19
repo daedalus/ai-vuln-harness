@@ -49,8 +49,8 @@ Emitted by the Coordinator; consumed by Hunter agents.
 }
 ```
 
-`known_entries` is populated in the Feedback stage (Stage 8 in the
-9-stage pipeline) to pre-load the originating finding from a shared
+`known_entries` is populated in the Feedback stage (Stage 9 in the
+10-stage pipeline) to pre-load the originating finding from a shared
 library into the new hunt task's context pack.
 
 ---
@@ -111,7 +111,7 @@ Emitted by the Chainer.
 
 ## Report schema
 
-Final output of Stage 9. The reporting agent validates its own output against
+Final output of Stage 10. The reporting agent validates its own output against
 this schema before emitting; it must fix structural errors before returning.
 
 ```json

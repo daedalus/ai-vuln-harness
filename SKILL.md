@@ -48,7 +48,7 @@ security research at scale. Two hard limits:
 
 The solution is a harness that manages execution: pre-sliced structured context,
 scoped parallel hunters, adversarial validators, deduplication, and cross-repo
-tracing — following the audit harness implementation's 9-stage pipeline.
+tracing — following the audit harness implementation's 10-stage pipeline.
 
 Key insights:
 - **Narrow scope**: One attack class per agent prevents context overload
@@ -66,35 +66,39 @@ Key insights:
 └──────┬───────┘
        │ snippet DB
 ┌──────▼───────┐
-│ 2.Coordinator│  Build per-domain context packs (≤180K tokens)
+│ 2.Recon      │  Map repo, identify subsystems, emit hunt tasks
+└──────┬───────┘
+       │ task queue (JSON)
+┌──────▼───────┐
+│ 3.Coordinator│  Build per-domain context packs (≤180K tokens)
 └──────┬───────┘
        │ context packs
 ┌──────▼───────┐
-│ 3.Hunt       │  One attack class per agent; compile/run PoCs
+│ 4.Hunt       │  One attack class per agent; compile/run PoCs
 └──────┬───────┘
        │ raw findings (JSONL)
 ┌──────▼────────────┐
-│ 4.Validate ◄─► Gapfill│  (inner loop)
+│ 5.Validate ◄─► Gapfill│  (inner loop)
 └──────┬────────────┘
        │ confirmed findings
 ┌──────▼───────┐
-│ 5.Dedupe     │  Cluster by root cause
+│ 6.Dedupe     │  Cluster by root cause
 └──────┬───────┘
        │ deduped findings
 ┌──────▼───────┐
-│ 6.Chainer    │  Build exploit chains via call-graph BFS
+│ 7.Chainer    │  Build exploit chains via call-graph BFS
 └──────┬───────┘
        │ findings + chains
 ┌──────▼───────┐
-│ 7.Trace      │  Prove attacker input reaches sink
+│ 8.Trace      │  Prove attacker input reaches sink
 └──────┬───────┘
        │ reachable findings
 ┌──────▼───────┐
-│ 8.Feedback   │  Turn traces into new Hunt tasks
+│ 9.Feedback   │  Turn traces into new Hunt tasks
 └──────┬───────┘
        │ new task queue
 ┌──────▼───────┐
-│ 9.Report     │  Schema-validated structured output
+│10.Report     │  Schema-validated structured output
 └──────────────┘
 ```
 
@@ -110,58 +114,67 @@ Enriched with historical context from git security patches.
 
 See `references/stages.md` → Stage 1, `references/implementation.md` → ingestor.py.
 
-### Stage 2 — Coordinator
+### Stage 2 — Recon
+Maps the repo: identifies subsystems, build system, entry points,
+and generates structured hunt tasks with concrete file targets per attack
+class. Without this stage the Coordinator builds packs from the entire
+snippet DB with no prioritization.
+
+See `references/stages.md` → Stage 2.
+
+### Stage 3 — Coordinator
 Build per-domain context packs (mem-safety, auth, crypto, ipc, data-flow,
-format-str) from tagged snippets. Packs capped at 180K tokens. Each pack
-includes `SECURITY_CONTEXT.md`, cross-references, and scope notes.
+format-str) from tagged snippets, filtered to Recon's target files. Packs
+capped at 180K tokens. Each pack includes `SECURITY_CONTEXT.md`,
+cross-references, and scope notes.
 
-See `references/stages.md` → Stage 2, `references/implementation.md` → coordinator.py.
+See `references/stages.md` → Stage 3, `references/implementation.md` → coordinator.py.
 
-### Stage 3 — Hunter Cluster
+### Stage 4 — Hunter Cluster
 Parallel agents, one per domain pack. Each agent receives a scoped system
 prompt ("one attack class, one scope") and emits zero or more findings as
 JSONL. Implements dynamic model fallback chain, sync urllib, output parser
 robust to model hallucination. Status to stderr, findings to stdout.
 
-See `references/stages.md` → Stage 3, `references/implementation.md` → run_agents.py.
+See `references/stages.md` → Stage 4, `references/implementation.md` → run_agents.py.
 
-### Stage 4 — Validate + Gapfill
+### Stage 5 — Validate + Gapfill
 Adversarial re-read: a different model attempts to disprove each finding.
 Requires system message (some models return empty without it) and curated
 model chain. Coverage gaps are re-queued as new hunt tasks.
 
-See `references/stages.md` → Stage 4.
+See `references/stages.md` → Stage 5.
 
-### Stage 5 — Dedupe
+### Stage 6 — Dedupe
 Collapses findings on `(snippet_id, class)` composite key, keeping highest
 severity. For deeper dedup, extend key to `(file, class, source_lines_start)`.
 
-See `references/stages.md` → Stage 5.
+See `references/stages.md` → Stage 6.
 
-### Stage 6 — Chainer
+### Stage 7 — Chainer
 Builds exploit chains via call-graph BFS (≤4 hops). Scores candidates on
 trust-boundary crossing, severity levels, and recent file modification.
 Submits top chains to a reasoning agent for analysis.
 
-See `references/stages.md` → Stage 6, `references/implementation.md` → chainer.py.
+See `references/stages.md` → Stage 7, `references/implementation.md` → chainer.py.
 
-### Stage 7 — Trace
+### Stage 8 — Trace
 For shared-library findings: fan out tracer agents per consumer repo to
 determine reachability from each consumer's attack surface.
 
-See `references/stages.md` → Stage 7.
+See `references/stages.md` → Stage 8.
 
-### Stage 8 — Feedback
+### Stage 9 — Feedback
 Reachable traces become new Hunt tasks in consumer repos. The originating
 finding is pre-loaded as `known_entry`.
 
-See `references/stages.md` → Stage 8.
+See `references/stages.md` → Stage 9.
 
-### Stage 9 — Report
+### Stage 10 — Report
 Schema-validated structured output with triage buckets: fix_now, backlog,
 false_positive. Agent self-validates before emitting.
 
-See `references/stages.md` → Stage 9, `references/schemas.md` → Report schema.
+See `references/stages.md` → Stage 10, `references/schemas.md` → Report schema.
 
 ---
 
@@ -236,6 +249,91 @@ catching what the design missed. Apply them every time.
 - Check cache before every API call. Save after every successful response.
 - Without this, every re-run burns the full API budget.
 
+### Prompts: files, not inline strings
+- **Every stage prompt is a standalone markdown file** loaded at runtime,
+  never embedded in Python code with `str.format()` or f-strings. Inline
+  prompts are unmaintainable and break on JSON braces (`{` `}` must be
+  escaped to `{{` `}}`).
+- Store prompts in a `prompts/` directory: `prompts/recon.md`, `prompts/hunt.md`,
+  `prompts/validate.md`, etc. Each prompt file contains role definition,
+  system message, and explicit Method steps the agent must follow.
+- The prompt file is loaded, wrapped with stage-specific context (snippets,
+  findings, schemas), and sent. This separation makes prompt iteration fast
+  and reviewable.
+- See `~/code/audit/prompts/` for the reference implementation.
+
+### JSON Schema: validate every agent output
+- **Every stage defines a JSON Schema** (`schemas/*.json`) that its output
+  must conform to. The schema body is appended verbatim to the system prompt
+  so the model never guesses field names.
+- **After every agent response, validate against schema.** If validation fails,
+  issue a **repair turn**: send the model its own output plus the schema
+  error message and ask it to fix the structure. Limit to 2 repair attempts
+  per stage to avoid infinite loops.
+- Repair turns are cheaper than re-running the agent and catch the "model
+  almost got it right" case reliably.
+- See `~/code/audit/schemas/` (9 schemas) and `~/code/audit/audit/runner.py`
+  (repair turn implementation) for reference.
+
+### JSON extraction: three-fallback strategy
+- **Never assume the model returns pure JSON.** Always use at least three
+  extraction strategies in order:
+  1. **Direct parse** — try `json.loads()` on the full response string
+  2. **Fenced code block** — extract content between ```json and ``` markers
+  3. **Largest balanced braces** — find the longest substring with matching
+     `{` `}` brackets and try to parse it
+- Each fallback is tried in sequence. The first that parses as valid JSON
+  wins. If all three fail, log the full response and mark the stage as failed.
+- Fallback 3 alone catches ~95% of model formatting errors. Combined with
+  fallback 2, the extraction success rate is effectively 100%.
+- See `~/code/audit/audit/json_utils.py` for the reference implementation.
+
+### Recon stage: mandatory first step
+- **Add a dedicated Recon stage before Hunt.** The Recon agent maps the repo:
+  identifies subsystems, build system (Makefile/CMake/Cargo.toml/pyproject.toml),
+  entry points (main, signal handlers, inbound API routes), and generates
+  structured hunt tasks with concrete file targets per attack class.
+- Without Recon, the Coordinator builds domain packs from the entire snippet
+  DB with no prioritization. Recon adds human-like scoping: "focus on the
+  decompression path, skip the test harness."
+- Recon output is a JSON array of `{domain, target_files, rationale, priority}`
+  objects. The Coordinator THEN filters snippets to only those target_files,
+  dramatically reducing noise in each pack.
+- See `~/code/audit/prompts/recon.md` and `~/code/audit/config/stages.yaml`.
+  for reference.
+
+### State database: enable resume
+- **Persist pipeline state in a SQLite database**, not ephemeral JSON files.
+  The state DB tracks: tasks (with status `pending|running|done|failed`),
+  findings (each with stage provenance), traces, and artifact paths.
+- On restart, the pipeline queries the state DB and skips completed stages.
+  This turns the pipeline from a fragile one-shot script into a robust
+  process that survives crashes, API outages, and mid-run config changes.
+- The state DB also enables incremental runs: add new snippets and the
+  pipeline will only re-run stages affected by the change.
+- See `~/code/audit/audit/db.py` for the reference implementation.
+
+### Configure model per stage, not globally
+- **Every stage gets its own model, concurrency, and tool configuration**
+  in a YAML config file, not hardcoded in Python. Example structure:
+  ```yaml
+  stages:
+    recon:
+      model: claude-opus-4
+      concurrency: 1
+      tools: [read, grep, glob, bash]
+    hunt:
+      model: claude-sonnet
+      concurrency: 50
+      tools: [read, grep, glob, bash]
+    validate:
+      model: claude-opus-4
+      concurrency: 10
+      tools: [read]
+  ```
+- This makes model tiering explicit, trivially reconfigurable, and
+  reviewable without changing code.
+
 ## Signal-to-Noise Control
 
 **Language noise**
@@ -292,9 +390,9 @@ dependents. Mitigations:
 ### Model Selection Strategy
 
 | Stage | Model tier | Notes |
-|---|---|---|
-| Recon | Highest capability | Comprehensive repo mapping |
-| Hunt | Balanced | Parallel vulnerability hunting |
+|---|---|---|---|
+| Recon | Highest capability | Comprehensive repo mapping, subsystem identification |
+| Hunt | Balanced | Parallel vulnerability hunting, scoped per domain pack |
 | Validate | Highest, **disjoint from Hunt** | MUST use models the Hunt stage cannot access. Shared models → correlated biases slip through. In practice: if Hunt uses deepseek-v4-flash, Validate should use nemotron-nano or trinity. |
 | Gapfill | Same as Hunt | Coverage gap processing |
 | Dedupe | Efficient | Record collapsing |
@@ -347,23 +445,26 @@ pip install tree-sitter tiktoken
 # 2. Ingest — extract functions as typed snippets
 python ingestor.py --root ./myrepo --out output/snippets.json
 
-# 3. Coordinate — build per-domain context packs
-python coordinator.py --db output/snippets.json --out output/packs/
+# 3. Recon — map repo, identify subsystems, emit hunt tasks
+python recon.py --db output/snippets.json --out output/tasks.json
 
-# 4. Hunt — run parallel hunter agents (one per domain pack)
+# 4. Coordinate — build per-domain context packs
+python coordinator.py --db output/snippets.json --tasks output/tasks.json --out output/packs/
+
+# 5. Hunt — run parallel hunter agents (one per domain pack)
 #    Uses dynamic model chain from OpenRouter API
 python run_agents.py --packs output/packs/ --parallel 3 > output/findings.jsonl
 
-# 5. Validate — adversarial re-read of findings
+# 6. Validate — adversarial re-read of findings
 python validate.py > output/validated.jsonl
 
-# 6. Dedupe — collapse duplicates on (snippet_id, class)
+# 7. Dedupe — collapse duplicates on (snippet_id, class)
 python dedupe.py > output/deduped.jsonl
 
-# 7. Chain — build exploit chains via call-graph BFS
+# 8. Chain — build exploit chains via call-graph BFS
 python chainer.py > output/chains.json
 
-# 8. Report — structured report with triage buckets
+# 9. Report — structured report with triage buckets
 python reporter.py > output/report.json
 
 # Re-runs load from cache.json — zero API calls
@@ -377,8 +478,10 @@ python reporter.py > output/report.json
 | `--validate-model` | same as `--model` | Different model for Validate (recommended) |
 | `--parallel` | 3 | Max concurrent packs (ThreadPoolExecutor) |
 | `--max-run` | all | Debug: process only N packs |
+| `--tasks` | — | Path to Recon-generated tasks.json |
 | `--reingest` | false | Re-run ingestor even if snippets.json exists |
 | `--no-cache` | false | Skip cache reads (force all API calls) |
+| `--db` | — | Path to SQLite state DB (enables resume) |
 
 ### Output structure
 
@@ -386,6 +489,7 @@ python reporter.py > output/report.json
 output/
   cache.json        # LLM response cache (key: stage:model:hash)
   snippets.json     # extracted function snippets
+  tasks.json        # Recon-generated hunt tasks
   packs/            # mem-safety, auth, crypto, ipc, data-flow, format-str
   findings.jsonl    # raw findings with status:"raw" + poc_confirmed:false
   validated.jsonl   # findings with updated status + validate_reason
@@ -427,3 +531,10 @@ output/
 - [ ] **System message in validate** — models return empty content without it
 - [ ] `str.format()` **braces escaped** — use `{{` `}}` for literal JSON in system prompts
 - [ ] **No `openrouter/free` routing alias** — use concrete model IDs from `/v1/models`
+- [ ] **Prompts are standalone markdown files** in `prompts/` — never inline in Python code
+- [ ] **JSON Schema defined per stage**; schema body appended to system prompt
+- [ ] **Repair turns on schema validation failure** — max 2 attempts per stage
+- [ ] **Three-strategy JSON extraction** — direct parse → fenced code block → largest balanced braces
+- [ ] **Recon stage runs before Hunt** — maps repo, identifies subsystems, generates structured hunt tasks
+- [ ] **State DB (SQLite)** persists task/finding/trace state for resume
+- [ ] **Model per stage configured in YAML** — not hardcoded in Python

@@ -114,9 +114,68 @@ Enhance the Ingestor stage by mining git history for past security patches:
 
 ---
 
-## Stage 2 — Coordinator
+## Stage 2 — Recon
 
-**Goal:** build per-agent **context packs** — curated snippet subsets scoped to
+**Goal:** map the repo before hunting — identify subsystems, build system,
+entry points, and generate structured hunt tasks with concrete file targets
+per attack class. Without this stage, the Coordinator builds packs from the
+entire snippet DB with no prioritization, wasting context on irrelevant code.
+
+See `~/code/audit/prompts/recon.md` and `~/code/audit/config/stages.yaml`
+for the reference implementation.
+
+### Recon Agent Mission
+
+Analyze the repository and produce a prioritized list of hunt tasks:
+
+1. **Identify subsystems** — top-level directories, module boundaries,
+   core vs. test vs. example code. Output a subsystem map.
+2. **Detect build system** — `Makefile`, `CMakeLists.txt`, `Cargo.toml`,
+   `pyproject.toml`, `go.mod`. This tells you which code is actually compiled.
+3. **Locate entry points** — `main()`, exported symbols, signal handlers,
+   inbound API routes, plugin interfaces, callback registrations.
+4. **Generate hunt tasks** — for each attack class, list which files to
+   target and why. Example:
+   ```json
+   {"domain": "mem-safety", "target_files": ["inflate.c", "deflate.c", "trees.c"],
+    "rationale": "decompression path handles untrusted input", "priority": "high"}
+   ```
+
+### Recon Output Schema
+
+```json
+[
+  {
+    "task_id": "t_core_mem-safety_1",
+    "domain": "mem-safety",
+    "attack_class": "buffer-overflow",
+    "target_files": ["src/decompress.c", "src/stream.c"],
+    "rationale": "Decompression reads untrusted input into fixed buffers",
+    "priority": "high"
+  }
+]
+```
+
+The Recon output is consumed by the Coordinator, which filters snippets to
+only the `target_files` before building domain packs.
+
+### What Recon Prevents
+
+- **Inflated packs** — without target file filtering, the Coordinator includes
+  every function from the snippet DB. Recon narrows each pack to the relevant
+  subsystem, typically cutting pack size by 40-60%.
+- **Wasted context** — test harness code, contrib/ code, and unrelated modules
+  are excluded before hunters ever see them.
+- **Missing entry points** — without explicit entry-point identification,
+  hunters miss attack surface (e.g., signal handlers, callback exports).
+
+---
+
+## Stage 3 — Coordinator
+
+**Goal:** build per-agent **context packs**
+
+ — curated snippet subsets scoped to
 one security domain — so each agent can be cold-started with no repo access.
 
 See `schemas.md` → **Context pack schema** for the full field spec.
@@ -169,7 +228,7 @@ functional scope. The gapfill stage should re-queue these with narrowed scope.
 
 ---
 
-## Stage 3 — Hunter Cluster
+## Stage 4 — Hunter Cluster
 
 Each agent receives its context pack and a domain-scoped system prompt:
 
@@ -403,7 +462,7 @@ Each hunter agent must adhere to strict scoping:
 
 ---
 
-## Stage 4 — Validate + Gapfill (inner loop)
+## Stage 5 — Validate + Gapfill (inner loop)
 
 ### Validate (Adversarial Re-read)
 
@@ -490,7 +549,7 @@ Output ONLY a JSON object: {{"status": "confirmed"/"rejected"/"needs-more-info",
 
 ---
 
-## Stage 5 — Dedupe
+## Stage 6 — Dedupe
 
 Collapse findings sharing the same root cause to a single record. Dedupe on
 root cause, not symptom.
@@ -533,7 +592,7 @@ catch cases where different snippet continuations report the same issue.
 
 ---
 
-## Stage 6 — Chainer
+## Stage 7 — Chainer
 
 **Goal:** detect clusters where multiple low/medium findings compose into a
 higher-severity exploit chain.
@@ -574,7 +633,7 @@ See `implementation.md` → **PoC loop** for the confirmation pseudocode.
 
 ---
 
-## Stage 7 — Trace
+## Stage 8 — Trace
 
 For confirmed findings in **shared libraries**: fan out one tracer agent per
 consumer repository to determine reachability from each consumer's external
@@ -611,7 +670,7 @@ Output: `reachable: true/false` with supporting evidence:
 
 ---
 
-## Stage 8 — Feedback
+## Stage 9 — Feedback
 
 Reachable traces become new Hunt tasks in consumer repos, closing the cross-repo
 propagation loop.
@@ -619,7 +678,7 @@ propagation loop.
 ### Feedback Mechanism
 
 - **Trace-to-task conversion**: Each reachable trace from the Trace stage generates new Hunt tasks in consumer repositories
-- **Structural identity**: Feedback tasks are structurally identical to Stage 3 hunter tasks (same format, validation rules)
+- **Structural identity**: Feedback tasks are structurally identical to Stage 4 hunter tasks (same format, validation rules)
 - **Known entry pre-loading**: The originating finding is pre-loaded in the context pack as a `known_entry` rather than discovered during hunting
 - **Cross-repo propagation**: This closes the loop for vulnerability discovery across related codebases
 
@@ -642,7 +701,7 @@ Each feedback task includes:
 
 ---
 
-## Stage 9 — Report
+## Stage 10 — Report
 
 See `schemas.md` → **Report schema** for the full output spec.
 
