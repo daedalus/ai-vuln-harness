@@ -35,32 +35,31 @@ finding references.
 
 ### Tree-sitter API Notes (v0.25+)
 
-The tree-sitter Python binding changed in 0.25.x:
+The tree-sitter Python binding changed in 0.25.x. The v0.22 API
+used `parser.set_language(lang)` and `Language("path.so", "lang")`.
+In 0.25.x both changed:
 
 ```python
 from tree_sitter import Language, Parser
 
-# Load compiled language
-C_LANG = Language("build/my-languages.so", "c")
-
-# Instantiate parser — 0.25.x uses property setter, not set_language()
+# 0.25.x — property setter, not set_language()
 parser = Parser()
-parser.language = C_LANG  # NOT parser.set_language(C_LANG)
+parser.language = C_LANG
 
 # Parse
 tree = parser.parse(bytes(source, "utf8"))
 ```
 
-If using pre-built wheels with the capsule API:
+For pre-built wheels, the Language constructor also changed:
 
 ```python
-# For 0.25.2+ with Language(capsule) constructor
+# 0.25.2+ — capsule constructor, not path+name
 from tree_sitter_c import language as c_lang
-C_LANG = Language(c_lang())  # capsule, not path+name
+C_LANG = Language(c_lang())
 ```
 
 Check your version: `import tree_sitter; print(tree_sitter.__version__)`.
-The API between 0.22.x and 0.25.x is **not backwards compatible.
+The API between 0.22.x and 0.25.x is **not backwards compatible**.
 
 ### Security tags
 
@@ -461,48 +460,7 @@ Output ONLY a JSON object: {{"status": "confirmed"/"rejected"/"needs-more-info",
 
 ---
 
-## Stage 5 — Chainer
-
-**Goal:** detect clusters where multiple low/medium findings compose into a
-higher-severity exploit chain.
-
-### Call-graph Algorithm
-
-1. Build call graph from `callers`/`callees` in the snippet DB.
-2. For each pair `(A, B)` where `A.snippet_id` is reachable from `B.snippet_id`
-   in ≤ 4 hops, emit a candidate chain.
-3. Score candidates:
-   - +2 if chain crosses a trust boundary (`external-input` → sink)
-   - +1 per MEDIUM / +2 per HIGH / +3 per CRITICAL finding in chain
-   - +1 if chain involves recently modified files (per `git log --oneline -20`)
-   - -1 if chain involves well-tested or hardened areas
-4. Submit top-N chains to a **chain reasoning agent** for detailed analysis.
-
-### Logic Chain Definition
-
-- **Normal case**: One attack class per task (one primitive vulnerability)
-- **Exception**: Logic chains (multi-component attack sequences) are allowed as ONE task
-- **Chain format**: `attack_class: logic_chain` with `scope_hint` naming the specific chain
-- **Target files**: May span 2-3 files for a single logic chain task
-- **Limitation**: Only one chain per task
-
-### PoC Confirmation Loop (Isolation Requirements)
-
-A finding with a PoC is actionable. A finding without one is speculation.
-
-- **Isolation**: Run PoCs in isolated scratch environment with no production access
-- **Live target preference**: When `--target-url` provided, reproduce against live service
-- **Local fallback**: Otherwise compile/run in `$scratch_dir` using available interpreters/compilers
-- **Validation**: If bug doesn't reproduce against live target, drop finding
-- **Evidence capture**: Log raw request/response into `poc.code`/`poc.run_output`
-- **Severity adjustment**: If PoC fails, lower severity by at least one step or drop finding
-- **No external calls**: Bash usage limited to `$scratch_dir`; no network calls to external hosts (except live_target)
-
-See `implementation.md` → **PoC loop** for the confirmation pseudocode.
-
----
-
-## Stage 6 — Dedupe
+## Stage 5 — Dedupe
 
 Collapse findings sharing the same root cause to a single record. Dedupe on
 root cause, not symptom.
@@ -542,6 +500,47 @@ Keep the highest-severity variant when collapsing duplicates.
 
 For deeper dedup, extend the key to `(file, class, source_lines_start)` to
 catch cases where different snippet continuations report the same issue.
+
+---
+
+## Stage 6 — Chainer
+
+**Goal:** detect clusters where multiple low/medium findings compose into a
+higher-severity exploit chain.
+
+### Call-graph Algorithm
+
+1. Build call graph from `callers`/`callees` in the snippet DB.
+2. For each pair `(A, B)` where `A.snippet_id` is reachable from `B.snippet_id`
+   in ≤ 4 hops, emit a candidate chain.
+3. Score candidates:
+   - +2 if chain crosses a trust boundary (`external-input` → sink)
+   - +1 per MEDIUM / +2 per HIGH / +3 per CRITICAL finding in chain
+   - +1 if chain involves recently modified files (per `git log --oneline -20`)
+   - -1 if chain involves well-tested or hardened areas
+4. Submit top-N chains to a **chain reasoning agent** for detailed analysis.
+
+### Logic Chain Definition
+
+- **Normal case**: One attack class per task (one primitive vulnerability)
+- **Exception**: Logic chains (multi-component attack sequences) are allowed as ONE task
+- **Chain format**: `attack_class: logic_chain` with `scope_hint` naming the specific chain
+- **Target files**: May span 2-3 files for a single logic chain task
+- **Limitation**: Only one chain per task
+
+### PoC Confirmation Loop (Isolation Requirements)
+
+A finding with a PoC is actionable. A finding without one is speculation.
+
+- **Isolation**: Run PoCs in isolated scratch environment with no production access
+- **Live target preference**: When `--target-url` provided, reproduce against live service
+- **Local fallback**: Otherwise compile/run in `$scratch_dir` using available interpreters/compilers
+- **Validation**: If bug doesn't reproduce against live target, drop finding
+- **Evidence capture**: Log raw request/response into `poc.code`/`poc.run_output`
+- **Severity adjustment**: If PoC fails, lower severity by at least one step or drop finding
+- **No external calls**: Bash usage limited to `$scratch_dir`; no network calls to external hosts (except live_target)
+
+See `implementation.md` → **PoC loop** for the confirmation pseudocode.
 
 ---
 

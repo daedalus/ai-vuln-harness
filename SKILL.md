@@ -48,7 +48,7 @@ security research at scale. Two hard limits:
 
 The solution is a harness that manages execution: pre-sliced structured context,
 scoped parallel hunters, adversarial validators, deduplication, and cross-repo
-tracing — following the audit harness implementation's 8-stage pipeline.
+tracing — following the audit harness implementation's 9-stage pipeline.
 
 Key insights:
 - **Narrow scope**: One attack class per agent prevents context overload
@@ -62,31 +62,39 @@ Key insights:
 
 ```
 ┌──────────────┐
-│  1.Recon     │  Map repo → emit narrow Hunt tasks (one attack class per task)
+│ 1.Ingestor   │  Extract functions → typed, tagged snippet DB
 └──────┬───────┘
-       │ task queue
+       │ snippet DB
 ┌──────▼───────┐
-│  2.Hunt      │  One attack class per agent; compile/run PoCs
+│ 2.Coordinator│  Build per-domain context packs (≤180K tokens)
+└──────┬───────┘
+       │ context packs
+┌──────▼───────┐
+│ 3.Hunt       │  One attack class per agent; compile/run PoCs
 └──────┬───────┘
        │ raw findings (JSONL)
-┌──────▼───────┐        ┌──────────┐
-│  3.Validate  │◄──────►│ 4.Gapfill│  (inner loop)
-└──────┬───────┘        └──────────┘
+┌──────▼────────────┐
+│ 4.Validate ◄─► Gapfill│  (inner loop)
+└──────┬────────────┘
        │ confirmed findings
 ┌──────▼───────┐
-│  5.Dedupe    │  Cluster by root cause
+│ 5.Dedupe     │  Cluster by root cause
 └──────┬───────┘
        │ deduped findings
 ┌──────▼───────┐
-│  6.Trace     │  Prove attacker input reaches sink
+│ 6.Chainer    │  Build exploit chains via call-graph BFS
+└──────┬───────┘
+       │ findings + chains
+┌──────▼───────┐
+│ 7.Trace      │  Prove attacker input reaches sink
 └──────┬───────┘
        │ reachable findings
 ┌──────▼───────┐
-│ 7.Feedback   │  Turn traces into new Hunt tasks
+│ 8.Feedback   │  Turn traces into new Hunt tasks
 └──────┬───────┘
        │ new task queue
 ┌──────▼───────┐
-│   8.Report   │  Schema-validated structured output
+│ 9.Report     │  Schema-validated structured output
 └──────────────┘
 ```
 
@@ -124,18 +132,18 @@ model chain. Coverage gaps are re-queued as new hunt tasks.
 
 See `references/stages.md` → Stage 4.
 
-### Stage 5 — Chainer
+### Stage 5 — Dedupe
+Collapses findings on `(snippet_id, class)` composite key, keeping highest
+severity. For deeper dedup, extend key to `(file, class, source_lines_start)`.
+
+See `references/stages.md` → Stage 5.
+
+### Stage 6 — Chainer
 Builds exploit chains via call-graph BFS (≤4 hops). Scores candidates on
 trust-boundary crossing, severity levels, and recent file modification.
 Submits top chains to a reasoning agent for analysis.
 
-See `references/stages.md` → Stage 5, `references/implementation.md` → chainer.py.
-
-### Stage 6 — Dedupe
-Collapses findings on `(snippet_id, class)` composite key, keeping highest
-severity. For deeper dedup, extend key to `(file, class, source_lines_start)`.
-
-See `references/stages.md` → Stage 6.
+See `references/stages.md` → Stage 6, `references/implementation.md` → chainer.py.
 
 ### Stage 7 — Trace
 For shared-library findings: fan out tracer agents per consumer repo to
@@ -325,9 +333,9 @@ output/
 - [ ] `ThreadPoolExecutor` with 3-4 workers for parallel packs
 - [ ] Coverage gaps emitted by hunters, re-queued for Gapfill
 - [ ] Validate agent uses different prompt + model/routing-pool, no new-finding capability
+- [ ] Dedupe on `(snippet_id, class)` composite key, keep highest severity
 - [ ] Chainer uses call-graph traversal (BFS ≤4 hops) + scoring, not just co-occurrence
 - [ ] PoC loop runs in isolated scratch environment, no production access (blocked for C/C++ without sandboxed compilation)
-- [ ] Dedupe on `(snippet_id, class)` composite key, keep highest severity
 - [ ] Trace fans out per consumer repo for shared library findings
 - [ ] Report schema defined; agent self-validates before emitting
 - [ ] Library findings default to `backlog` unless CRITICAL (untraced)

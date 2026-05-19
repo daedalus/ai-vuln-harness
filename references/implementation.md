@@ -48,13 +48,15 @@ def extract_functions(path: Path) -> list[dict]:
     # Walk CUDA_FUNCTION / function_definition nodes
     for node in tree.root_node.children:
         if node.type == "function_definition":
+            content = source[node.start_byte:node.end_byte]
+            tc = count_tokens(content)
             snippet = {
                 "id": mk_id(path, node),
                 "file": str(path.relative_to(root)),
-                "content": source[node.start_byte:node.end_byte],
-                "token_count": count_tokens(...),
+                "content": content,
+                "token_count": tc,
                 "tags": tag_content(node),
-                "continuation": token_count > 800,
+                "continuation": tc > 800,
                 # Callers filled in by second pass after all snippets collected
             }
             snippets.append(snippet)
@@ -135,7 +137,8 @@ with paid/private API endpoints.
 import json, os, ssl, urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-API_KEY = json.load(open(os.path.expanduser("~/.local/share/opencode/auth.json"))).get("openrouter", "")
+API_KEY = (os.environ.get("OPENROUTER_API_KEY")
+    or json.load(open(os.path.expanduser("~/.local/share/opencode/auth.json"))).get("openrouter", ""))
 MODEL = "deepseek/deepseek-v4-flash:free"  # preferred model; fallback chain handles 429s
 MAX_TOKENS = 8192  # reasoning models need 8K+ output budget
 
@@ -173,7 +176,8 @@ def run_pack(pack: dict) -> list[dict]:
     # Reasoning models put output in 'reasoning' field, not 'content'
     msg = result["choices"][0]["message"]
     content = (msg.get("content") or "") + " " + (msg.get("reasoning") or "")
-    return parse_findings(content)
+    findings, gaps = parse_findings(content)
+    return findings
 
 def run_all(packs: list[dict], parallel: int = 3) -> list[dict]:
     all_findings = []
@@ -186,19 +190,25 @@ def run_all(packs: list[dict], parallel: int = 3) -> list[dict]:
 
 ### Output parser (robust to model hallucination)
 
+Returns `(findings, gaps)` — findings are vulnerability reports, gaps
+are coverage assessments from the hunter.
+
 ```python
-def parse_findings(text: str) -> list[dict]:
+def parse_findings(text: str) -> tuple[list[dict], list[dict]]:
     findings = []
+    gaps = []
     # Strategy 1: try JSON array
     try:
         data = json.loads(text)
         if isinstance(data, list):
             for item in data:
-                if "snippet_id" in item:
-                    item.setdefault("status", "raw")
-                    item.setdefault("poc_confirmed", False)
+                item.setdefault("status", "raw")
+                item.setdefault("poc_confirmed", False)
+                if "coverage_gap" in item:
+                    gaps.append(item)
+                elif "snippet_id" in item:
                     findings.append(item)
-            return findings
+            return findings, gaps
     except json.JSONDecodeError:
         pass
     # Strategy 2: line-by-line JSONL
@@ -210,11 +220,13 @@ def parse_findings(text: str) -> list[dict]:
             obj = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if "snippet_id" in obj:
-            obj.setdefault("status", "raw")
-            obj.setdefault("poc_confirmed", False)
+        obj.setdefault("status", "raw")
+        obj.setdefault("poc_confirmed", False)
+        if "coverage_gap" in obj:
+            gaps.append(obj)
+        elif "snippet_id" in obj:
             findings.append(obj)
-    return findings
+    return findings, gaps
 ```
 
 ### Alternative: Async pattern (for paid/private endpoints)
@@ -242,7 +254,8 @@ async def run_agent(pack: dict) -> list[dict]:
     )
     msg = response.choices[0].message
     content = (msg.content or "") + " " + (getattr(msg, "reasoning", None) or "")
-    return parse_findings(content)
+    findings, gaps = parse_findings(content)
+    return findings
 
 async def run_all(packs: list[dict]) -> list[dict]:
     results = await asyncio.gather(*[run_agent(p) for p in packs])

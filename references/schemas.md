@@ -49,8 +49,9 @@ Emitted by the Coordinator; consumed by Hunter agents.
 }
 ```
 
-`known_entries` is populated in Stage 8 (Feedback) tasks to pre-load the
-originating finding from a shared library.
+`known_entries` is populated in the Feedback stage (Stage 8 in the
+9-stage pipeline) to pre-load the originating finding from a shared
+library into the new hunt task's context pack.
 
 ---
 
