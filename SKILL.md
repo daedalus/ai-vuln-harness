@@ -143,6 +143,12 @@ Adversarial re-read: a different model attempts to disprove each finding.
 Requires system message (some models return empty without it) and curated
 model chain. Coverage gaps are re-queued as new hunt tasks.
 
+**Validate-only mode**: `--validate-only` skips the Hunt stage entirely and
+loads cached findings from `output/findings.jsonl`. Useful for re-running
+Validate with a different model pool or after adjusting the validate prompt
+without burning API calls on re-hunting. Runs Validate → Dedupe → Report
+from cache in under a second.
+
 See `references/stages.md` → Stage 5.
 
 ### Stage 6 — Dedupe
@@ -172,7 +178,11 @@ See `references/stages.md` → Stage 9.
 
 ### Stage 10 — Report
 Schema-validated structured output with triage buckets: fix_now, backlog,
-false_positive. Agent self-validates before emitting.
+false_positive. Every finding includes a `bucket_rationale` field explaining
+why it landed in its bucket (e.g., "Rejected by Validate: code checks buffer
+capacity", "Non-cryptographic checksum by design"). The report also includes
+a `bucket_definitions` dictionary documenting triage criteria. Agent
+self-validates before emitting.
 
 See `references/stages.md` → Stage 10, `references/schemas.md` → Report schema.
 
@@ -605,6 +615,7 @@ python reporter.py > output/report.json
 | `--validate-model` | same as `--model` | Different model for Validate (recommended) |
 | `--parallel` | 3 | Max concurrent packs (ThreadPoolExecutor) |
 | `--max-run` | all | Debug: process only N packs |
+| `--validate-only` | false | Skip Hunt, load cached findings from `output/findings.jsonl`, run Validate → Dedupe → Report |
 | `--tasks` | — | Path to Recon-generated tasks.json |
 | `--reingest` | false | Re-run ingestor even if snippets.json exists |
 | `--no-cache` | false | Skip cache reads (force all API calls) |
@@ -619,10 +630,11 @@ output/
   tasks.json        # Recon-generated hunt tasks
   packs/            # one per agent domain (see Agent Domain Configuration)
   findings.jsonl    # raw findings with status:"raw" + poc_confirmed:false
+  gaps.jsonl        # coverage gaps emitted by hunters
   validated.jsonl   # findings with updated status + validate_reason
   deduped.jsonl     # collapsed on (snippet_id, class)
   chains.json       # exploit chains with scores
-  report.json       # final triaged report
+  report.json       # final triaged report with bucket_rationale per finding
 ```
 
 ---
@@ -654,6 +666,10 @@ output/
 - [ ] PoC loop runs in isolated scratch environment, no production access (blocked for C/C++ without sandboxed compilation)
 - [ ] Trace fans out per consumer repo for shared library findings
 - [ ] Report schema defined; agent self-validates before emitting
+- [ ] **Report includes `bucket_rationale` per finding** explaining why it landed in fix_now/backlog/false_positive
+- [ ] **Report includes `bucket_definitions`** documenting triage criteria at the report root
+- [ ] **`--validate-only` flag** skips Hunt, loads cached findings from `output/findings.jsonl`, runs Validate → Dedupe → Report
+- [ ] **Gaps persisted to `output/gaps.jsonl`** alongside findings for `--validate-only` replay
 - [ ] Library findings default to `backlog` unless CRITICAL (untraced)
 - [ ] `--max-run N` flag for debugging single packs
 - [ ] **Model fallback chain** — dynamic fetch from API, index into sorted chain, advance on 429

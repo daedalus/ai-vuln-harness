@@ -75,6 +75,10 @@ A greenfield JavaScript app would produce very different numbers.
   JSON(L) files. This lets you rerun individual stages without the full pipeline.
 - **`--max-run N` flag** is essential for debugging — running all 6 packs
   costs ~60 API calls on a target.
+- **`--validate-only` flag** skips the Hunt stage entirely and loads cached
+  findings from `output/findings.jsonl`. Useful for re-running Validate with
+  a different model pool or after adjusting the validate prompt, without
+  re-hunting. Runs Validate → Dedupe → Report from cache in under a second.
 - **3 concurrent workers** is the sweet spot for free-tier OpenRouter.
   Higher concurrency triggers HTTP 429 rate limits.
 
@@ -86,7 +90,8 @@ A greenfield JavaScript app would produce very different numbers.
 | Hunt (6 packs, 3 workers) | 5-15 min | 6 | Most models 429; fallback chain adds 30-60s per skip |
 | Validate (3 findings) | 2-5 min | 3 | Faster because less context per call |
 | Trace (3 findings) | 2-5 min | 3 | Same as Validate |
-| Cache replay | <1s | 0 | All stages skip to cached output |
+| `--validate-only` replay | <1s | 0 | Loads cached findings, Validate from cache, re-report |
+| Cache replay (full) | <1s | 0 | All stages skip to cached output |
 
 Total first-run: ~15-25 minutes for a library of zlib's size. Re-runs: instant.
 

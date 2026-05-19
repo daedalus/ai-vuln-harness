@@ -114,10 +114,19 @@ Emitted by the Chainer.
 Final output of Stage 10. The reporting agent validates its own output against
 this schema before emitting; it must fix structural errors before returning.
 
+Every finding includes a `bucket_rationale` field explaining why it landed in
+its bucket. The report root includes a `bucket_definitions` dictionary
+documenting triage criteria.
+
 ```json
 {
   "repo": "git@github.com:org/repo.git",
   "scan_date": "2026-05-18T00:00:00Z",
+  "bucket_definitions": {
+    "fix_now": "CRITICAL/HIGH finding with confirmed validation and reachable external-input path",
+    "backlog": "HIGH without confirmed external-input path; MEDIUM/LOW/INFORMATIONAL isolated finding; honest coverage analysis",
+    "false_positive": "Rejected by Validate agent — no plausible call path, theoretical-only, API-by-design, or misread by hunter"
+  },
   "summary": {
     "fix_now": 3,
     "backlog": 17,
@@ -128,6 +137,7 @@ this schema before emitting; it must fix structural errors before returning.
     {
       "id": "finding-0001",
       "bucket": "fix_now",
+      "bucket_rationale": "Severity CRITICAL + status confirmed. Confirmed reachable buffer-overflow requiring immediate remediation.",
       "severity": "CRITICAL",
       "class": "buffer-overflow",
       "file": "src/tls.c",
@@ -136,6 +146,20 @@ this schema before emitting; it must fix structural errors before returning.
       "call_path": ["http_handler", "tls_read", "unsafe_copy"],
       "poc_confirmed": true,
       "chain": "chain-0001"
+    },
+    {
+      "id": "finding-0002",
+      "bucket": "backlog",
+      "bucket_rationale": "Informational finding about weak-checksum. Non-exploitable in current form, documents design property of the library.",
+      "severity": "INFORMATIONAL",
+      "class": "weak-checksum",
+      ...
+    },
+    {
+      "id": "finding-0003",
+      "bucket": "false_positive",
+      "bucket_rationale": "Rejected by Validate: code checks buffer capacity before writing — the alleged overflow is impossible.",
+      ...
     }
   ],
   "chains": [
@@ -146,6 +170,9 @@ this schema before emitting; it must fix structural errors before returning.
       "narrative": "...",
       "steps": []
     }
+  ],
+  "gaps": [
+    {"coverage_gap": "format-string", "reason": "sentinel-only output for format-str: analyzed, no findings"}
   ]
 }
 ```
@@ -155,5 +182,5 @@ this schema before emitting; it must fix structural errors before returning.
 | Bucket | Criteria |
 |---|---|
 | `fix_now` | CRITICAL individual finding; feasible chain score ≥ 5; HIGH + `external-input` confirmed reachable |
-| `backlog` | HIGH without confirmed external-input path; MEDIUM isolated |
+| `backlog` | HIGH without confirmed external-input path; MEDIUM isolated; INFORMATIONAL design notes |
 | `false_positive` | No plausible call path; theoretical-only; sandbox/test-only code |

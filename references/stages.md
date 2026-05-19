@@ -712,13 +712,62 @@ Each feedback task includes:
 
 See `schemas.md` → **Report schema** for the full output spec.
 
+### Structured bucket rationale
+
+Every finding in the report must include a `bucket_rationale` field that
+explains why it landed in its triage bucket. This makes triage decisions
+transparent and auditable. Examples:
+
+```
+bucket_rationale: "Severity CRITICAL + status confirmed. Confirmed reachable
+buffer-overflow requiring immediate remediation."
+bucket_rationale: "Rejected by Validate: code checks buffer capacity before
+writing — the alleged overflow is impossible."
+bucket_rationale: "Non-cryptographic checksum by design (Adler32/CRC32).
+Not exploitable as a library bug; relevant only if consumer uses it for crypto."
+bucket_rationale: "Informational finding about mem-safety. Non-exploitable in
+current form, documents design property of the library."
+```
+
+The report root should also include a `bucket_definitions` dictionary that
+documents the criteria for each bucket. This pairs with `bucket_rationale` to
+make the report self-documenting.
+
+### Gap persistence
+
+Gaps emitted by Hunt agents are persisted to `output/gaps.jsonl` alongside
+`output/findings.jsonl`. This enables `--validate-only` to replay gaps into
+the final report without re-running the Hunt stage.
+
 ### Triage buckets
 
 | Bucket | Criteria |
 |---|---|
 | **Fix now** | CRITICAL individual; feasible chain score ≥ 5; HIGH + `external-input` reachable |
-| **Backlog** | HIGH without external-input path; MEDIUM isolated |
+| **Backlog** | HIGH without external-input path; MEDIUM isolated; INFORMATIONAL design notes |
 | **False positive** | No plausible call path; theoretical-only; sandbox/test-only code |
+
+### Validate-only mode
+
+`--validate-only` skips the Hunt stage entirely and loads cached findings
+from `output/findings.jsonl` (with gaps from `output/gaps.jsonl`). This is
+useful for:
+- Re-running Validate with a different model pool after a failed run
+- Adjusting the validate prompt and re-validating existing findings
+- Iterating on the report generation logic without burning API calls
+
+The flag is implemented in `run_agents.py` and routes directly to the
+Validate → Dedupe → Report pipeline:
+
+```
+if validate_only:
+    findings = load_cached_findings("output/findings.jsonl")
+    gaps = load_cached_gaps("output/gaps.jsonl")
+else:
+    findings, gaps = run_hunt(packs, hunt_models)
+    persist_cached(findings, gaps)
+# Validate... Dedupe... Report...
+```
 
 The reporting agent validates its output against the schema and fixes errors
 before emitting. Every `fix_now` finding must have a confirmed call path from

@@ -188,6 +188,51 @@ def run_all(packs: list[dict], parallel: int = 3) -> list[dict]:
     return all_findings
 ```
 
+### Validate-only mode
+
+Add a `--validate-only` flag to skip Hunt and re-run Validate + Dedupe + Report
+from cached findings. Implemented at the top of `main()`:
+
+```python
+validate_only = "--validate-only" in sys.argv
+if validate_only:
+    findings = []
+    with open("output/findings.jsonl") as f:
+        for line in f:
+            if line.strip():
+                findings.append(json.loads(line))
+    gaps = []
+    if Path("output/gaps.jsonl").exists():
+        with open("output/gaps.jsonl") as gf:
+            for line in gf:
+                if line.strip():
+                    gaps.append(json.loads(line))
+else:
+    findings, gaps = run_hunt(packs, hunt_models)
+    persist_findings_and_gaps(findings, gaps)
+# Shared Validate + Dedupe + Report path...
+```
+
+### Structured bucket rationale
+
+Every finding in the final report should include a `bucket_rationale` field:
+
+```python
+def bucket_rationale(f: dict, bucket: str) -> str:
+    status = f.get("validate_status", "needs-more-info")
+    severity = f.get("severity", "LOW")
+    if bucket == "fix_now":
+        return f"Severity {severity} + status {status}. Confirmed reachable vulnerability."
+    elif bucket == "false_positive":
+        return f"Rejected by Validate: {f.get('validate_reason', 'no reason given')[:200]}"
+    else:
+        if severity == "INFORMATIONAL":
+            return f"Informational finding about {f.get('class', '')}. Design property, not exploitable."
+        return f"Severity {severity}, status {status}. No confirmed external-input path."
+```
+
+Also add a `bucket_definitions` dict to the report root documenting the criteria.
+
 ### Output parser (robust to model hallucination)
 
 Returns `(findings, gaps)` — findings are vulnerability reports, gaps
