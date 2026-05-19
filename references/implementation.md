@@ -136,17 +136,17 @@ import json, os, ssl, urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 API_KEY = json.load(open(os.path.expanduser("~/.local/share/opencode/auth.json"))).get("openrouter", "")
-MODEL = "openrouter/openrouter/free"  # routing alias, auto-selects
+MODEL = "deepseek/deepseek-v4-flash:free"  # preferred model; fallback chain handles 429s
 MAX_TOKENS = 8192  # reasoning models need 8K+ output budget
 
 # Per-domain model routing: strongest for deep reasoning domains
 MODEL_BY_DOMAIN = {
-    "mem-safety":  "openrouter/openrouter/free",
-    "data-flow":   "openrouter/openrouter/free",
-    "crypto":      "openrouter/openrouter/free",
-    "format-str":  "openrouter/openrouter/free",
-    "ipc":         "openrouter/openrouter/free",
-    "auth":        "openrouter/openrouter/free",
+    "mem-safety":  "deepseek/deepseek-v4-flash:free",
+    "data-flow":   "deepseek/deepseek-v4-flash:free",
+    "crypto":      "deepseek/deepseek-v4-flash:free",
+    "format-str":  "deepseek/deepseek-v4-flash:free",
+    "ipc":         "deepseek/deepseek-v4-flash:free",
+    "auth":        "deepseek/deepseek-v4-flash:free",
 }
 
 def run_pack(pack: dict) -> list[dict]:
@@ -228,7 +228,7 @@ client = AsyncOpenAI(
     base_url=os.environ.get("LLM_BASE_URL", "https://openrouter.ai/api/v1"),
     api_key=os.environ.get("LLM_API_KEY", ""),
 )
-MODEL = os.environ.get("LLM_MODEL", "openrouter/openrouter/free")
+MODEL = os.environ.get("LLM_MODEL", "deepseek/deepseek-v4-flash:free")
 
 async def run_agent(pack: dict) -> list[dict]:
     model = MODEL_BY_DOMAIN.get(pack["agent"], MODEL)
