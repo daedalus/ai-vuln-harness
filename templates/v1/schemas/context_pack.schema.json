@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["agent", "guidance", "snippets", "cross_refs", "security_context", "known_entries"],
+  "properties": {
+    "agent": {"type": "string"},
+    "guidance": {"type": "string"},
+    "snippets": {"type": "array"},
+    "cross_refs": {"type": "object"},
+    "security_context": {"type": "object"},
+    "known_entries": {"type": "array"}
+  }
+}

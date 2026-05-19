@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "snippet_id",
+    "severity",
+    "class",
+    "desc",
+    "status",
+    "poc_confirmed",
+    "bucket_rationale"
+  ],
+  "properties": {
+    "snippet_id": {"type": "string"},
+    "severity": {
+      "type": "string",
+      "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"]
+    },
+    "class": {"type": "string"},
+    "desc": {"type": "string"},
+    "status": {
+      "type": "string",
+      "enum": ["raw", "confirmed", "rejected", "needs-more-info"]
+    },
+    "poc_confirmed": {"type": "boolean"},
+    "bucket_rationale": {"type": "string"},
+    "call_path": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  }
+}

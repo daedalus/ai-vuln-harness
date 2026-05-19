@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["repo", "scan_date", "bucket_definitions", "summary", "findings", "chains", "gaps"],
+  "properties": {
+    "repo": {"type": "string"},
+    "scan_date": {"type": "string"},
+    "bucket_definitions": {"type": "object"},
+    "summary": {"type": "object"},
+    "findings": {"type": "array"},
+    "chains": {"type": "array"},
+    "gaps": {"type": "array"}
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "mode": "full",
+  "is_library_target": true,
+  "allow_full_db_fallback": false,
+  "sync_default": true,
+  "max_workers": 3,
+  "cache_file": "output/cache.json",
+  "state_db": "output/state.db",
+  "kpis": [
+    "precision_at_top_n",
+    "reject_rate",
+    "duplicate_rate",
+    "gap_closure_rate",
+    "time_cost_per_stage"
+  ],
+  "free_tier_profile": {
+    "max_workers": 3,
+    "retry_per_model": 2,
+    "use_async": false
+  },
+  "paid_tier_profile": {
+    "max_workers": 20,
+    "retry_per_model": 2,
+    "use_async": true
+  }
+}

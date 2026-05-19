@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["task_id", "domain", "attack_class", "target_files", "rationale", "priority"],
+    "properties": {
+      "task_id": {"type": "string"},
+      "domain": {"type": "string"},
+      "attack_class": {"type": "string"},
+      "target_files": {"type": "array", "items": {"type": "string"}},
+      "rationale": {"type": "string"},
+      "priority": {"type": "string", "enum": ["high", "medium", "low"]}
+    }
+  }
+}
