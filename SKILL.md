@@ -123,9 +123,9 @@ snippet DB with no prioritization.
 See `references/stages.md` → Stage 2.
 
 ### Stage 3 — Coordinator
-Build per-domain context packs (mem-safety, auth, crypto, ipc, data-flow,
-format-str) from tagged snippets, filtered to Recon's target files. Packs
-capped at 180K tokens. Each pack includes `SECURITY_CONTEXT.md`,
+Build per-domain context packs from tagged snippets (see Agent Domain
+Configuration), filtered to Recon's target files. Packs capped at 180K
+tokens. Each pack includes `SECURITY_CONTEXT.md`,
 cross-references, and scope notes.
 
 See `references/stages.md` → Stage 3, `references/implementation.md` → coordinator.py.
@@ -175,6 +175,81 @@ Schema-validated structured output with triage buckets: fix_now, backlog,
 false_positive. Agent self-validates before emitting.
 
 See `references/stages.md` → Stage 10, `references/schemas.md` → Report schema.
+
+---
+
+## Agent Domain Configuration
+
+The Hunt stage is driven by a typed domain catalog. Each domain specifies its
+attack-class tags, dependencies (domains to run first), and whether it must
+run exclusively (no concurrent domains of the same type).
+
+```python
+AGENT_DOMAINS: dict[str, AgentSpec] = {
+    # ── core ──────────────────────────────────────────────────────────────────
+    "mem-safety":    AgentSpec(["memory", "use-after-free", "buffer-overflow",
+                                "integer-arith", "oob-read", "oob-write"],
+                               ["unsafe"], exclusive=True),
+    "auth":          AgentSpec(["auth", "session", "jwt", "oauth", "csrf",
+                                "privilege-escalation", "broken-access-control"],
+                               ["external-input"]),
+    "crypto":        AgentSpec(["crypto", "tls", "cert-validation",
+                                "weak-cipher", "key-management", "rng"],
+                               exclusive=True),
+    "ipc":           AgentSpec(["ipc", "shared-memory", "pipe", "socket",
+                                "dbus", "signal-handler"],
+                               ["race-condition", "external-input"]),
+    "data-flow":     AgentSpec(["taint", "external-input", "user-controlled",
+                                "sink", "sanitization"]),
+    "format-str":    AgentSpec(["format-string"], exclusive=True),
+
+    # ── expanded ──────────────────────────────────────────────────────────────
+    "injection":     AgentSpec(["sql-injection", "cmd-injection", "ldap-injection",
+                                "xpath-injection", "template-injection",
+                                "header-injection", "log-injection"],
+                               ["external-input"]),
+    "path-traversal":AgentSpec(["path-traversal", "symlink", "zip-slip",
+                                "open-redirect"],
+                               ["external-input", "toctou"]),
+    "deserialization":AgentSpec(["deserialization", "pickle", "yaml-load",
+                                 "xml-entity", "object-injection"],
+                                ["external-input"], exclusive=True),
+    "concurrency":   AgentSpec(["race-condition", "toctou", "deadlock",
+                                "double-free", "use-after-free-concurrent"],
+                               ["shared-memory", "signal-handler"]),
+    "web":           AgentSpec(["xss", "csrf", "cors-misconfiguration",
+                                "clickjacking", "open-redirect", "ssrf"],
+                               ["external-input", "auth"]),
+    "network":       AgentSpec(["ssrf", "dns-rebinding", "request-smuggling",
+                                "tls", "cert-validation", "protocol-downgrade"],
+                               ["external-input"]),
+    "secrets":       AgentSpec(["hardcoded-credential", "key-in-memory",
+                                "secret-in-log", "env-leak", "key-material"],
+                               exclusive=True),
+    "supply-chain":  AgentSpec(["dependency", "typosquatting", "build-artifact",
+                                "sbom", "pinning", "ci-pipeline"],
+                               exclusive=True),
+    "resource":      AgentSpec(["dos", "resource-exhaustion", "regex-dos",
+                                "allocation", "infinite-loop", "zip-bomb"],
+                               ["external-input"]),
+    "side-channel":  AgentSpec(["timing", "cache-side-channel", "spectre",
+                                "branch-prediction", "padding-oracle"],
+                               ["crypto"], exclusive=True),
+    "logging":       AgentSpec(["insufficient-logging", "log-injection",
+                                "audit-gap", "error-disclosure"],
+                               ["external-input"]),
+    "access-control":AgentSpec(["idor", "privilege-escalation", "suid",
+                                "capability-leak", "namespace-escape",
+                                "container-escape"],
+                               ["auth"]),
+}
+```
+
+The Coordinator uses this dict to:
+1. **Filter snippets** by domain tags for each agent's context pack
+2. **Resolve dependencies** — run `auth` before `web`, `crypto` before `side-channel`
+3. **Enforce exclusivity** — `exclusive=True` domains run in isolation (no concurrent agents from the same exclusive group)
+4. **Generate `MODEL_BY_DOMAIN`** — assign best models to mem-safety, data-flow, crypto
 
 ---
 
@@ -490,7 +565,7 @@ output/
   cache.json        # LLM response cache (key: stage:model:hash)
   snippets.json     # extracted function snippets
   tasks.json        # Recon-generated hunt tasks
-  packs/            # mem-safety, auth, crypto, ipc, data-flow, format-str
+  packs/            # one per agent domain (see Agent Domain Configuration)
   findings.jsonl    # raw findings with status:"raw" + poc_confirmed:false
   validated.jsonl   # findings with updated status + validate_reason
   deduped.jsonl     # collapsed on (snippet_id, class)
