@@ -379,6 +379,45 @@ catching what the design missed. Apply them every time.
 - The line-by-line JSONL parser handles the extra text after `{done: true}`
   by silently skipping non-JSON lines — do NOT strip text after the sentinel.
 
+### str.format() brace trap: will crash your pipeline
+- **System prompts containing JSON examples with `{` `}` braces will crash
+  `str.format()` with `KeyError`.** This is not theoretical — it happened on
+  the first zlib run when `PROMPT.format(domain=...)` hit `{"done": true}`
+  in the prompt file. The error: `KeyError: '"done"'`.
+- **Fix:** Every literal `{` or `}` that is not a format placeholder like
+  `{domain}` must be written as `{{` or `}}`. This applies to ALL prompt files
+  loaded with `.format()`:
+  ```
+  # Wrong — crashes:
+  At the end, emit: {"done": true}
+
+  # Right — works:
+  At the end, emit: {{"done": true}}
+  ```
+- **Rule of thumb:** if `str.format()` is how you inject variables into
+  prompts, double-check every `{` `}` pair in the file. Raw f-strings avoid
+  this trap entirely but prevent separating prompts into standalone files.
+
+### Auth key nesting: not always flat
+- **`auth.json` keys may be nested under provider objects**, not flat strings.
+  opencode's `~/.local/share/opencode/auth.json` stores keys as:
+  ```json
+  {"openrouter": {"type": "api", "key": "sk-or-..."}}
+  ```
+  Not:
+  ```json
+  {"openrouter": "sk-or-..."}
+  ```
+- **Fix:** Always log the first level of the auth dict on startup to verify
+  the structure. Access via `auth.get("openrouter", {}).get("key", "")`, not
+  `auth.get("openrouter", "")`.
+- The OpenRouter model list endpoint (`GET /v1/models`) works with either
+  format because it only checks the Authorization header format. The chat
+  completions endpoint silently returns 401 if the key value is a dict
+  instead of a string.
+- **Apply to any provider**: Groq, Anthropic, and others may have the same
+  nesting pattern under `opencode/auth.json`. Always inspect the file.
+
 ### Cache: makes everything restartable
 - **Cache every API response** using key `stage:model:sha256(prompt)[:12]`.
   First run cost ~14 calls for a zlib-size target. Subsequent runs load from
