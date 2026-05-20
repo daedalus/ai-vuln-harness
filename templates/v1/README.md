@@ -26,4 +26,4 @@ python run.py --mode full --repo /path/to/repo
 - Strict contracts: schema validation + bounded repair turns
 - Reliability: sync path default, disjoint hunt/validate pools, JSON cache, SQLite state DB
 - Validate/Trace policy: code-in-prompt and trace-required promotion for library targets
-- Validate runtime check: C/C++ `vulnerable_to_see` snippets can be recompiled and executed (optionally via container/qemu wrapper) to capture real PoC signals
+- Validate runtime check: C/C++ `unvalidated_vulnerable_snippet` snippets can be recompiled and executed (optionally via container/qemu wrapper) to capture real PoC signals

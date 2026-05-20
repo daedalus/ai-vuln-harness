@@ -70,8 +70,8 @@ def _is_c_or_cpp(snippet: dict) -> bool:
     return suffix in (_C_SUFFIXES | _CPP_SUFFIXES)
 
 
-def _extract_vulnerable_to_see_snippet(finding: dict) -> str:
-    for key in ('vulnerable_to_see', 'vulnerable_to_see_snippet'):
+def _extract_unvalidated_vulnerable_snippet(finding: dict) -> str:
+    for key in ('unvalidated_vulnerable_snippet',):
         value = finding.get(key)
         if isinstance(value, str) and value.strip():
             return value
@@ -92,19 +92,19 @@ def _contains_vuln_signal(run_output: str, exit_code: int) -> bool:
     return any(marker in text for marker in _VULN_MARKERS)
 
 
-def recompile_and_run_vulnerable_to_see(
+def recompile_and_run_unvalidated_vulnerable_snippet(
     finding: dict,
     snippet: dict,
     *,
     timeout_seconds: int = 10,
     sandbox_prefix: list[str] | None = None,
 ) -> dict:
-    """Compile and execute a C/C++ vulnerable_to_see snippet in an isolated workspace.
+    """Compile and execute a C/C++ unvalidated_vulnerable_snippet in an isolated workspace.
 
     `sandbox_prefix` allows callers to wrap execution in an isolated runner,
     e.g. a container or qemu command prefix.
     """
-    source = _extract_vulnerable_to_see_snippet(finding)
+    source = _extract_unvalidated_vulnerable_snippet(finding)
     result = {
         'compile_attempted': False,
         'compile_succeeded': False,
@@ -126,8 +126,8 @@ def recompile_and_run_vulnerable_to_see(
 
     with tempfile.TemporaryDirectory(prefix='ai-vuln-harness-') as td:
         tmp = Path(td)
-        src = tmp / f'vulnerable_to_see{ext}'
-        bin_path = tmp / 'vulnerable_to_see.bin'
+        src = tmp / f'unvalidated_vulnerable_snippet{ext}'
+        bin_path = tmp / 'unvalidated_vulnerable_snippet.bin'
         src.write_text(source, encoding='utf-8')
 
         result['compile_attempted'] = True
