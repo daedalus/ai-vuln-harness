@@ -115,7 +115,7 @@ Before making any API calls, verify that at least one auth key is available:
 ```python
 def _check_auth() -> None:
     has_key = False
-    for provider in ('openrouter', 'groq', 'cerebras', 'google'):
+    for provider in ('openrouter', 'groq', 'cerebras', 'google', 'zen'):
         key = os.environ.get(f'{provider.upper()}_API_KEY')
         if not key:
             for p in [Path(__file__).parent / 'auth.json',

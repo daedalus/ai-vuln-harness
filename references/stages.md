@@ -439,7 +439,8 @@ instead of fetched at runtime:
     "openrouter:qwen/qwq-32b:free",
     "groq:llama3-70b-8192",
     "cerebras:llama3.1-8b",
-    "google:gemini-2.5-flash"
+    "google:gemini-2.5-flash",
+    "zen:opus-4-2025-05"
   ]
 }
 ```
@@ -506,7 +507,7 @@ result = json.loads(resp.read().decode())
 - **Auth**: Read API key from script-relative `auth.json` first, then
   `~/.local/share/opencode/auth.json`, then the corresponding `*_API_KEY`
   env var (`OPENROUTER_API_KEY`, `GROQ_API_KEY`, `CEREBRAS_API_KEY`,
-  `GOOGLE_API_KEY`).
+  `GOOGLE_API_KEY`, `ZEN_API_KEY`).
 - **Retry on 502/503/504** — these are upstream provider overload, not
   permanent failures. Use exponential backoff.
 
@@ -536,6 +537,13 @@ result = json.loads(resp.read().decode())
 - Uses the OpenAI-compatible v1beta endpoint — same chat completions format as all other providers.
 - Note: The base URL ends with `/v1beta/openai` (no trailing slash in base), so the full chat completions path is `/v1beta/openai/chat/completions`.
 
+#### Zen (opencode)
+
+- Requires `ZEN_API_KEY` in auth.json or env var.
+- Base URL: `https://opencode.ai/zen/v1/chat/completions`
+- Also exposes non-standard endpoints at `https://opencode.ai/zen/v1/messages` (Anthropic-compatible) and `https://opencode.ai/zen/v1/responses`.
+- The chat completions endpoint follows the standard OpenAI format and is used by `call_llm()` via the `zen:` prefix.
+
 ### Multi-Provider Routing
 
 All providers share the same OpenAI-compatible chat completions format.
@@ -556,6 +564,9 @@ def call_llm(model_id: str, prompt: str, **kwargs):
     elif provider == "google":
         base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
         api_key = _get_auth_key("google")
+    elif provider == "zen":
+        base_url = "https://opencode.ai/zen/v1"
+        api_key = _get_auth_key("zen")
     else:
         raise ValueError(f"unknown provider: {provider}")
     return _call_openai_compatible(base_url, api_key, model_name, prompt, **kwargs)

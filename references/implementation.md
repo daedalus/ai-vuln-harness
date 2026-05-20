@@ -303,6 +303,7 @@ def call_llm(model_id: str, prompt: str, system: str = "", **kwargs):
         "groq": "https://api.groq.com/openai/v1",
         "cerebras": "https://api.cerebras.ai/v1",
         "google": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "zen": "https://opencode.ai/zen/v1",
     }
     base = base_urls.get(provider)
     if not base:
@@ -382,6 +383,7 @@ def _get_auth_key(provider: str) -> str | None:
         "groq": "GROQ_API_KEY",
         "cerebras": "CEREBRAS_API_KEY",
         "google": "GOOGLE_API_KEY",
+        "zen": "ZEN_API_KEY",
     }
     env_key = os.environ.get(env_map.get(provider, ""))
     if env_key:
@@ -397,7 +399,7 @@ def _get_auth_key(provider: str) -> str | None:
     return None
 ```
 
-File format: `{"openrouter": "sk-or-v1-...", "groq": "gsk_...", "google": "AIza..."}`.
+File format: `{"openrouter": "sk-or-v1-...", "groq": "gsk_...", "google": "AIza...", "zen": "sk-zen..."}`.
 Flat, top-level keys matching provider names.
 
 ### Validate-only mode
@@ -660,6 +662,7 @@ BASE_URLS = {
     "groq": "https://api.groq.com/openai/v1",
     "cerebras": "https://api.cerebras.ai/v1",
     "google": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "zen": "https://opencode.ai/zen/v1",
 }
 MODEL = "openrouter:nvidia/nemotron-nano-12b-v2-vl:free"
 
