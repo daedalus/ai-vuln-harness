@@ -10,6 +10,14 @@ from stages.coordinator import build_context_packs
 from stages.parser import parse_findings
 from stages.report import build_report
 from stages.runtime import JsonCache, StateDB, split_model_pools
+from stages.shield import (
+    build_call_graph,
+    annotate_call_path_verification,
+    filter_unreachable,
+    annotate_hallucination,
+)
+from stages.voting import merge_hunter_outputs
+from stages.suppressions import SuppressionRegistry
 
 
 def _load_repo_files(repo: Path) -> list[dict]:
@@ -58,13 +66,34 @@ def run(mode: str, repo: Path, allow_full_db_fallback: bool = False) -> dict:
     ]
     hunt_models, validate_models = split_model_pools(model_chain)
 
-    findings, gaps = parse_findings('{"done": true}', domain='mem-safety')
+    # --- Simulated multi-hunter output (two runs) for voting demonstration ---
+    raw_run1, _ = parse_findings('{"done": true}', domain='mem-safety')
+    raw_run2: list[dict] = []
+    promoted, _suppressed_by_vote = merge_hunter_outputs([raw_run1, raw_run2], min_votes=2)
+
+    # --- Build snippet DB for shield lookups ---
+    snippet_db = {s['id']: s for s in snippets}
+
+    # --- Call-graph annotation (improvement ①) ---
+    call_graph = build_call_graph(snippets)
+    promoted = annotate_call_path_verification(promoted, call_graph)
+
+    # --- Hallucination annotation (improvement ⑧) ---
+    promoted = annotate_hallucination(promoted, snippet_db)
+
+    # --- Static reachability pre-filter (improvement ⑦) ---
+    entry_points = cfg.get('entry_points', [])
+    promoted, _unreachable = filter_unreachable(promoted, call_graph, entry_points)
+
+    # --- False-positive suppression registry (improvement ④) ---
+    registry = SuppressionRegistry(Path(__file__).parent / cfg.get('suppressions_file', 'output/suppressions.json'))
+    findings, _registry_suppressed = registry.filter(promoted)
 
     report = build_report(
         repo=str(repo),
         findings=findings,
         chains=[],
-        gaps=gaps,
+        gaps=[],
         trace_required=cfg['is_library_target'],
     )
 

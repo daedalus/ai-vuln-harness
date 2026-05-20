@@ -6,6 +6,14 @@
   "max_workers": 3,
   "cache_file": "output/cache.json",
   "state_db": "output/state.db",
+  "suppressions_file": "output/suppressions.json",
+  "entry_points": [],
+  "shield": {
+    "min_votes": 2,
+    "max_reachability_hops": 6,
+    "hallucination_desc_token_threshold": 0.60,
+    "hallucination_path_token_threshold": 0.70
+  },
   "kpis": [
     "precision_at_top_n",
     "reject_rate",
