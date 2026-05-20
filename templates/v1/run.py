@@ -9,7 +9,7 @@ from stages.recon import build_recon_tasks
 from stages.coordinator import build_context_packs
 from stages.parser import parse_findings
 from stages.report import build_report
-from stages.runtime import JsonCache, StateDB, load_auth_config, split_model_pools
+from stages.runtime import JsonCache, StateDB, fetch_model_limits, load_auth_config, split_model_pools
 from stages.shield import (
     annotate_call_path_verification,
     annotate_hallucination,
@@ -60,19 +60,24 @@ def run(mode: str, repo: Path, *,
     for s in snippets:
         s['tags'] = tag_snippet(s, is_library_target=cfg['is_library_target'])
 
-    recon_tasks = build_recon_tasks(snippets, repo_path=str(repo))
-    _ = build_context_packs(
-        snippets,
-        recon_tasks=recon_tasks,
-        allow_full_db_fallback=allow_full_db_fallback,
-    )
-
     model_chain = [
         'deepseek/deepseek-v4-flash:free',
         'qwen/qwen-2.5-coder-32b-instruct:free',
         'nvidia/nemotron-3-super-120b-a12b:free',
         'arcee-ai/trinity-large-thinking:free',
     ]
+
+    model_limits = fetch_model_limits(model_chain, Path(__file__).parent)
+    min_context = min(model_limits.values())
+    budget_tokens = int(min_context * 0.85)
+
+    recon_tasks = build_recon_tasks(snippets, repo_path=str(repo))
+    _ = build_context_packs(
+        snippets,
+        recon_tasks=recon_tasks,
+        allow_full_db_fallback=allow_full_db_fallback,
+        budget_tokens=budget_tokens,
+    )
     hunt_models, validate_models = split_model_pools(model_chain)
 
     # --- Simulated multi-hunter output (two runs) for voting demonstration ---

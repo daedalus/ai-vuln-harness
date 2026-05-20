@@ -7,7 +7,7 @@ def build_context_packs(
     snippets: list[dict],
     recon_tasks: list[dict] | None,
     allow_full_db_fallback: bool = False,
-    budget_tokens: int = 180_000,
+    budget_tokens: int = 128_000,
 ) -> list[dict]:
     if (not recon_tasks) and (not allow_full_db_fallback):
         raise ValueError('Recon output is required. Set allow_full_db_fallback=True to bypass explicitly.')

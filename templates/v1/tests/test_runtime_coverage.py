@@ -5,13 +5,16 @@ state DB, and remaining uncovered code paths.
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from stages.runtime import (
     JsonCache,
     StateDB,
     cache_key,
+    fetch_model_limits,
     load_auth_config,
     split_model_pools,
 )
@@ -193,6 +196,106 @@ class StateDBTests(unittest.TestCase):
         db2 = StateDB(self.path)
         self.assertEqual(db2.get_meta('key'), 'val')
         db2.close()
+
+
+class FetchModelLimitsTests(unittest.TestCase):
+    def _models_dev(self, tmp: str) -> Path:
+        p = Path(tmp) / 'config'
+        p.mkdir(parents=True, exist_ok=True)
+        return p / 'models.dev'
+
+    def test_uses_models_dev_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dev = self._models_dev(tmp)
+            models_dev.write_text(json.dumps({
+                'fake-model-v1:free': {
+                    'context_window': 65536,
+                    'max_output_tokens': 65536,
+                    'last_updated': time.time(),
+                },
+            }))
+            result = fetch_model_limits(
+                ['fake-model-v1:free'],
+                Path(tmp),
+            )
+            self.assertEqual(result, {'fake-model-v1:free': 65536})
+
+    def test_fallback_to_128k_on_empty_cache_and_no_network(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = fetch_model_limits(
+                ['non-existent-model-xyz'],
+                Path(tmp),
+            )
+            self.assertEqual(result.get('non-existent-model-xyz'), 128_000)
+
+    def test_creates_models_dev_after_live_fetch(self):
+        mock_response = {
+            'data': [
+                {'id': 'deepseek/deepseek-v4-flash:free', 'context_length': 131072},
+            ],
+        }
+
+        class FakeResponse:
+            def read(self):
+                return json.dumps(mock_response).encode()
+            def __exit__(self, *a):
+                pass
+            def __enter__(self):
+                return self
+            def __init__(self):
+                self.status = 200
+
+        with patch('stages.runtime.urllib.request.urlopen', return_value=FakeResponse()):
+            with tempfile.TemporaryDirectory() as tmp:
+                result = fetch_model_limits(
+                    ['deepseek/deepseek-v4-flash:free'],
+                    Path(tmp),
+                )
+                dev_path = Path(tmp) / 'config/models.dev'
+                self.assertTrue(dev_path.exists())
+                cache = json.loads(dev_path.read_text())
+                for m, cw in result.items():
+                    self.assertIn(m, cache)
+                    self.assertEqual(cache[m]['context_window'], cw)
+
+    def test_multiple_models(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dev = self._models_dev(tmp)
+            models_dev.write_text(json.dumps({
+                'model-a:free': {
+                    'context_window': 32768,
+                    'max_output_tokens': 32768,
+                    'last_updated': time.time(),
+                },
+                'model-b:free': {
+                    'context_window': 65536,
+                    'max_output_tokens': 65536,
+                    'last_updated': time.time(),
+                },
+            }))
+            result = fetch_model_limits(
+                ['model-a:free', 'model-b:free'],
+                Path(tmp),
+            )
+            self.assertEqual(result['model-a:free'], 32768)
+            self.assertEqual(result['model-b:free'], 65536)
+
+    def test_stale_cache_falls_back_when_no_network(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dev = self._models_dev(tmp)
+            stale_ts = time.time() - 86400 * 8
+            models_dev.write_text(json.dumps({
+                'stale-model:free': {
+                    'context_window': 999,
+                    'max_output_tokens': 999,
+                    'last_updated': stale_ts,
+                },
+            }))
+            result = fetch_model_limits(
+                ['stale-model:free'],
+                Path(tmp),
+            )
+            self.assertEqual(result.get('stale-model:free'), 999)
 
 
 if __name__ == '__main__':

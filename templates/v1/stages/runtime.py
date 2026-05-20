@@ -5,6 +5,9 @@ import json
 import math
 import os
 import sqlite3
+import ssl
+import time
+import urllib.request
 from collections import Counter
 from pathlib import Path
 
@@ -97,6 +100,98 @@ def load_auth_config(
             keys[provider] = env_val
 
     return keys
+
+
+# ---------------------------------------------------------------------------
+# Model limits from /v1/models or models.dev cache
+# ---------------------------------------------------------------------------
+
+_MODELS_DEV_PATH = 'config/models.dev'
+
+_BASE_URLS = {
+    'openrouter': 'https://openrouter.ai/api/v1',
+    'groq': 'https://api.groq.com/openai/v1',
+    'cerebras': 'https://api.cerebras.ai/v1',
+    'google': 'https://generativelanguage.googleapis.com/v1beta/openai',
+    'zen': 'https://opencode.ai/zen/v1',
+}
+
+
+_KNOWN_PROVIDERS = frozenset({'openrouter', 'groq', 'cerebras', 'google', 'zen'})
+
+
+def _resolve_provider(model_id: str) -> str:
+    prov, _, _ = model_id.partition(':')
+    return prov if prov in _KNOWN_PROVIDERS else 'openrouter'
+
+
+def _strip_provider(model_id: str) -> str:
+    prov, sep, rest = model_id.partition(':')
+    return rest if prov in _KNOWN_PROVIDERS and sep else model_id
+
+
+def fetch_model_limits(models: list[str], script_dir: Path) -> dict[str, int]:
+    models_dev = script_dir / _MODELS_DEV_PATH
+
+    if models_dev.exists():
+        cache = json.loads(models_dev.read_text())
+        now = time.time()
+        good = {k: v for k, v in cache.items()
+                if now - v.get('last_updated', 0) < 86400 * 7}
+        if all(m in good for m in models if m):
+            return {m: good[m]['context_window'] for m in models if m}
+    else:
+        cache = {}
+        models_dev.parent.mkdir(parents=True, exist_ok=True)
+
+    limits: dict[str, int] = {}
+    updated: dict[str, float] = {}
+    ctx = ssl.create_default_context()
+    per_provider: dict[str, list[str]] = {}
+    for m in models:
+        if m:
+            per_provider.setdefault(_resolve_provider(m), []).append(m)
+
+    for provider, provider_models in per_provider.items():
+        base = _BASE_URLS.get(provider)
+        if not base:
+            continue
+        try:
+            req = urllib.request.Request(f'{base}/models')
+            resp = urllib.request.urlopen(req, context=ctx, timeout=15)
+            data = json.loads(resp.read().decode())
+            for entry in data.get('data', []):
+                eid = entry.get('id', '')
+                ctx_win = entry.get('context_length') or entry.get('context_window') or 0
+                bare = _strip_provider(eid)
+                if bare in provider_models and ctx_win:
+                    limits[bare] = int(ctx_win)
+                    updated[bare] = time.time()
+        except (urllib.error.URLError, OSError, json.JSONDecodeError):
+            pass
+
+    if limits:
+        cache.update({
+            mid: {
+                'context_window': cw,
+                'max_output_tokens': cw,
+                'last_updated': updated.get(mid, time.time()),
+            }
+            for mid, cw in limits.items()
+        })
+        models_dev.write_text(json.dumps(cache, indent=2))
+
+    fallback = {m: limits[m] for m in models if m and m in limits}
+    missing = [m for m in models if m and m not in fallback]
+    if missing and models_dev.exists():
+        cache_data = json.loads(models_dev.read_text())
+        for m in missing:
+            if m in cache_data:
+                fallback[m] = cache_data[m]['context_window']
+
+    if not fallback:
+        fallback = {m: 128_000 for m in models if m}
+    return fallback
 
 
 def cache_key(stage: str, model: str, text: str) -> str:
