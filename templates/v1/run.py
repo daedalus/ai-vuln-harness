@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from stages.diff import get_changed_snippets
 from stages.ingestor import filter_snippets, load_repo_snippets, tag_snippet
 from stages.recon import build_recon_tasks
 from stages.coordinator import build_context_packs
@@ -26,7 +27,9 @@ def run(mode: str, repo: Path, *,
         auth_path: Path | None = None,
         kl_threshold: float = 5.0,
         cosine_threshold: float = 0.85,
-        allow_full_db_fallback: bool = False) -> dict:
+        allow_full_db_fallback: bool = False,
+        base_commit: str | None = None,
+        head_commit: str = 'HEAD') -> dict:
     cfg = json.loads((Path(__file__).parent / 'config/defaults.json').read_text())
     state = StateDB(Path(__file__).parent / cfg['state_db'])
     cache = JsonCache(Path(__file__).parent / cfg['cache_file'])
@@ -38,6 +41,15 @@ def run(mode: str, repo: Path, *,
     snippets = filter_snippets(raw_snippets, is_library_target=cfg['is_library_target'])
     for s in snippets:
         s['tags'] = sorted(set(s.get('tags') or []) | set(tag_snippet(s, is_library_target=cfg['is_library_target'])))
+
+    # --- Diff-driven incremental scan (mode='diff' or explicit commits) ---
+    if mode == 'diff' or base_commit is not None:
+        if base_commit is None:
+            raise ValueError("--base-commit is required when mode is 'diff'")
+        snippets = get_changed_snippets(repo, snippets, base_commit, head_commit)
+        state.put_meta('diff_base_commit', base_commit)
+        state.put_meta('diff_head_commit', head_commit)
+        state.put_meta('diff_snippet_count', str(len(snippets)))
 
     model_chain = [
         'deepseek/deepseek-v4-flash:free',
@@ -106,7 +118,7 @@ def run(mode: str, repo: Path, *,
 
 def main() -> None:
     parser = argparse.ArgumentParser(description='AI vuln harness v1 scaffold')
-    parser.add_argument('--mode', choices=['full', 'max-run', 'validate-only', 'resume'], default='full')
+    parser.add_argument('--mode', choices=['full', 'max-run', 'validate-only', 'resume', 'diff'], default='full')
     parser.add_argument('--repo', required=True)
     parser.add_argument('--allow-full-db-fallback', action='store_true')
     parser.add_argument('--auth-json', type=Path, default=None,
@@ -115,13 +127,19 @@ def main() -> None:
                         help='KL-divergence threshold for hallucination detection (default: 5.0)')
     parser.add_argument('--cosine-threshold', type=float, default=0.85,
                         help='Cosine similarity threshold for semantic dedup (default: 0.85)')
+    parser.add_argument('--base-commit', type=str, default=None,
+                        help='Base commit/ref for diff-driven scanning (required with --mode diff)')
+    parser.add_argument('--head-commit', type=str, default='HEAD',
+                        help='Head commit/ref for diff-driven scanning (default: HEAD)')
     args = parser.parse_args()
 
     report = run(args.mode, Path(args.repo),
                  auth_path=args.auth_json,
                  kl_threshold=args.kl_threshold,
                  cosine_threshold=args.cosine_threshold,
-                 allow_full_db_fallback=args.allow_full_db_fallback)
+                 allow_full_db_fallback=args.allow_full_db_fallback,
+                 base_commit=args.base_commit,
+                 head_commit=args.head_commit)
     print(json.dumps(report, indent=2))
 
 

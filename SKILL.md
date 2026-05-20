@@ -28,12 +28,15 @@ Use the executable reference scaffold at:
 
 It includes:
 
-- `run.py` with run modes: `full`, `max-run`, `validate-only`, `resume`, `poc-only`
+- `run.py` with run modes: `full`, `max-run`, `validate-only`, `resume`, `diff`
   - `--auth-json PATH` — override auth.json location (default: script-relative, then `~/.local/share/opencode/auth.json`)
   - `--kl-threshold FLOAT` — KL-divergence cutoff for hallucination detection (default: 5.0)
   - `--cosine-threshold FLOAT` — cosine similarity cutoff for semantic dedup (default: 0.85)
+  - `--base-commit REF` — base commit/ref for diff-driven scanning (required with `--mode diff`)
+  - `--head-commit REF` — head commit/ref for diff-driven scanning (default: `HEAD`)
 - Stage modules under `stages/` with reliability and policy defaults
   - `stages/poc.py` — auto-generates C PoCs, compiles, runs under AddressSanitizer, and produces verdicts
+  - `stages/diff.py` — incremental / diff-driven scanning: re-scans only functions whose line ranges overlap with `git diff BASE HEAD`
 - Prompt templates under `prompts/`
 - Required JSON schemas under `schemas/`
   - `schemas/poc-schema.json` — schema for reproducible PoC JSON output
