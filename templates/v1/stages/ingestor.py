@@ -4,7 +4,6 @@ import hashlib
 import re
 from collections import defaultdict
 from pathlib import Path, PurePosixPath
-import re
 
 DEFAULT_EXCLUDE_DIRS = {'test', 'tests', 'examples', 'example', 'contrib'}
 _INPUT_SYSCALLS = ('read(', 'recv(', 'recvfrom(', 'fgets(', 'fread(', 'accept(', 'getenv(', 'request.', 'http', 'socket')
