@@ -36,62 +36,78 @@ from stages.ingestor import tag_snippet, should_exclude_path, detect_external_in
 # ===================================================================
 # 1. JsonCache — crashes on array JSON file                  HIGH
 # ===================================================================
-class JsonCacheArrayCrash(unittest.TestCase):
-    def test_cache_file_with_array_crashes_on_get(self):
+class JsonCacheArrayCrashFixed(unittest.TestCase):
+    def test_cache_file_with_array_returns_none(self):
         d = tempfile.mkdtemp()
         path = Path(d) / 'cache.json'
         path.write_text('[]')
-        cache = JsonCache(path)          # init succeeds (silently stores a list)
-        with self.assertRaises(AttributeError):
-            cache.get('anything')        # AttributeError: 'list' object has no attribute 'get'
+        cache = JsonCache(path)
+        self.assertIsNone(cache.get('anything'),
+                          'FIXED: array cache file returns None instead of crashing')
 
 
 # ===================================================================
 # 2. is_api_by_design — false positive on innocent names     MEDIUM
 # ===================================================================
-class IsApiByDesignFalsePositives(unittest.TestCase):
-    def test_write_secret_flagged_as_api_by_design(self):
+class IsApiByDesignFixedFalsePositives(unittest.TestCase):
+    def test_write_secret_no_longer_api_by_design(self):
         finding = {'class': 'overflow', 'desc': 'buffer overflow in write_secret'}
         snippet = {'name': 'write_secret', 'content': 'int write_secret() { ... }'}
-        self.assertTrue(is_api_by_design(finding, snippet))
+        self.assertFalse(is_api_by_design(finding, snippet),
+                         'FIXED: write_secret is not a standard API name')
 
-    def test_execute_payload_flagged_as_api_by_design(self):
+    def test_execute_payload_no_longer_api_by_design(self):
         finding = {'class': 'overflow', 'desc': 'overflow in execute_payload'}
         snippet = {'name': 'execute_payload', 'content': 'void execute_payload() { ... }'}
-        self.assertTrue(is_api_by_design(finding, snippet))
+        self.assertFalse(is_api_by_design(finding, snippet),
+                         'FIXED: execute_payload is not a standard API name')
 
-    def test_read_etc_passwd_flagged_as_api_by_design(self):
+    def test_read_etc_passwd_no_longer_api_by_design(self):
         finding = {'class': 'overflow', 'desc': 'overflow in read_etc_passwd'}
         snippet = {'name': 'read_etc_passwd', 'content': 'void read_etc_passwd() { ... }'}
-        self.assertTrue(is_api_by_design(finding, snippet))
+        self.assertFalse(is_api_by_design(finding, snippet),
+                         'FIXED: read_etc_passwd is not a standard API name')
 
-    def test_read_config_flagged_as_api(self):
+    def test_read_config_no_longer_api(self):
         finding = {'class': 'path-traversal', 'desc': 'read config file'}
         snippet = {'name': 'read_config', 'content': 'int read_config() { ... }'}
-        self.assertTrue(is_api_by_design(finding, snippet))
+        self.assertFalse(is_api_by_design(finding, snippet),
+                         'FIXED: read_config is not a standard API name')
+
+    def test_exact_printf_still_api_by_design(self):
+        finding = {'class': 'format-string', 'desc': 'format string in printf'}
+        snippet = {'name': 'printf', 'content': 'int printf(const char *fmt, ...) { ... }'}
+        self.assertTrue(is_api_by_design(finding, snippet),
+                        'printf is still correctly API-by-design')
+
+    def test_exact_write_still_api_by_design(self):
+        finding = {'class': 'overflow', 'desc': 'buffer overflow in write'}
+        snippet = {'name': 'write', 'content': 'ssize_t write(int fd, ...) { ... }'}
+        self.assertTrue(is_api_by_design(finding, snippet),
+                        'write is still correctly API-by-design')
 
 
 # ===================================================================
 # 3. SuppressionRegistry._key — delimiter collision          LOW
 # ===================================================================
-class SuppressionKeyCollision(unittest.TestCase):
+class SuppressionKeyCollisionFixed(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.path = Path(self.tmp) / 'suppressions.json'
 
-    def test_delimiter_collision_masks_distinct_suppressions(self):
+    def test_delimiter_no_longer_collides(self):
         reg = SuppressionRegistry(self.path)
         reg.add({'snippet_id': 'a::', 'class': 'b', 'validate_reason': 'fp1'})
         reg.add({'snippet_id': 'a', 'class': '::b', 'validate_reason': 'fp2'})
-        # Both produce key "a::::b" — second overwrites first
-        self.assertEqual(len(reg), 1, "collision: distinct pairs map to same key")
+        self.assertEqual(len(reg), 2,
+                         'FIXED: distinct (snippet_id, class) pairs no longer collide')
 
 
 # ===================================================================
 # 4. parse_findings — deeply nested objects not reached     MEDIUM
 # ===================================================================
-class ParseFindingsDeeplyNested(unittest.TestCase):
-    def test_finding_inside_nested_object_not_extracted(self):
+class ParseFindingsDeeplyNestedFixed(unittest.TestCase):
+    def test_finding_inside_nested_object_now_extracted(self):
         text = json.dumps({
             'outer': {
                 'inner': {
@@ -101,18 +117,18 @@ class ParseFindingsDeeplyNested(unittest.TestCase):
             }
         })
         f, g = parse_findings(text)
-        self.assertEqual(len(f), 0)  # nested finding is invisible
+        self.assertEqual(len(f), 1,
+                         'FIXED: nested findings are now extracted recursively')
 
 
 # ===================================================================
 # 5. split_model_pools — duplicate models in input          LOW
 # ===================================================================
-class SplitModelPoolsDuplicates(unittest.TestCase):
-    def test_duplicate_models_produce_duplicate_hunt_pool(self):
+class SplitModelPoolsDuplicatesFixed(unittest.TestCase):
+    def test_duplicate_models_deduplicated(self):
         hunt, validate = split_model_pools(['deepseek', 'deepseek', 'qwen'])
-        # 'deepseek' appears twice in hunt
-        self.assertEqual(hunt.count('deepseek'), 2)
-        # This is a performance bug — the same model will be called twice
+        self.assertEqual(hunt.count('deepseek'), 1,
+                         'FIXED: duplicate models are deduplicated')
 
 
 # ===================================================================
@@ -185,11 +201,12 @@ class HallucinationDescRatio(unittest.TestCase):
 # 11. is_api_by_design — 'xss' in class falsely matches     MEDIUM
 #     due to overly broad patterns
 # ===================================================================
-class IsApiByDesignBroadMatch(unittest.TestCase):
-    def test_function_containing_exec_false_positive(self):
+class IsApiByDesignBroadMatchFixed(unittest.TestCase):
+    def test_execute_query_no_longer_false_positive(self):
         finding = {'class': 'xss', 'desc': 'xss in execute_query'}
         snippet = {'name': 'execute_query', 'content': 'def execute_query(sql): pass'}
-        self.assertTrue(is_api_by_design(finding, snippet))
+        self.assertFalse(is_api_by_design(finding, snippet),
+                         'FIXED: execute_query is not a standard API name')
 
 
 # ===================================================================
@@ -215,30 +232,20 @@ class CrossRunRegressionEmpty(unittest.TestCase):
 # ===================================================================
 # 13. detect_hallucination — missing path name edge case    MEDIUM
 # ===================================================================
-class HallucinationPathRatio(unittest.TestCase):
-    def test_lv_4_5_char_identifiers_evade_desc_check(self):
-        """BUG: desc tokens with len == 4 or 5 bypass `len(t) > 5`.
-        'size' (4) and 'error' (5) are meaningful identifiers
-        but aren't checked. Only 6+ char tokens are verified."""
+class HallucinationPathRatioFixed(unittest.TestCase):
+    def test_four_char_desc_tokens_now_checked(self):
         snippet = {'content': 'int x = 0;'}
-        # desc has NO tokens >= 6 chars — all are 4 or 5
         finding = {'desc': 'size error bug data state', 'call_path': []}
         detected, _ = detect_hallucination(finding, snippet)
-        # With no 6+ char desc tokens, the desc check is completely skipped
-        self.assertFalse(detected,
-            "BUG: 'size'/'error' not in snippet but not flagged (4-5 chars excluded)")
+        self.assertTrue(detected,
+            'FIXED: 4-5 char desc tokens like "size" now trigger desc check')
 
-    def test_short_call_path_names_evade_path_check(self):
-        """BUG: call_path names <= 3 chars bypass hallucination check.
-        With no 6+ char desc tokens (to avoid triggering desc check first),
-        short call_path names like 'len' (3) and 'bar' (3) escape detection
-        because `len(name) > 3` is False."""
+    def test_three_char_call_path_names_now_checked(self):
         snippet = {'content': 'void foo() { int x; }'}
-        # desc has NO tokens >= 6 chars — forces check to call_path
         finding = {'desc': 'bug in code', 'call_path': ['len', 'bar']}
         detected, reason = detect_hallucination(finding, snippet)
-        self.assertFalse(detected,
-            "BUG: 'len'/'bar' not in snippet but not flagged (>3 exclusive excludes 3)")
+        self.assertTrue(detected,
+            'FIXED: 3-char call_path names like "len"/"bar" now trigger path check')
 
 
 # ===================================================================
@@ -254,11 +261,12 @@ class StandardizeFindingMissingSnippetId(unittest.TestCase):
 # 15. _contains_vuln_signal — non-zero exit code triggers   LOW
 #     even for benign exits
 # ===================================================================
-class ContainsVulnSignalEdge(unittest.TestCase):
-    def test_exit_code_1_is_always_vuln(self):
-        self.assertTrue(_contains_vuln_signal("all good", 1))
+class ContainsVulnSignalEdgeFixed(unittest.TestCase):
+    def test_exit_code_1_no_longer_vuln(self):
+        self.assertFalse(_contains_vuln_signal("all good", 1),
+                         'FIXED: exit code 1 is not a signal')
 
-    def test_exit_code_neg_one_is_vuln(self):
+    def test_exit_code_neg_one_still_vuln(self):
         self.assertTrue(_contains_vuln_signal("", -1))
 
 
@@ -323,14 +331,14 @@ class BucketFindingEdge(unittest.TestCase):
 # ===================================================================
 class GitScanLimit(unittest.TestCase):
     @patch('stages.recon.subprocess.run')
-    def test_phase1_only_checks_500_commits(self, mock_run):
+    def test_phase1_checks_2000_commits(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="")
         _scan_git_security_patches('/repo')
         call_args = mock_run.call_args[0][0]
-        self.assertIn('--max-count=500', call_args)
+        self.assertIn('--max-count=2000', call_args)
 
     @patch('stages.recon.subprocess.run')
-    def test_security_commit_beyond_500_missed(self, mock_run):
+    def test_security_commit_beyond_window_missed(self, mock_run):
         security_commits = "\n".join(f"abc{i} feat: commit {i}" for i in range(500))
         # No security pattern in first 500
         mock_run.return_value = MagicMock(returncode=0, stdout=security_commits)

@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 def split_model_pools(models: list[str]) -> tuple[list[str], list[str]]:
+    models = list(dict.fromkeys(models))
     hunt_preferred = [m for m in models if any(k in m for k in ('deepseek', 'qwen', 'gemma'))]
     validate_preferred = [m for m in models if any(k in m for k in ('nemotron', 'trinity', 'z-ai'))]
 
@@ -108,7 +109,8 @@ class JsonCache:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self.path.exists():
-            self.data = json.loads(self.path.read_text() or '{}')
+            raw = json.loads(self.path.read_text() or '{}')
+            self.data = raw if isinstance(raw, dict) else {}
         else:
             self.data = {}
 

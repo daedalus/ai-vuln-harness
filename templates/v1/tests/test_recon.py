@@ -116,6 +116,23 @@ class BuildReconTasksTests(unittest.TestCase):
 
 class GitSecurityPatchScanTests(unittest.TestCase):
     @patch('stages.recon.subprocess.run')
+    def test_phase2_oerror_returns_empty(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="abc123 fix overflow\n"),
+            FileNotFoundError(),
+        ]
+        result = _scan_git_security_patches('/fake/repo')
+        self.assertEqual(result, set())
+
+    @patch('stages.recon.subprocess.run')
+    def test_phase2_nonzero_return_empty(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="abc123 fix overflow\n"),
+            MagicMock(returncode=128, stdout="fatal\n"),
+        ]
+        result = _scan_git_security_patches('/fake/repo')
+        self.assertEqual(result, set())
+    @patch('stages.recon.subprocess.run')
     def test_no_security_commits_returns_empty(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="abc123 feat: add widget\n")
         result = _scan_git_security_patches('/fake/repo')

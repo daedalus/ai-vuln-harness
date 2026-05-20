@@ -35,7 +35,7 @@ _COMMIT_LINE_PREFIX = '---COMMIT---'
 def _scan_git_security_patches(repo_path: str | Path) -> set[str]:
     try:
         check = subprocess.run(
-            ['git', '-C', str(repo_path), 'log', '--all', '--oneline', '--max-count=500'],
+            ['git', '-C', str(repo_path), 'log', '--all', '--oneline', '--max-count=2000'],
             capture_output=True, text=True, timeout=15,
         )
     except (subprocess.SubprocessError, OSError):

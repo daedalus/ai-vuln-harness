@@ -5,13 +5,13 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-API_BY_DESIGN_PATTERNS = [
-    r'.*printf.*',
-    r'.*write.*',
-    r'.*read.*',
-    r'.*open.*',
-    r'.*execute.*',
-]
+_API_BY_DESIGN_NAMES = frozenset({
+    'printf', 'fprintf', 'dprintf', 'sprintf', 'snprintf',
+    'vprintf', 'vfprintf', 'vsprintf', 'vsnprintf', 'gzprintf',
+    'write', 'read', 'open', 'pread', 'pwrite',
+    'readv', 'writev', 'send', 'recv',
+    'accept', 'execute',
+})
 
 
 def build_validate_prompt(finding: dict, snippet: dict) -> str:
@@ -41,7 +41,7 @@ def is_api_by_design(finding: dict, snippet: dict) -> bool:
         return True
     if 'by design' in desc:
         return True
-    return any(re.match(p, name) for p in API_BY_DESIGN_PATTERNS)
+    return name in _API_BY_DESIGN_NAMES
 
 
 def requires_trace_before_fix_now(is_library_target: bool, trace_confirmed: bool) -> bool:
@@ -87,7 +87,7 @@ def _compiler_for(snippet: dict) -> str:
 
 def _contains_vuln_signal(run_output: str, exit_code: int) -> bool:
     text = run_output.lower()
-    if exit_code != 0:
+    if exit_code < 0:
         return True
     return any(marker in text for marker in _VULN_MARKERS)
 

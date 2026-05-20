@@ -35,7 +35,7 @@ class SuppressionRegistry:
 
     @staticmethod
     def _key(finding: dict) -> str:
-        return f"{finding.get('snippet_id', '')}::{finding.get('class', '')}"
+        return json.dumps([str(finding.get('snippet_id', '')), str(finding.get('class', ''))])
 
     def add(self, finding: dict, reason: str = '') -> None:
         """Mark *finding* as a known false positive."""

@@ -170,14 +170,14 @@ class ShieldHallucinationBoundaryTests(unittest.TestCase):
 
     def test_exactly_70_percent_path_names_missing(self):
         snippet = {'content': 'void aaa_111() { }'}
-        finding = {'desc': 'desc', 'call_path': ['aaa_111', 'xxx_yyy', 'zzz_www', 'vvv_uuu', 'ttt_sss']}
+        finding = {'desc': '', 'call_path': ['aaa_111', 'xxx_yyy', 'zzz_www', 'vvv_uuu', 'ttt_sss']}
         detected, reason = detect_hallucination(finding, snippet)
         self.assertTrue(detected)
         self.assertIn('call_path', reason)
 
     def test_call_path_names_mostly_present(self):
         snippet = {'content': 'void aaa_111() { bbb_222(); ccc_333(); }'}
-        finding = {'desc': 'desc', 'call_path': ['aaa_111', 'bbb_222', 'ccc_333', 'extra_func']}
+        finding = {'desc': '', 'call_path': ['aaa_111', 'bbb_222', 'ccc_333', 'extra_func']}
         detected, reason = detect_hallucination(finding, snippet)
         self.assertFalse(detected)
 
@@ -190,7 +190,7 @@ class ShieldHallucinationBoundaryTests(unittest.TestCase):
 
     def test_hallucinated_with_callers_callees_matching(self):
         snippet = {'content': 'void sink_func() { }', 'callers': ['main']}
-        finding = {'desc': 'main calls sink_func which overflows', 'call_path': ['main', 'sink_func']}
+        finding = {'desc': '', 'call_path': ['main', 'sink_func']}
         detected, reason = detect_hallucination(finding, snippet)
         self.assertFalse(detected)
 
@@ -350,7 +350,7 @@ class RuntimeSplitModelPoolsEdgeTests(unittest.TestCase):
 
     def test_duplicate_model_names(self):
         hunt, validate = split_model_pools(['deepseek', 'deepseek', 'gpt-4'])
-        self.assertEqual(len(hunt), 2)
+        self.assertEqual(len(hunt), 1, 'duplicates are deduplicated')
         self.assertEqual(len(validate), 1)
 
     def test_model_with_substring_match_caught(self):
@@ -427,6 +427,11 @@ class ParserCoercionPathTests(unittest.TestCase):
         text = '[{"snippet_id": "deep", "class": "x", "severity": "HIGH", "desc": "d", "status": "raw", "poc_confirmed": false, "extra": {"nested": "data"}}]'
         f, g = parse_findings(text)
         self.assertGreaterEqual(len(f), 1)
+
+    def test_finding_nested_inside_list_inside_dict(self):
+        text = _json.dumps({"metadata": "scan", "results": [{"snippet_id": "s2", "class": "overflow", "severity": "HIGH", "desc": "d", "status": "raw", "poc_confirmed": False}]})
+        f, g = parse_findings(text)
+        self.assertEqual(len(f), 1)
 
     def test_finding_with_done_and_snippet(self):
         text = '{"snippet_id": "s1", "class": "x", "severity": "HIGH", "desc": "d", "status": "raw", "poc_confirmed": false, "done": true}'

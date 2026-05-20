@@ -182,7 +182,7 @@ def detect_hallucination(finding: dict, snippet: dict) -> tuple[bool, str]:
 
     # --- desc token check ---
     desc = str(finding.get('desc') or '')
-    desc_tokens = {t for t in _tokenise(desc) if len(t) > 5}
+    desc_tokens = {t for t in _tokenise(desc) if len(t) > 3}
     missing_desc = desc_tokens - content_tokens
     # Allow up to 30% of desc tokens to be absent (LLMs paraphrase)
     if desc_tokens and len(missing_desc) / len(desc_tokens) > 0.60:
@@ -191,10 +191,10 @@ def detect_hallucination(finding: dict, snippet: dict) -> tuple[bool, str]:
     # --- call_path check ---
     missing_path = []
     for name in _call_path_names(finding):
-        if len(name) > 3 and name not in content_tokens:
+        if len(name) >= 3 and name not in content_tokens:
             missing_path.append(name)
     # Flag only if *most* call path names are absent
-    path_names = [n for n in _call_path_names(finding) if len(n) > 3]
+    path_names = [n for n in _call_path_names(finding) if len(n) >= 3]
     if path_names and len(missing_path) / len(path_names) > 0.70:
         return True, f'call_path names not in snippet: {missing_path[:5]}'
 

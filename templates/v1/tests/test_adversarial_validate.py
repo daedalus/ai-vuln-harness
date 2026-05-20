@@ -98,8 +98,13 @@ class ValidateVulnSignalTests(unittest.TestCase):
     def test_exit_code_zero_no_markers(self):
         self.assertFalse(_contains_vuln_signal('normal output', 0))
 
-    def test_exit_code_nonzero_is_vuln(self):
-        self.assertTrue(_contains_vuln_signal('clean output', 1))
+    def test_exit_code_nonzero_is_not_vuln_by_itself(self):
+        self.assertFalse(_contains_vuln_signal('clean output', 1),
+                         'exit code 1 is not a vulnerability signal')
+
+    def test_exit_code_signal_negative_is_vuln(self):
+        self.assertTrue(_contains_vuln_signal('segfault', -11),
+                        'negative exit code indicates signal termination')
 
     def test_address_sanitizer_found(self):
         self.assertTrue(_contains_vuln_signal('SUMMARY: AddressSanitizer: heap-buffer-overflow', 0))

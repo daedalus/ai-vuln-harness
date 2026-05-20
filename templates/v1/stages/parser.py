@@ -98,8 +98,17 @@ def _classify_item(item: dict, findings: list[dict], gaps: list[dict]) -> None:
         return
     if 'coverage_gap' in item:
         gaps.append(item)
-    elif 'snippet_id' in item:
+        return
+    if 'snippet_id' in item:
         findings.append(item)
+        return
+    for v in item.values():
+        if isinstance(v, dict):
+            _classify_item(v, findings, gaps)
+        elif isinstance(v, list):
+            for x in v:
+                if isinstance(x, dict):
+                    _classify_item(x, findings, gaps)
 
 
 def _sentinel_gap(domain: str, reason: str) -> dict:
