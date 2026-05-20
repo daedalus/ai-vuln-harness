@@ -1,15 +1,22 @@
 """Tests for stages/shield.py — call-path verification, static reachability,
-and hallucination detection."""
+hallucination detection (token-overlap + KL-divergence), and semantic
+deduplication (cosine similarity)."""
 
+import math
 import unittest
 
 from stages.shield import (
-    build_call_graph,
-    verify_call_path,
     annotate_call_path_verification,
-    filter_unreachable,
-    detect_hallucination,
     annotate_hallucination,
+    annotate_hallucination_kl,
+    build_call_graph,
+    cosine_similarity,
+    deduplicate_semantic,
+    detect_hallucination,
+    detect_hallucination_kl,
+    filter_unreachable,
+    kl_divergence,
+    verify_call_path,
 )
 
 
@@ -167,6 +174,144 @@ class AnnotateHallucinationTests(unittest.TestCase):
         self.assertIn('hallucination_detected', result[1])
         # Missing snippet → no-snippet-content → not hallucinated
         self.assertFalse(result[1]['hallucination_detected'])
+
+
+# ---------------------------------------------------------------------------
+# KL-divergence hallucination detection tests
+# ---------------------------------------------------------------------------
+
+class KlDivergenceTests(unittest.TestCase):
+    def test_identical_distributions_zero(self):
+        p = {'a': 0.5, 'b': 0.5}
+        q = {'a': 0.5, 'b': 0.5}
+        self.assertAlmostEqual(kl_divergence(p, q), 0.0, places=6)
+
+    def test_different_distributions_positive(self):
+        p = {'a': 0.9, 'b': 0.1}
+        q = {'a': 0.5, 'b': 0.5}
+        self.assertGreater(kl_divergence(p, q), 0.0)
+
+    def test_missing_token_large_but_finite(self):
+        p = {'a': 0.5, 'b': 0.5}
+        q = {'a': 1.0}
+        kl = kl_divergence(p, q)
+        self.assertGreater(kl, 5.0)
+        self.assertNotEqual(kl, math.inf)
+
+
+class DetectHallucinationKlTests(unittest.TestCase):
+    def test_ok_when_no_content(self):
+        finding = {'desc': 'buffer overflow in foo_func', 'call_path': ['foo_func']}
+        detected, reason = detect_hallucination_kl(finding, {})
+        self.assertFalse(detected)
+        self.assertEqual(reason, 'no-snippet-content')
+
+    def test_ok_when_no_desc(self):
+        snippet = {'content': 'void foo() { int x = 1; }'}
+        detected, reason = detect_hallucination_kl({'desc': ''}, snippet)
+        self.assertFalse(detected)
+        self.assertEqual(reason, 'no-desc')
+
+    def test_matching_desc_low_kl(self):
+        snippet = {'content': 'void foo_func() { char buffer[10]; overflow_here(); }'}
+        finding = {'desc': 'foo_func buffer overflow_here via', 'call_path': []}
+        detected, reason = detect_hallucination_kl(finding, snippet, threshold=5.0)
+        self.assertFalse(detected)
+        self.assertIn('KL=', reason)
+
+    def test_hallucinated_desc_high_kl(self):
+        snippet = {'content': 'void x() { int y = 1; }'}
+        finding = {
+            'desc': 'allocate_memory_buffer causes heap_overflow through pointer_arithmetic_underflow',
+            'call_path': [],
+        }
+        detected, reason = detect_hallucination_kl(finding, snippet, threshold=5.0)
+        self.assertTrue(detected)
+        self.assertIn('KL=', reason)
+
+    def test_empty_desc_tokens(self):
+        snippet = {'content': 'void foo() { int x = 1; }'}
+        detected, reason = detect_hallucination_kl({'desc': 'a b c d'}, snippet)
+        self.assertFalse(detected)
+        self.assertEqual(reason, 'no-desc-tokens')
+
+    def test_only_desc_tokens_no_code_tokens(self):
+        snippet = {'content': 'int main() { return 0; }'}
+        finding = {'desc': 'heap_overflow_condition triggers double_free_vulnerability', 'call_path': []}
+        detected, reason = detect_hallucination_kl(finding, snippet, threshold=5.0)
+        self.assertTrue(detected)
+
+
+class AnnotateHallucinationKlTests(unittest.TestCase):
+    def test_annotations_added(self):
+        snippet_db = {'sid1': {'content': 'void foo_func() { memcpy(dst, src, len); }'}}
+        findings = [
+            {'snippet_id': 'sid1', 'desc': 'foo_func memcpy overflow', 'call_path': ['foo_func']},
+            {'snippet_id': 'sid_missing', 'desc': 'some desc', 'call_path': []},
+        ]
+        result = annotate_hallucination_kl(findings, snippet_db)
+        self.assertIn('hallucination_kl_detected', result[0])
+        self.assertIn('hallucination_kl_detected', result[1])
+        self.assertIn('hallucination_kl_reason', result[0])
+        self.assertIn('hallucination_kl', result[0])
+
+
+# ---------------------------------------------------------------------------
+# Cosine similarity semantic deduplication tests
+# ---------------------------------------------------------------------------
+
+class CosineSimilarityTests(unittest.TestCase):
+    def test_identical_vectors(self):
+        a = [1.0, 0.0, 0.0]
+        self.assertAlmostEqual(cosine_similarity(a, a), 1.0)
+
+    def test_orthogonal_vectors(self):
+        a = [1.0, 0.0]
+        b = [0.0, 1.0]
+        self.assertAlmostEqual(cosine_similarity(a, b), 0.0)
+
+    def test_angle_45(self):
+        a = [1.0, 0.0]
+        b = [1.0, 1.0]
+        expected = 1.0 / math.sqrt(2)
+        self.assertAlmostEqual(cosine_similarity(a, b), expected)
+
+    def test_length_mismatch_raises(self):
+        with self.assertRaises(ValueError):
+            cosine_similarity([1.0], [1.0, 2.0])
+
+
+class DeduplicateSemanticTests(unittest.TestCase):
+    def test_empty_findings(self):
+        self.assertEqual(deduplicate_semantic([]), [])
+
+    def test_similar_descriptions_collapsed(self):
+        findings = [
+            {'snippet_id': 'a', 'desc': 'heap buffer overflow in parse_url via large input', 'severity': 'HIGH'},
+            {'snippet_id': 'b', 'desc': 'heap buffer overflow in parse_url via oversized input', 'severity': 'MEDIUM'},
+        ]
+        result = deduplicate_semantic(findings, threshold=0.5)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['severity'], 'HIGH')
+
+    def test_dissimilar_descriptions_kept_separate(self):
+        findings = [
+            {'snippet_id': 'a', 'desc': 'heap buffer overflow in parse_url', 'severity': 'HIGH'},
+            {'snippet_id': 'b', 'desc': 'format string vulnerability in log_message', 'severity': 'CRITICAL'},
+        ]
+        result = deduplicate_semantic(findings, threshold=0.8)
+        self.assertEqual(len(result), 2)
+
+    def test_highest_severity_kept_in_group(self):
+        findings = [
+            {'snippet_id': 'a', 'desc': 'use after free in cleanup handler', 'severity': 'LOW'},
+            {'snippet_id': 'b', 'desc': 'use after free in cleanup_handler', 'severity': 'HIGH'},
+            {'snippet_id': 'c', 'desc': 'use after free in cleanup handler function', 'severity': 'MEDIUM'},
+        ]
+        result = deduplicate_semantic(findings, threshold=0.5)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['severity'], 'HIGH')
+        self.assertEqual(result[0]['snippet_id'], 'b')
 
 
 if __name__ == '__main__':

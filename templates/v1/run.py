@@ -9,7 +9,7 @@ from stages.recon import build_recon_tasks
 from stages.coordinator import build_context_packs
 from stages.parser import parse_findings
 from stages.report import build_report
-from stages.runtime import JsonCache, StateDB, split_model_pools
+from stages.runtime import JsonCache, StateDB, load_auth_config, split_model_pools
 from stages.shield import (
     build_call_graph,
     annotate_call_path_verification,
@@ -41,10 +41,13 @@ def _load_repo_files(repo: Path) -> list[dict]:
     return snippets
 
 
-def run(mode: str, repo: Path, allow_full_db_fallback: bool = False) -> dict:
+def run(mode: str, repo: Path, *, auth_path: Path | None = None, allow_full_db_fallback: bool = False) -> dict:
     cfg = json.loads((Path(__file__).parent / 'config/defaults.json').read_text())
     state = StateDB(Path(__file__).parent / cfg['state_db'])
     cache = JsonCache(Path(__file__).parent / cfg['cache_file'])
+
+    auth = load_auth_config(explicit_path=auth_path, script_dir=Path(__file__).parent)
+    state.put_meta('auth_providers', json.dumps(sorted(auth.keys())))
 
     raw_snippets = _load_repo_files(repo)
     snippets = filter_snippets(raw_snippets, is_library_target=cfg['is_library_target'])
@@ -110,9 +113,13 @@ def main() -> None:
     parser.add_argument('--mode', choices=['full', 'max-run', 'validate-only', 'resume'], default='full')
     parser.add_argument('--repo', required=True)
     parser.add_argument('--allow-full-db-fallback', action='store_true')
+    parser.add_argument('--auth-json', type=Path, default=None,
+                        help='Path to auth.json. Overrides script-relative and global fallback paths.')
     args = parser.parse_args()
 
-    report = run(args.mode, Path(args.repo), allow_full_db_fallback=args.allow_full_db_fallback)
+    report = run(args.mode, Path(args.repo),
+                 auth_path=args.auth_json,
+                 allow_full_db_fallback=args.allow_full_db_fallback)
     print(json.dumps(report, indent=2))
 
 
