@@ -29,6 +29,9 @@ Use the executable reference scaffold at:
 It includes:
 
 - `run.py` with run modes: `full`, `max-run`, `validate-only`, `resume`, `poc-only`
+  - `--auth-json PATH` — override auth.json location (default: script-relative, then `~/.local/share/opencode/auth.json`)
+  - `--kl-threshold FLOAT` — KL-divergence cutoff for hallucination detection (default: 5.0)
+  - `--cosine-threshold FLOAT` — cosine similarity cutoff for semantic dedup (default: 0.85)
 - Stage modules under `stages/` with reliability and policy defaults
   - `stages/poc.py` — auto-generates C PoCs, compiles, runs under AddressSanitizer, and produces verdicts
 - Prompt templates under `prompts/`

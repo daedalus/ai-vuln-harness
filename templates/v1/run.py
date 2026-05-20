@@ -11,10 +11,12 @@ from stages.parser import parse_findings
 from stages.report import build_report
 from stages.runtime import JsonCache, StateDB, load_auth_config, split_model_pools
 from stages.shield import (
-    build_call_graph,
     annotate_call_path_verification,
-    filter_unreachable,
     annotate_hallucination,
+    annotate_hallucination_kl,
+    build_call_graph,
+    deduplicate_semantic,
+    filter_unreachable,
 )
 from stages.voting import merge_hunter_outputs
 from stages.suppressions import SuppressionRegistry
@@ -41,7 +43,11 @@ def _load_repo_files(repo: Path) -> list[dict]:
     return snippets
 
 
-def run(mode: str, repo: Path, *, auth_path: Path | None = None, allow_full_db_fallback: bool = False) -> dict:
+def run(mode: str, repo: Path, *,
+        auth_path: Path | None = None,
+        kl_threshold: float = 5.0,
+        cosine_threshold: float = 0.85,
+        allow_full_db_fallback: bool = False) -> dict:
     cfg = json.loads((Path(__file__).parent / 'config/defaults.json').read_text())
     state = StateDB(Path(__file__).parent / cfg['state_db'])
     cache = JsonCache(Path(__file__).parent / cfg['cache_file'])
@@ -84,6 +90,12 @@ def run(mode: str, repo: Path, *, auth_path: Path | None = None, allow_full_db_f
     # --- Hallucination annotation (improvement ⑧) ---
     promoted = annotate_hallucination(promoted, snippet_db)
 
+    # --- KL-divergence hallucination detection ---
+    promoted = annotate_hallucination_kl(promoted, snippet_db, threshold=kl_threshold)
+
+    # --- Cosine-similarity semantic deduplication ---
+    promoted = deduplicate_semantic(promoted, threshold=cosine_threshold)
+
     # --- Static reachability pre-filter (improvement ⑦) ---
     entry_points = cfg.get('entry_points', [])
     promoted, _unreachable = filter_unreachable(promoted, call_graph, entry_points)
@@ -115,10 +127,16 @@ def main() -> None:
     parser.add_argument('--allow-full-db-fallback', action='store_true')
     parser.add_argument('--auth-json', type=Path, default=None,
                         help='Path to auth.json. Overrides script-relative and global fallback paths.')
+    parser.add_argument('--kl-threshold', type=float, default=5.0,
+                        help='KL-divergence threshold for hallucination detection (default: 5.0)')
+    parser.add_argument('--cosine-threshold', type=float, default=0.85,
+                        help='Cosine similarity threshold for semantic dedup (default: 0.85)')
     args = parser.parse_args()
 
     report = run(args.mode, Path(args.repo),
                  auth_path=args.auth_json,
+                 kl_threshold=args.kl_threshold,
+                 cosine_threshold=args.cosine_threshold,
                  allow_full_db_fallback=args.allow_full_db_fallback)
     print(json.dumps(report, indent=2))
 

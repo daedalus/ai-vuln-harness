@@ -221,7 +221,16 @@ class CrossRunRegression:
     def _load_history(self) -> list[dict]:
         if not self.path.exists():
             return []
-        return [json.loads(line) for line in self.path.read_text().strip().splitlines() if line.strip()]
+        records = []
+        for line in self.path.read_text().strip().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return records
 
     def _append_record(self, record: dict) -> None:
         with open(self.path, 'a') as f:
