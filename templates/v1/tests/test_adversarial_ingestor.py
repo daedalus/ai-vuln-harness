@@ -6,11 +6,15 @@ in external input detection.
 """
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from stages.ingestor import (
     detect_external_input,
     detect_integer_arith_untrusted,
     filter_snippets,
+    load_repo_snippets,
     should_exclude_path,
     tag_snippet,
 )
@@ -153,6 +157,67 @@ class IngestorFilterSnippetsTests(unittest.TestCase):
         snippets = [{'file': None}, {'file': 'src/main.c'}]
         with self.assertRaises(TypeError):
             filter_snippets(snippets)
+
+
+class IngestorCstIntegrationTests(unittest.TestCase):
+    def test_load_repo_snippets_falls_back_to_file_snippet_without_cst(self):
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / 'src').mkdir()
+            path = repo / 'src' / 'main.c'
+            path.write_text('#include <stdio.h>\nvoid main(void) { helper(); }\n')
+
+            snippets = load_repo_snippets(repo)
+
+            self.assertEqual(len(snippets), 1)
+            self.assertEqual(snippets[0]['kind'], 'file')
+            self.assertEqual(snippets[0]['imports'], ['stdio.h'])
+            self.assertIn('helper', snippets[0]['callees'])
+
+    def test_load_repo_snippets_uses_cst_output_when_available(self):
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / 'src').mkdir()
+            path = repo / 'src' / 'main.c'
+            path.write_text('void ignored(void) {}\n')
+            fake_snippets = [
+                {
+                    'id': 'sha256:aaaaaa:bbbbbb',
+                    'file': 'src/main.c',
+                    'language': 'c',
+                    'kind': 'function',
+                    'name': 'entry',
+                    'lines': [1, 3],
+                    'content': 'void entry(void) { helper(); }',
+                    'imports': [],
+                    'callees': ['helper'],
+                    'callers': [],
+                    'tags': ['external-input'],
+                    'token_count': 12,
+                    'continuation': False,
+                },
+                {
+                    'id': 'sha256:cccccc:dddddd',
+                    'file': 'src/main.c',
+                    'language': 'c',
+                    'kind': 'function',
+                    'name': 'helper',
+                    'lines': [5, 7],
+                    'content': 'void helper(void) {}',
+                    'imports': [],
+                    'callees': [],
+                    'callers': [],
+                    'tags': [],
+                    'token_count': 6,
+                    'continuation': False,
+                },
+            ]
+            with patch('stages.ingestor._extract_cst_snippets', return_value=fake_snippets):
+                snippets = load_repo_snippets(repo)
+
+            self.assertEqual([s['name'] for s in snippets], ['entry', 'helper'])
+            helper = next(s for s in snippets if s['name'] == 'helper')
+            self.assertEqual(helper['callers'], ['entry'])
 
 
 if __name__ == '__main__':

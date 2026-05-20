@@ -90,17 +90,16 @@ class CoordinatorMissingFieldTests(unittest.TestCase):
 class CoordinatorDuplicateFileTests(unittest.TestCase):
     """Duplicate file entries across snippets."""
 
-    def test_duplicate_file_uses_last(self):
+    def test_duplicate_file_keeps_all_matching_snippets(self):
         snippets = [
-            {'file': 'a.c', 'token_count': 10},
-            {'file': 'a.c', 'token_count': 999},
+            {'file': 'a.c', 'name': 'first', 'token_count': 10},
+            {'file': 'a.c', 'name': 'second', 'token_count': 999},
         ]
         tasks = [
             {'task_id': 't1', 'domain': 'mem', 'attack_class': 'overflow', 'target_files': ['a.c'], 'rationale': 'r', 'priority': 'high'},
         ]
         packs = build_context_packs(snippets, tasks)
-        by_file = {s['file']: s['token_count'] for s in packs[0]['snippets']}
-        self.assertEqual(by_file.get('a.c'), 999)
+        self.assertEqual([s['name'] for s in packs[0]['snippets']], ['first', 'second'])
 
 
 class CoordinatorOverlappingDomainTests(unittest.TestCase):

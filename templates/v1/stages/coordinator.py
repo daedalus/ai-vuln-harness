@@ -12,7 +12,11 @@ def build_context_packs(
     if (not recon_tasks) and (not allow_full_db_fallback):
         raise ValueError('Recon output is required. Set allow_full_db_fallback=True to bypass explicitly.')
 
-    by_file = {s.get('file'): s for s in snippets}
+    by_file: dict[str, list[dict]] = defaultdict(list)
+    for snippet in snippets:
+        file = snippet.get('file')
+        if file:
+            by_file[file].append(snippet)
 
     if not recon_tasks and allow_full_db_fallback:
         recon_tasks = [
@@ -20,7 +24,7 @@ def build_context_packs(
                 'task_id': 'fallback-all',
                 'domain': 'all',
                 'attack_class': 'all',
-                'target_files': list(by_file.keys()),
+                'target_files': sorted(by_file.keys()),
                 'rationale': 'explicit full-db fallback',
                 'priority': 'low',
             }
@@ -29,8 +33,7 @@ def build_context_packs(
     domain_snippets: dict[str, list[dict]] = defaultdict(list)
     for task in recon_tasks or []:
         for f in task.get('target_files', []):
-            if f in by_file:
-                domain_snippets[task['domain']].append(by_file[f])
+            domain_snippets[task['domain']].extend(by_file.get(f, []))
 
     packs = []
     for domain, items in domain_snippets.items():

@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from stages.ingestor import filter_snippets, tag_snippet
+from stages.ingestor import filter_snippets, load_repo_snippets, tag_snippet
 from stages.recon import build_recon_tasks
 from stages.coordinator import build_context_packs
 from stages.parser import parse_findings
@@ -22,27 +22,6 @@ from stages.voting import merge_hunter_outputs
 from stages.suppressions import SuppressionRegistry
 
 
-def _load_repo_files(repo: Path) -> list[dict]:
-    snippets = []
-    for path in repo.rglob('*'):
-        if path.suffix.lower() not in {'.c', '.cc', '.cpp', '.h', '.go', '.rs', '.py', '.js', '.ts'}:
-            continue
-        try:
-            text = path.read_text(encoding='utf-8', errors='ignore')
-        except OSError:
-            continue
-        snippets.append(
-            {
-                'id': f'{path}:1',
-                'file': str(path.relative_to(repo)),
-                'name': path.stem,
-                'content': text[:6000],
-                'token_count': max(1, len(text) // 4),
-            }
-        )
-    return snippets
-
-
 def run(mode: str, repo: Path, *,
         auth_path: Path | None = None,
         kl_threshold: float = 5.0,
@@ -55,10 +34,10 @@ def run(mode: str, repo: Path, *,
     auth = load_auth_config(explicit_path=auth_path, script_dir=Path(__file__).parent)
     state.put_meta('auth_providers', json.dumps(sorted(auth.keys())))
 
-    raw_snippets = _load_repo_files(repo)
+    raw_snippets = load_repo_snippets(repo, is_library_target=cfg['is_library_target'])
     snippets = filter_snippets(raw_snippets, is_library_target=cfg['is_library_target'])
     for s in snippets:
-        s['tags'] = tag_snippet(s, is_library_target=cfg['is_library_target'])
+        s['tags'] = sorted(set(s.get('tags') or []) | set(tag_snippet(s, is_library_target=cfg['is_library_target'])))
 
     model_chain = [
         'deepseek/deepseek-v4-flash:free',
