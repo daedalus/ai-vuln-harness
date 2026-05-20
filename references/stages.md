@@ -33,7 +33,48 @@ Use short sha256 IDs for readability: `sha256:{h[:6]}:{h[-6:]}` (e.g.
 `sha256:e812b9:ab0d84`). Full sha256 is unnecessarily verbose in logs and
 finding references.
 
-### Tree-sitter API Notes (v0.25+)
+### Tree-sitter dependency: avoid it if possible
+
+The tree-sitter Python API (v0.25+) is incompatible with v0.22 and requires
+pre-built wheel packages per language (`tree-sitter-c`, `tree-sitter-python`, etc.)
+that are not always available in constrained environments. **Recommendation**: use
+regex-based brace-depth matching for C/C++ instead:
+
+```python
+_FUNC_START_RE = re.compile(
+    r'\b(static|int|void|char|long|unsigned|size_t|struct|const|'
+    r'FILE|ssize_t|pid_t|uid_t|gid_t|socklen_t|in_addr_t|fd_set|sigset_t|'
+    r'enum|union|volatile|extern|inline|bool|short|double|float)\b.*\w+\s*\('
+)
+_FUNC_DIRECT_RE = re.compile(r'^\s*\w+\s*\(')
+```
+
+The `_FUNC_DIRECT_RE` handles multi-line declarations where return type and
+function name are on separate lines (e.g. `static int\nauth_password(...)`).
+Without it, many C functions are silently missed.
+
+### Callee extraction: filter self-calls
+
+When extracting callees from a function body via regex, the function's own name
+appears in its signature line and is falsely captured:
+
+```python
+def _extract_callees(body: str, func_name: str = '') -> list[str]:
+    callees = []
+    for m in _FUNC_NAME_RE.finditer(body):
+        name = m.group(1)
+        if name == func_name:       # skip self-reference from signature
+            continue
+        if name not in _CONTROL_FLOW and name not in seen:
+            seen.add(name)
+            callees.append(name)
+    return callees
+```
+
+Without this filter, every function appears as a self-caller, polluting the
+call graph with false edges.
+
+### Tree-sitter API Notes (v0.25+) — if you must use it
 
 The tree-sitter Python binding changed in 0.25.x. The v0.22 API
 used `parser.set_language(lang)` and `Language("path.so", "lang")`.
@@ -180,16 +221,31 @@ one security domain — so each agent can be cold-started with no repo access.
 
 See `schemas.md` → **Context pack schema** for the full field spec.
 
-### Agent domains
+### Agent domains (11-domain set)
 
-| Agent | Tags selected | Focus |
-|---|---|---|
-| `mem-safety` | `memory`, `integer-arith`, `unsafe` | Buffer overflow, OOB R/W, UAF, integer wrap |
-| `auth` | `auth`, `external-input` | Bypass, privilege escalation, session fixation |
-| `crypto` | `crypto` | Weak primitives, IV reuse, padding oracle, key mgmt |
-| `ipc` | `ipc`, `external-input` | TOCTOU, injection via pipes/sockets |
-| `data-flow` | all `external-input` | Untrusted data reaching sinks |
-| `format-str` | `format-string` | Format string exploits |
+| Agent | Tags selected | Exclusive | Focus |
+|---|---|---|---|
+| `mem-safety` | `memory`, `integer-arith`, `unsafe` | Yes | Buffer overflow, OOB R/W, UAF, integer wrap |
+| `auth` | `auth` | No | Bypass, privilege escalation, session fixation |
+| `crypto` | `crypto` | Yes | Weak primitives, IV reuse, padding oracle, key mgmt |
+| `ipc` | `ipc` | No | TOCTOU, injection via pipes/sockets |
+| `data-flow` | `external-input` | No | Untrusted data reaching sinks |
+| `format-str` | `format-string` | Yes | Format string exploits |
+| `injection` | `external-input` | No | Command injection, argument injection through untrusted data |
+| `path-traversal` | `memory` | No | File path traversal, symlink attacks through buffer ops |
+| `concurrency` | `memory` | No | Race conditions, TOCTOU, signal safety, double-fetch |
+| `resource` | `memory`, `integer-arith` | No | Resource exhaustion, memory leak, file descriptor leak |
+| `secrets` | `crypto` | Yes | Hardcoded secrets, credential exposure, improper secret handling |
+
+**Exclusive domains** (`mem-safety`, `crypto`, `format-str`, `secrets`): only
+get snippets whose tags match their domain tag list. Non-exclusive domains get
+snippets matching their tags AND any snippet from the full DB that lacks any
+targeted tag — ensuring coverage of untagged code.
+
+**`DOMAIN_ORDER`**: `["mem-safety", "data-flow", "crypto", "format-str",
+"injection", "path-traversal", "concurrency", "resource", "secrets",
+"auth", "ipc"]` — dependency-ordered so memory/crypto are processed before
+derivative domains.
 
 Embed a `SECURITY_CONTEXT.md` per repo in every pack: entry points, trust
 boundaries, known-unsafe modules, memory allocator in use, sanitizer flags.
@@ -252,18 +308,27 @@ Use your highest-capability model for `mem-safety`, `data-flow`, and
 `crypto` — these require deep reasoning. A faster/cheaper model tier is
 acceptable for `format-str` and `ipc`, which are more pattern-driven.
 
-Implement via `MODEL_BY_DOMAIN` dict:
+Implement via `MODEL_BY_DOMAIN` dict with provider-prefixed model IDs:
 
 ```python
 MODEL_BY_DOMAIN = {
-    "mem-safety":  "deepseek/deepseek-v4-flash:free",
-    "data-flow":   "deepseek/deepseek-v4-flash:free",
-    "crypto":      "deepseek/deepseek-v4-flash:free",
-    "format-str":  "deepseek/deepseek-v4-flash:free",
-    "ipc":         "deepseek/deepseek-v4-flash:free",
-    "auth":        "deepseek/deepseek-v4-flash:free",
+    "mem-safety":       "openrouter:deepseek/deepseek-v4-flash:free",
+    "data-flow":        "openrouter:qwen/qwen3-coder:free",
+    "crypto":           "openrouter:qwen/qwen3-coder:free",
+    "format-str":       "openrouter:google/gemma-4-26b-a4b-it:free",
+    "ipc":              "openrouter:google/gemma-4-26b-a4b-it:free",
+    "auth":             "openrouter:google/gemma-4-26b-a4b-it:free",
+    "injection":        "openrouter:deepseek/deepseek-v4-flash:free",
+    "path-traversal":   "openrouter:qwen/qwen3-coder:free",
+    "concurrency":      "openrouter:google/gemma-4-26b-a4b-it:free",
+    "resource":         "openrouter:qwen/qwen3-coder:free",
+    "secrets":          "openrouter:deepseek/deepseek-v4-flash:free",
 }
 ```
+
+The prefix (`openrouter:`, `groq:`, `cerebras:`) is stripped by
+`call_llm()` and used to select the right provider configuration.
+This keeps model lists homogeneous across providers.
 
 Fall back to a shared default model for domains not in the dict.
 
@@ -277,8 +342,13 @@ to the next on 429 or API error.
 Implementation pattern:
 1. Fetch all free models from `GET /v1/models` at startup.
 2. Filter to `:free` suffix, sort by `context_length` descending.
-3. Start at the preferred model index; on 429, advance to next model.
-4. 2 attempts per model before advancing (handles transient errors).
+3. Run a **parallel health check** against all models (8 workers).
+4. Remove DEAD models from the chain so the pipeline does not waste
+   time on them. Cache the health check result.
+5. Start at the preferred model index; on 429, advance to next model.
+6. 2 attempts per model before advancing (handles transient errors).
+7. Retry on 502/503/504 too — these are transient provider overloads,
+   not permanent failures.
 
 ```python
 def fetch_model_chain(api_key: str) -> list[str]:
@@ -292,14 +362,30 @@ def fetch_model_chain(api_key: str) -> list[str]:
             if m.get("id", "").endswith(":free")
             and m.get("context_length", 0) >= 8192]
     free.sort(key=lambda m: m.get("context_length", 0), reverse=True)
-    return [m["id"] for m in free]
+    return ["openrouter:" + m["id"] for m in free]  # provider-prefixed
+```
+
+With multi-provider, the model list is defined in config/defaults.json
+instead of fetched at runtime:
+
+```json
+{
+  "hunt_models": [
+    "openrouter:nvidia/nemotron-nano-12b-v2-vl:free",
+    "openrouter:deepseek/deepseek-v4-flash:free",
+    "openrouter:qwen/qwq-32b:free",
+    "groq:llama3-70b-8192",
+    "cerebras:llama3.1-8b"
+  ]
+}
 ```
 
 Loops through models with `start_idx = model_chain.index(preferred)`.
-On HTTP 429, logs the skip and tries `model_chain[start_idx + 1]`.
+On HTTP 429/502/503/504, logs the skip and tries `model_chain[start_idx + 1]`.
 
 **Key observation:** Out of 24 free models on OpenRouter, only ~6 are
 reliably available at any moment. The rest return 429 or empty responses.
+Health check at startup removes the dead ones before any work begins.
 The fallback chain is not optional — it is required for completion.
 
 ### Sync > Async (Practical Lesson)
@@ -328,9 +414,9 @@ resp = urllib.request.urlopen(req, context=ssl_context)
 result = json.loads(resp.read().decode())
 ```
 
-### OpenRouter-Specific Notes
+### Provider-Specific Notes
 
-When using OpenRouter (`https://openrouter.ai/api/v1`) as the API provider:
+#### OpenRouter
 
 - **`openrouter/openrouter/free` is NOT a valid model ID.** Use concrete
   model IDs like `deepseek/deepseek-v4-flash:free`. Fetch the full list
@@ -341,7 +427,7 @@ When using OpenRouter (`https://openrouter.ai/api/v1`) as the API provider:
   ```python
   content = msg.get("content", "") or ""
   reasoning = msg.get("reasoning", "") or ""
-  full_output = reasoning + " " + content
+  full_output = reasoning if not content.strip() else content
   ```
 - **Some models return empty response bodies.** Detect these and skip to
   the next model immediately. About 1/3 of free models exhibit this.
@@ -353,8 +439,51 @@ When using OpenRouter (`https://openrouter.ai/api/v1`) as the API provider:
 - **Proxy support**: Set `https_proxy` env var; urllib respects it natively.
 - **`max_tokens` must be 8192 minimum** — reasoning models consume large
   output budgets for chain-of-thought. 4096 causes truncation.
-- **Auth**: Read API key from `~/.local/share/opencode/auth.json` (key:
-  `openrouter`) or `OPENROUTER_API_KEY` env var.
+- **Auth**: Read API key from project-relative `auth.json` first, then
+  `~/.local/share/opencode/auth.json`, then `OPENROUTER_API_KEY` env var.
+- **Retry on 502/503/504** — these are upstream provider overload, not
+  permanent failures. Use exponential backoff.
+
+#### Groq
+
+- Requires `GROQ_API_KEY` in auth.json or env var.
+- Base URL: `https://api.groq.com/openai/v1/chat/completions`
+- Limited model selection but reliable uptime.
+- Known to return HTTP 403 from non-US IP addresses (geo-blocking).
+  Set `--proxy` to a US-based proxy if needed.
+- No free-tier rate limits in practice.
+
+#### Cerebras
+
+- Requires `CEREBRAS_API_KEY` in auth.json or env var.
+- Base URL: `https://api.cerebras.ai/v1/chat/completions`
+- Smallest model selection of the three providers.
+- Also geo-blocked to US from some regions.
+- Best for low-latency inference on smaller models.
+
+### Multi-Provider Routing
+
+All providers share the same OpenAI-compatible chat completions format.
+Route by model ID prefix in `call_llm()`:
+
+```python
+def call_llm(model_id: str, prompt: str, **kwargs):
+    provider, _, model_name = model_id.partition(":")
+    if provider == "openrouter":
+        base_url = "https://openrouter.ai/api/v1"
+        api_key = _get_auth_key("openrouter")
+    elif provider == "groq":
+        base_url = "https://api.groq.com/openai/v1"
+        api_key = _get_auth_key("groq")
+    elif provider == "cerebras":
+        base_url = "https://api.cerebras.ai/v1"
+        api_key = _get_auth_key("cerebras")
+    else:
+        raise ValueError(f"unknown provider: {provider}")
+    return _call_openai_compatible(base_url, api_key, model_name, prompt, **kwargs)
+```
+
+This keeps the model chain flat and provider-agnostic.
 
 ### Output Parser Robustness
 
@@ -486,6 +615,18 @@ model to attempt to *disprove* each finding:
   (e.g., confirming "MOD63 should be MOD65521" when MOD63 is mathematically
   correct). With code context, the same model correctly rejects the finding.
 
+### Output persistence
+
+Validated findings must be written to `output/validated.jsonl` alongside the
+main `findings.jsonl`. This enables `--validate-only` / `--resume` mode to
+replay validation without re-running the Hunt stage:
+
+```python
+with open(VALIDATED_FILE, 'w') as f:
+    for v in validated:
+        f.write(json.dumps(v) + '\n')
+```
+
 ### Validate Implementation Pattern
 
 Use the same sync urllib pattern as the Hunter, but with a **system message**
@@ -496,14 +637,17 @@ fallback chain**:
 import urllib.request, json, ssl
 
 VALIDATE_TOP_MODELS = [
-    "nvidia/nemotron-nano-12b-v2-vl:free",
-    "deepseek/deepseek-v4-flash:free",
-    "nvidia/nemotron-3-super-120b-a12b:free",
-    "arcee-ai/trinity-large-thinking:free",
-    "nvidia/nemotron-3-nano-30b-a3b:free",
+    "openrouter:nvidia/nemotron-nano-12b-v2-vl:free",
+    "openrouter:deepseek/deepseek-v4-flash:free",
+    "openrouter:nvidia/nemotron-3-super-120b-a12b:free",
+    "openrouter:arcee-ai/trinity-large-thinking:free",
+    "openrouter:nvidia/nemotron-3-nano-30b-a3b:free",
 ]
 
-def validate_finding(finding: dict, api_key: str, model_chain: list[str]) -> dict:
+def validate_finding(finding: dict, model_chain: list[str]) -> dict:
+    snippet = snippet_db.get(finding.get("snippet_id", ""))
+    snippet_code = snippet.get("content", "source not found") if snippet else "source not found"
+
     prompt = f"""Your job is to DISPROVE this vulnerability finding, not confirm it. Be adversarial.
 
 Finding:
@@ -512,6 +656,11 @@ Finding:
 - description: {finding.get('desc', '')}
 - call_path: {finding.get('call_path', [])}
 
+Source code of the function under review:
+```c
+{snippet_code}
+```
+
 Output ONLY a JSON object: {{"status": "confirmed"/"rejected"/"needs-more-info", "reason": "<explanation>"}}
 """
     candidates = [m for m in VALIDATE_TOP_MODELS if m in model_chain]
@@ -519,21 +668,17 @@ Output ONLY a JSON object: {{"status": "confirmed"/"rejected"/"needs-more-info",
 
     for model in candidates:
         try:
-            payload = {
-                "model": model,
-                "max_tokens": 2048,
-                "messages": [
-                    {"role": "system", "content": "You are an adversarial code reviewer. "
-                     "Disprove findings. Output ONLY a JSON object with 'status' and 'reason'."},
-                    {"role": "user", "content": prompt},
-                ],
-            }
-            result = json.loads(resp.read().decode())
-            status = result.get("status", "needs-more-info")
-            reason = result.get("reason", "")
+            result = call_llm(model, prompt, system="You are an adversarial code reviewer. "
+                              "Disprove findings. Output ONLY a JSON object with "
+                              "'status' and 'reason'.", max_tokens=8192)
+            text = result.choices[0].message.content or ""
+            # Handle truncated JSON from reasoning models
+            parsed = json.loads(_repair_truncated_json(text))
+            status = parsed.get("status", "needs-more-info")
+            reason = parsed.get("reason", "")
             return {**finding, "validate_status": status, "validate_reason": reason}
-        except urllib.error.HTTPError as e:
-            if e.code == 429:
+        except Exception as e:
+            if any(x in str(e) for x in ("429", "502", "503", "504")):
                 continue
             raise
     return {**finding, "validate_status": "needs-more-info", "validate_reason": "model chain exhausted"}
@@ -548,11 +693,25 @@ Output ONLY a JSON object: {{"status": "confirmed"/"rejected"/"needs-more-info",
 
 ### Gapfill (Coverage-Driven Re-queueing)
 
-- Hunters' `coverage_gap` records are re-queued as new scoped Hunt tasks
-- Loop: Hunt → Validate → Gapfill → Hunt until queue drains
+Hunters' `coverage_gap` records are re-queued as new scoped Hunt tasks.
+Loop: Hunt → Validate → Gapfill → Hunt until queue drains (max 2 iterations):
+
+```python
+for gapfill_iter in range(2):
+    current_gaps = [g for g in gaps if not g.get('gapfill_retried')]
+    if not current_gaps:
+        break
+    fresh_findings, fresh_gaps = run_all_hunters(packs, hunt_models, parallel=3)
+    findings.extend(fresh_findings)
+    gaps = [{'gapfill_retried': True, **g} for g in current_gaps]
+    gaps.extend(fresh_gaps)
+    persist_findings_and_gaps(findings, gaps)
+```
+
 - **Coverage gaps** should specify: `{"coverage_gap":"<reason>","reason":"<detailed explanation>"}`
 - Valid gap reasons: file size/complexity, lack of necessary context, time constraints
 - Invalid gap reasons: laziness, disagreement with findings, desire to skip work
+- Mark retried gaps with `gapfill_retried: true` to avoid infinite loops
 
 ---
 
@@ -599,16 +758,120 @@ catch cases where different snippet continuations report the same issue.
 
 ---
 
+## Stage 6b — Shield (Call Graph + Hallucination + Reachability)
+
+**Goal:** apply three quality gates before findings reach the chainer:
+call-path verification, hallucination detection, and static reachability
+filtering.
+
+### Call-graph construction
+
+Build a directed graph from snippet callee lists:
+
+```python
+def build_call_graph(snippets: list[dict]) -> dict[str, set[str]]:
+    graph = {}
+    for s in snippets:
+        name = str(s.get('name') or s.get('id') or '').lower()
+        callees = [c.lower() for c in (s.get('callees') or [])]
+        if name:
+            graph.setdefault(name, set()).update(callees)
+    return graph
+```
+
+Keys are lowercase function names. This is the graph used by both the
+chainer and the shield.
+
+### Call-path verification
+
+Check whether a finding's `call_path` matches actual edges in the graph:
+
+```python
+def verify_call_path(finding, graph) -> tuple[bool, str]:
+    path = [n.lower() for n in (finding.get('call_path') or [])]
+    if not path:
+        return False, 'empty-call-path'
+    for i in range(len(path) - 1):
+        caller, callee = path[i], path[i + 1]
+        if caller not in graph or callee not in graph.get(caller, set()):
+            return False, f'unverified: {caller}->{callee}'
+    return True, 'verified'
+```
+
+### Hallucination detection
+
+Check that the finding's description references actual identifiers from the
+snippet content. Use function-name presence + identifier overlap with a
+60% threshold on description tokens and 70% on call-path names:
+
+```python
+def detect_hallucination(finding, snippet) -> tuple[bool, str]:
+    content_tokens = set(re.findall(r'\b[a-z_][a-z_0-9]{3,}\b', snippet_content))
+    desc_tokens = {t for t in _tokenise(desc) if len(t) > 5}
+    missing = desc_tokens - content_tokens
+    if desc_tokens and len(missing) / len(desc_tokens) > 0.60:
+        return True, f'desc tokens missing: {sorted(missing)[:5]}'
+    # Same for call_path names with 0.70 threshold
+    ...
+```
+
+### Static reachability filter (filter_unreachable)
+
+BFS from `entry_points` (e.g., `["main", "sshd_main", "ssh_main"]`) through
+the call graph to determine which findings are statically reachable.
+
+**Critical: `snippet_db` parameter.** Findings reference snippet IDs, not
+function names. `filter_unreachable()` must resolve `snippet_id → function
+name` before doing BFS, or all findings will appear unreachable:
+
+```python
+def filter_unreachable(findings, graph, entry_points, snippet_db=None):
+    for f in findings:
+        sid = f.get('snippet_id', '')
+        targets = set()
+        if sid and snippet_db:
+            sname = snippet_db.get(sid, {}).get('name', sid)
+            targets.add(sname.lower())
+        # BFS from entry_points to see if any target is reachable...
+```
+
+Without `snippet_db`, the function looks for `sha256:...` keys in the
+call graph, finds nothing, and marks everything unreachable.
+
+---
+
 ## Stage 7 — Chainer
 
 **Goal:** detect clusters where multiple low/medium findings compose into a
 higher-severity exploit chain.
 
+### Critical: graph key resolution
+
+The call graph is keyed on **lowercase function names**, but findings reference
+**snippet IDs** (e.g., `sha256:aee28b:65e614`). The chainer MUST resolve before
+BFS traversal:
+
+```python
+def build_chains(findings, snippet_db, call_graph, max_hops=4):
+    node_pairs = []
+    for f in findings:
+        sid = f.get('snippet_id', '')
+        snippet = snippet_db.get(sid, {})
+        node_name = str(snippet.get('name', sid)).lower()
+        node_pairs.append((node_name, sid, f))
+    # Now BFS using node_name against call_graph keys...
+```
+
+Without this resolution, the BFS searches for `sha256:...` keys that don't
+exist in the graph, producing **zero chains** even when the call graph is valid.
+This is the single most common chainer bug.
+
 ### Call-graph Algorithm
 
-1. Build call graph from `callers`/`callees` in the snippet DB.
-2. For each pair `(A, B)` where `A.snippet_id` is reachable from `B.snippet_id`
-   in ≤ 4 hops, emit a candidate chain.
+1. Build call graph from `callees` in the snippet DB.
+2. Resolve snippet IDs → function names for all finding pairs.
+3. For each pair `(A, B)` where A is reachable from B in ≤ 4 hops (via BFS),
+   emit a candidate chain.
 3. Score candidates:
    - +2 if chain crosses a trust boundary (`external-input` → sink)
    - +1 per MEDIUM / +2 per HIGH / +3 per CRITICAL finding in chain
@@ -640,7 +903,68 @@ See `implementation.md` → **PoC loop** for the confirmation pseudocode.
 
 ---
 
-## Stage 8 — Trace
+## Stage 8 — PoC Confirmation (Compile + Run)
+
+**Goal:** disprove or confirm each finding by compiling and running a targeted
+C program under AddressSanitizer. This is the strongest evidence level — a
+compiler+ASan verdict beats any LLM opinion.
+
+### Why it matters
+
+AI hunters produce ~60-80% false positive rates on audited codebases. Validate
+catches some via adversarial prompting, but the gold standard is a concrete
+execution: if the alleged buffer overflow does not crash under ASan, it does
+not exist as described.
+
+### Workflow
+
+1. **Generate** — for each finding, auto-generate a C source file with test
+   cases targeting the specific class and code path:
+   - `buffer-overflow` → allocation + memcpy tests at edge sizes
+   - `format-string` → caller-controlled format arg test
+   - `uninitialized` → zero-length read edge case
+   - `recursion` → stack depth stress test
+   - `integer-wrap` → unsigned underflow/overflow tests
+2. **Compile** — build with `gcc -fsanitize=address -g -O0`
+3. **Run** — execute under ASan, capture exit code and stderr
+4. **Compare** — expected (crash + ASan errors) vs actual (exit 0, no errors)
+5. **Verdict** — `confirmed` if ASan errors, `rejected` if clean exit 0,
+   `needs-more-info` if build failed or unexpected crash
+
+### Output
+
+Each PoC produces two files in `output/pocs/`:
+
+```
+poc-<snippet_id>-<class>.json   # Schema-valid PoC JSON
+poc-<snippet_id>-<class>.c      # Compilable C source
+```
+
+The JSON is self-documenting: finding ref, harness config, test cases with
+both `expected` and `actual` fields, and a final `verdict`.
+
+### CLI integration
+
+```
+--poc <finding_id|all>    # Generate + compile + run during pipeline
+--poc-only                 # Skip all API stages, just PoC cached findings
+```
+
+### Schema
+
+See `schemas/poc-schema.json` for the canonical format. Every PoC JSON is
+validated against this schema before use.
+
+### Auto-detection of target context
+
+The generator inspects the snippet content for library signatures:
+- `z_streamp`, `inflate`, `zlib.h` → links `-lz`, generates inflate tests
+- `SSL_CTX`, `SSL_new` → links `-lssl -lcrypto`
+- No library signature → standalone C with `calloc`/`memset` bounds test
+
+---
+
+## Stage 9 — Trace
 
 For confirmed findings in **shared libraries**: fan out one tracer agent per
 consumer repository to determine reachability from each consumer's external
@@ -677,7 +1001,7 @@ Output: `reachable: true/false` with supporting evidence:
 
 ---
 
-## Stage 9 — Feedback
+## Stage 10 — Feedback
 
 Reachable traces become new Hunt tasks in consumer repos, closing the cross-repo
 propagation loop.
@@ -708,7 +1032,7 @@ Each feedback task includes:
 
 ---
 
-## Stage 10 — Report
+## Stage 11 — Report
 
 See `schemas.md` → **Report schema** for the full output spec.
 

@@ -28,7 +28,7 @@ zlib: 608 functions from 49 files, C library, ~1.1M snippet DB.
 | data-flow | 198 | 0 | N/A |
 | format-str | 150 | 3 (format-string in gzprintf) | 2 rejected, 1 backlog |
 
-Total: 3 raw findings → 1 backlog, 2 false_positive, 0 fix_now.
+Total: 3 raw findings -> 1 backlog, 2 false_positive, 0 fix_now.
 
 This is the correct profile for a heavily-audited 30-year-old C library.
 A greenfield JavaScript app would produce very different numbers.
@@ -78,7 +78,9 @@ A greenfield JavaScript app would produce very different numbers.
 - **`--validate-only` flag** skips the Hunt stage entirely and loads cached
   findings from `output/findings.jsonl`. Useful for re-running Validate with
   a different model pool or after adjusting the validate prompt, without
-  re-hunting. Runs Validate → Dedupe → Report from cache in under a second.
+  re-hunting. Runs Validate -> Dedupe -> Report from cache in under a second.
+- **`--skip-health` flag** skips model health check at startup and loads
+  cached health results. Essential for fast re-runs on the same target.
 - **3 concurrent workers** is the sweet spot for free-tier OpenRouter.
   Higher concurrency triggers HTTP 429 rate limits.
 
@@ -87,9 +89,11 @@ A greenfield JavaScript app would produce very different numbers.
 | Operation | Wall clock | API calls | Notes |
 |---|---|---|---|
 | Model chain fetch | ~2s | 1 | First call, cached for rest of pipeline |
+| Health check (27 models) | ~20s | 27 | Parallel with 8 workers |
 | Hunt (6 packs, 3 workers) | 5-15 min | 6 | Most models 429; fallback chain adds 30-60s per skip |
 | Validate (3 findings) | 2-5 min | 3 | Faster because less context per call |
 | Trace (3 findings) | 2-5 min | 3 | Same as Validate |
+| `--skip-health` save | ~0s | 0 | Loads cached health results |
 | `--validate-only` replay | <1s | 0 | Loads cached findings, Validate from cache, re-report |
 | Cache replay (full) | <1s | 0 | All stages skip to cached output |
 
@@ -124,6 +128,76 @@ Cache key format: `hunt:deepseek/deepseek-v4-flash:free:a1b2c3d4e5f6`.
 Check cache before every API call; save after every successful response.
 On re-run, the pipeline loads from cache and skips all prior API calls,
 making re-runs instant.
+
+## Health Check (Essential for Free-Tier Runs)
+
+Without a health check, the pipeline spends 15-60s per dead model. For a
+27-model chain where 20 are dead, that is 5-20 minutes of timeouts before
+useful work.
+
+### Implementation
+
+Run health checks in parallel at startup with 8 workers:
+
+```python
+with ThreadPoolExecutor(max_workers=8) as pool:
+    futures = {pool.submit(probe_model, m): m for m in all_models}
+    for future in as_completed(futures):
+        mid, ok, err = future.result()
+        if ok:
+            alive.append(mid)
+        else:
+            dead.append((mid, err))
+```
+
+Cache result in `JsonCache("health_check")` keyed by model list hash.
+Add `--skip-health` flag to load cache instead of probing.
+Invalidate cache when config/defaults.json changes.
+
+### Typical results (OpenRouter free tier)
+
+| Status | Count | Examples |
+|---|---|---|
+| Alive | 7-8 | nemotron-nano, trinity, deepseek-v4-flash |
+| 429 rate-limit | 10-12 | deepseek-v3, llama-4, mistral |
+| 502/504 gateway | 3-5 | Various upstream providers |
+| 403 geo-block | 2-3 | Groq/Cerebras from non-US IPs |
+
+Show the full error reason for DEAD models (e.g. "HTTP 403" not just
+"not available") so the operator can distinguish rate limits from
+permanent rejects.
+
+## Cross-Run Regression Risk (Critical Lesson)
+
+The transition from run8 → run9 lost 2 catastrophic and 3 major features
+that were caught only by a systematic cross-run audit. This pattern repeats
+whenever a harness is restructured or re-targeted.
+
+### Common regression vectors
+
+| Risk | Symptom | How it happens |
+|---|---|---|
+| **Ingestor flattening** | File-level snippets instead of function-level | Developer replaces tree-sitter/brace-matching with simple `path.read_text()` when adding a new language or dropping a dependency |
+| **Non-deterministic IDs** | `hash()` or `id()` used instead of SHA256 | Developer unfamiliar with PYTHONHASHSEED; works in dev, breaks cache on re-run |
+| **Domain shrinkage** | 11 domains → 6 (or fewer) | Developer copies an older coordinator without noticing the expanded set |
+| **Config simplification** | Provider matrix lost | defaults.json trimmed to remove "noise" but that noise was the multi-provider routing table |
+| **Missing output files** | validated.jsonl, snippet_db.json absent | Output paths removed during refactoring without checking consumers |
+| **Hardcoded model config** | MODEL_BY_DOMAIN inlined in hunt.py | Developer extracts model logic but forgets to make it config-driven |
+
+### Mitigation checklist for every major restructure
+
+1. Compare ingestor.py line count (run N-1 vs run N). If it shrank by >30%,
+   investigate what extraction logic was dropped.
+2. Check all `hash()` and `id()` calls in the codebase — these are non-deterministic.
+   Every snippet ID must use SHA256.
+3. Count `AGENT_DOMAINS` keys. 11 is correct for the full set. Count again
+   when loading config or code.
+4. Diff `config/defaults.json` against the previous version's config. Every
+   field removal is a regression unless explicitly documented.
+5. Check `output/` paths in `run.py` — every output file from the previous
+   iteration should still have a write path.
+6. Search for hardcoded model IDs in Python files (not config). They should
+   live in `config/defaults.json`, not in stage code.
 
 ## Python str.format() Trap
 
@@ -189,17 +263,269 @@ free tier. Of 24 free models tested, only these reliably produced output:
 For validate, prefer a curated model order rather than raw context-length
 sorting. Push known-working models to the front of the chain.
 
-## PoC Compilation Blocker
+## Reasoning Models Stash Output Differently
 
-The PoC confirmation loop assumes a sandboxed compile+run environment.
-For C/C++ targets, this requires:
-- A compiler toolchain in the sandbox
-- The target library compiled as a shared object
-- A harness that links against it and triggers the finding
-- Network-isolated execution
+Models like `nemotron-*` and `trinity-large-thinking` return reasoning/
+rephrased content in `message.reasoning` instead of `message.content`.
+If `call_llm()` only reads `content`, these models return empty strings.
 
-Without this infrastructure, PoC confirmation is speculative. The pipeline
-still produces useful findings, but they lack the strongest evidence level.
+### Fix: merge reasoning into content after the API call
+
+```python
+text = response.choices[0].message.content or ""
+reasoning = getattr(response.choices[0].message, "reasoning", None) or ""
+if reasoning and not text.strip():
+    text = reasoning
+```
+
+### Side effect: reasoning models produce much longer outputs
+
+- Standard model returns 200-400 tokens for a validate response.
+- Nemotron/trinity return 800-2000 tokens — heavy reasoning trace
+  capped with a short answer.
+- Validate must use 8192 max_tokens (not 4096) or the JSON is
+  truncated mid-brace. See Truncated JSON Repair below.
+
+## Truncated JSON Repair in Validate
+
+Reasoning models often exceed max_tokens limits. When validate's JSON
+response is cut off mid-brace, json.loads() fails silently and the
+finding is misclassified.
+
+### Repair strategy
+
+After json.loads() fails, attempt repair before giving up:
+
+```python
+def _repair_truncated_json(text: str) -> str:
+    text = text.strip()
+    if not text.endswith("}"):
+        text += "}"
+    depth = 0
+    for ch in text:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+    while depth > 0:
+        text += "}"
+        depth -= 1
+    while depth < 0 and text.rfind("}") > text.rfind("{"):
+        text = text.rstrip("}")
+        depth += 1
+    return text
+```
+
+This succeeds on ~70% of truncated validate responses. The remaining 30%
+need a full retry (next model in chain).
+
+## Retry on 502/503/504 Errors (Not Just 429)
+
+OpenRouter free tier returns HTTP 502/504 when upstream providers are
+overloaded. These are transient errors, not model failures.
+
+Expand retryable status to cover provider gateway errors:
+
+```python
+is_retryable = any(x in estr for x in (
+    "429", "502", "503", "504",
+    "rate", "too many",
+    "try again", "temporary", "upstream"
+))
+```
+
+Use exponential backoff: 5 * (attempt + 1) seconds. 3 retries max.
+
+## Hallucination Risk: Function-Name + Identifier Matching
+
+Raw token overlap between finding description and snippet content is too
+coarse. In zlib, over half the functions share tokens like `buf`, `len`,
+`size` — every finding scores "low" regardless of accuracy.
+
+### Better heuristic
+
+```python
+# 1. Function name MUST appear in finding description
+if name and name not in desc:
+    return "high"
+
+# 2. Check overlap of significant identifiers
+identifiers = set(re.findall(r'\b[a-z_][a-z_0-9]+\b', content))
+desc_identifiers = set(re.findall(r'\b[a-z_][a-z_0-9]+\b', desc))
+overlap = identifiers & desc_identifiers
+
+# 3. Keyword bonus for vulnerability-specific terms
+keywords_in_desc = sum(1 for kw in ("overflow", "underflow",
+    "uninitialized", "wrap", "oob", "memcpy", "malloc", "free",
+    "null", "bounds", "stack", "heap", "recursion", "injection",
+    "truncation") if kw in desc)
+
+if len(overlap) >= 2 or keywords_in_desc >= 1:
+    risk = "low"
+elif len(overlap) == 1:
+    risk = "medium"
+else:
+    risk = "high"
+```
+
+Key identifiers matter more than raw word count. A finding about `deflate`
+that does not mention `deflate` or any of its local variables is hallucinated.
+
+## Auth File Resolution Order
+
+Multiple API keys in a shared setting create confusion. Deterministic fallback:
+
+```python
+import os, json
+
+ORDER = [
+    os.path.join(os.path.dirname(__file__), "../auth.json"),
+    os.path.expanduser("~/.local/share/opencode/auth.json"),
+]
+
+def _get_auth_key(provider: str) -> str | None:
+    env_map = {
+        "openrouter": "OPENROUTER_API_KEY",
+        "groq": "GROQ_API_KEY",
+        "cerebras": "CEREBRAS_API_KEY",
+    }
+    env_key = os.environ.get(env_map.get(provider, ""))
+    if env_key:
+        return env_key
+    for path in ORDER:
+        try:
+            data = json.load(open(path))
+            key = data.get(provider) or data.get(f"{provider}_api_key")
+            if key:
+                return key
+        except (FileNotFoundError, json.JSONDecodeError):
+            continue
+    return None
+```
+
+File format is flat: `{"openrouter": "sk-or-v1-...", "groq": "gsk_..."}`.
+Not nested. Provider key in top-level JSON matches the provider name.
+Current working directory auth.json takes priority over the global one.
+
+## Multi-Provider Architecture
+
+Use provider-prefixed model IDs to route through a single flat chain:
+
+```
+openrouter:nvidia/nemotron-nano-12b-v2-vl:free
+groq:llama3-70b-8192
+cerebras:llama3.1-8b
+```
+
+call_llm() splits on the first colon to determine base URL, auth key,
+and headers. This keeps model lists homogeneous and lets you add
+providers without changing the stage code.
+
+### Implementation pattern
+
+```python
+def call_llm(model_id: str, prompt: str, **kwargs):
+    provider, _, model_name = model_id.partition(":")
+    if provider == "openrouter":
+        return _call_openrouter(model_name, prompt, **kwargs)
+    elif provider == "groq":
+        return _call_groq(model_name, prompt, **kwargs)
+    elif provider == "cerebras":
+        return _call_cerebras(model_name, prompt, **kwargs)
+    else:
+        raise ValueError(f"unknown provider: {provider}")
+```
+
+Each provider function reads its own auth key via `_get_auth_key()`.
+
+## Proxy Support Through Environment Variables
+
+Set http_proxy/https_proxy at startup before any API calls to get
+transparent proxy support via urllib's default ProxyHandler:
+
+```python
+import os
+
+if proxy_url := args.proxy:
+    os.environ["http_proxy"] = proxy_url
+    os.environ["https_proxy"] = proxy_url
+```
+
+Or set `proxy` key in config/defaults.json and apply at startup.
+This works for all OpenAI-compatible providers without code changes.
+
+## PoC Confirmation (Compile + Run)
+
+The PoC stage auto-generates C programs from findings, compiles them under
+AddressSanitizer, and executes them. This is the strongest evidence level:
+a compiler+ASan verdict beats any LLM opinion.
+
+### File layout
+
+```
+output/pocs/
+  poc-<snippet_id>-<class>.c      # Auto-generated C source
+  poc-<snippet_id>-<class>.json   # Schema-valid PoC JSON
+```
+
+### How it detects test targets
+
+The generator inspects snippet content for library signatures to produce
+context-aware tests:
+
+| Snippet contains | PoC links | Tests generated |
+|---|---|---|
+| `z_streamp`, `inflate`, `zlib.h` | `-lz` | Inflate/deflate at window bits 8/9/12/15 |
+| `SSL_CTX`, `SSL_new` | `-lssl -lcrypto` | SSL init, read, write edge cases |
+| nothing specific | (none) | `calloc` + `memset` bounds check |
+
+### Class-specific test generation
+
+Each vulnerability class gets targeted tests:
+
+- **buffer-overflow** — allocates buffer, writes up to capacity, checks ASan
+  - zlib `updatewindow` variant: actually calls `inflateInit2`/`inflate` with
+    varying window sizes to exercise each code path in the circular buffer
+- **format-string** — passes caller-controlled format arg through `snprintf`
+- **uninitialized** — calls suspect function with zero-length read
+- **recursion** — deep recursion to `MAX_DEPTH=100000` to trigger stack overflow
+- **integer-wrap** — `1U << 31`, `0U - 1U`, `malloc(overflowed_size)`
+
+### Verdict logic
+
+| Condition | Verdict | Interpretation |
+|---|---|---|
+| ASan errors detected | confirmed | The finding reproduces under sanitized conditions |
+| Exit code 0, no ASan errors | rejected | The alleged bug does not exist as described |
+| Build failed or crashed without ASan | needs-more-info | Indeterminate — manual review required |
+
+### CLI modes
+
+```
+--poc <id|all>      # During normal pipeline: also generate+compile+run PoCs
+--poc-only          # Skip all API stages, load cached findings, just run PoCs
+```
+
+`--poc-only` is the zero-cost replay mode. It reads cached `findings.jsonl`,
+re-generates any missing PoCs, compiles and runs everything, and produces
+an updated report with `poc_verdict` annotations. No API calls, no LLM cost.
+
+### What the PoC does NOT test
+
+- **Multi-step exploits** — PoCs are single-finding, single-class. The
+  Chainer stage handles composition across findings.
+- **Consumer reachability** — PoC confirms the primitive exists in the
+  library, not that an attacker can reach it. Trace stage handles that.
+- **Other architectures** — PoCs run on the build host. ARM/MIPS/RISC-V
+  require cross-compilation infrastructure.
+- **Timing / side channels** — ASan does not detect these. Manual review
+  or TSan needed.
+
+### Integration with Suppression
+
+If a finding is suppressed (known false positive), the PoC stage skips it.
+If a PoC confirms a suppressed finding (unexpected ASan crash on previously
+dismissed bug), the suppression is flagged for review.
 
 ## API-by-Design False Positives (Library-Specific)
 
