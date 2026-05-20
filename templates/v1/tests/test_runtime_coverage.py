@@ -153,27 +153,30 @@ class StateDBTests(unittest.TestCase):
         self.path = Path(self._tmp.name) / 'state.db'
 
     def tearDown(self):
-        import shutil
-        shutil.rmtree(self._tmp.name, ignore_errors=True)
+        self._tmp.cleanup()
 
     def test_init_creates_db(self):
         db = StateDB(self.path)
+        db.close()
         self.assertTrue(self.path.exists())
 
     def test_put_and_get_meta(self):
         db = StateDB(self.path)
         db.put_meta('scan_id', 'abc-123')
         self.assertEqual(db.get_meta('scan_id'), 'abc-123')
+        db.close()
 
     def test_get_missing_meta(self):
         db = StateDB(self.path)
         self.assertIsNone(db.get_meta('nonexistent'))
+        db.close()
 
     def test_meta_overwrite(self):
         db = StateDB(self.path)
         db.put_meta('status', 'running')
         db.put_meta('status', 'done')
         self.assertEqual(db.get_meta('status'), 'done')
+        db.close()
 
     def test_multiple_meta_keys(self):
         db = StateDB(self.path)
@@ -181,12 +184,15 @@ class StateDBTests(unittest.TestCase):
         db.put_meta('k2', 'v2')
         self.assertEqual(db.get_meta('k1'), 'v1')
         self.assertEqual(db.get_meta('k2'), 'v2')
+        db.close()
 
     def test_reuse_existing_db(self):
         db1 = StateDB(self.path)
         db1.put_meta('key', 'val')
+        db1.close()
         db2 = StateDB(self.path)
         self.assertEqual(db2.get_meta('key'), 'val')
+        db2.close()
 
 
 if __name__ == '__main__':

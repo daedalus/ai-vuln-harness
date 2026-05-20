@@ -163,6 +163,9 @@ class StateDB:
         row = cur.execute('SELECT v FROM meta WHERE k=?', (key,)).fetchone()
         return row[0] if row else None
 
+    def close(self) -> None:
+        self.conn.close()
+
 
 # ---------------------------------------------------------------------------
 # Cross-run regression analysis (KL-divergence over class distributions)
