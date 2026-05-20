@@ -46,7 +46,7 @@ auth check, and dependency invariants.
 
 ## Required operating defaults
 
-See `references/operating-defaults.md` — 14 required defaults covering
+See `references/operating-defaults.md` — 15 required defaults covering
 ingestor, recon, library-target hardening, stage contracts, quality gates,
 reliability, model health, multi-provider routing, auth, proxy, PoC
 confirmation, coordinator domains, chain graph key resolution, and cross-run

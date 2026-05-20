@@ -111,3 +111,26 @@
       IDs) and 3 major features (11 domains, security context, config-driven models)
       relative to run7/run8. These were caught by cross-run audit, not noticed
       during development.
+
+## Model limits from endpoint
+
+15. Model limits must be fetched from the provider's models endpoint or a
+    `models.dev` manifest — never hardcoded
+    - Hardcoded context window sizes go stale when providers update models
+      (OpenRouter renames models, Groq bumps limits, etc.). A stale limit
+      either wastes budget (underestimating capacity) or causes 400 errors
+      (overestimating capacity).
+    - On startup, query the provider's `/models` endpoint for each model in
+      the chain. Extract `context_length` (or equivalent) and use it for the
+      85% budget calculation.
+    - Cache results to a `models.dev` file next to the harness. On subsequent
+      runs, use the cache unless `--refresh-models` is passed or the cache
+      is >24h old.
+    - If a provider has no models endpoint (or auth limits requests), ship a
+      `models.dev` with known limits and a `last_updated` timestamp. Log a
+      warning that limits are static.
+    - `models.dev` format: JSON dict keyed on `provider:model` — each entry
+      has `context_window`, `max_output_tokens`, `last_updated`.
+    - Model context window discovery must complete before any pack is built.
+      Packs assembled against wrong limits produce incorrect budgets for all
+      downstream stages.
