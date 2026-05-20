@@ -50,7 +50,7 @@ is invalid — it will produce wrong results or waste API calls.
 |---|---|---|---|
 | `tree-sitter` | ≥ 0.25 | AST-level function extraction for C/C++ | Cannot use regex fallback — regex brace-matching misses type-anchored re-exports (e.g., `int ZEXPORT inflate(...)`) and nested-scope functions; every such miss is a silent coverage gap |
 | `tree-sitter-c` | matching | C language grammar for tree-sitter | Same as above |
-| `tiktoken` | any | Accurate per-snippet token counting for budget enforcement | `len//4` overestimates C code by 30-40%, inflating pack sizes and exceeding 180k budget |
+| `tiktoken` | any | Accurate per-snippet token counting for budget enforcement | `len//4` overestimates C code by 30-40%, inflating pack sizes and exceeding the 85% context budget |
 
 Install:
 

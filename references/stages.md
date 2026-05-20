@@ -20,8 +20,8 @@ See `implementation.md` → **ingestor.py** for the code sketch.
 - Unit: **function** for C/C++/Rust/Go; **method** for Python/Java/TS.
   Fall back to fixed 200-line windows for languages without reliable function
   boundaries.
-- Hard cap: **800 tokens per snippet** (leaves ~200k budget for 250 snippets
-  per agent pack). Use any `cl100k`-compatible tokenizer.
+- Hard cap: **800 tokens per snippet** (leaves budget for ~250 snippets per
+  pack at 85% context window). Use `tiktoken` with `cl100k_base` encoding.
 - Large functions: split at logical boundaries, emit `continuation: true` on
   subsequent pieces so the chainer can reconstruct.
 - Cross-file context: embed 3-line caller/callee stubs inline — agents need
@@ -281,9 +281,10 @@ Incorporate scope notes to exclude specific components or attack classes:
 
 ### Budget enforcement
 
-Each pack must fit within **180k tokens** (leaving 20k for output). If a domain
-exceeds budget, split into sub-packs by directory prefix and run multiple
-instances in parallel.
+Each pack must not exceed **85% of the model's context window** (the remaining
+15% is reserved for the model's output). For example, a 100k-context model
+allows an 85k pack budget. If a domain exceeds budget, split into sub-packs
+by directory prefix and run multiple instances in parallel.
 
 ### Pack size observations
 

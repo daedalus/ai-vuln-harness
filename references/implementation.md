@@ -15,7 +15,7 @@ and nested-scope functions, creating silent coverage gaps.
 
 Uses `tiktoken` (required, no fallback) for per-snippet token counting.
 The character-based estimate (`len//4`) overestimates C code by 30-40%
-and silently inflates pack sizes beyond the 180k budget.
+and silently inflates pack sizes beyond the 85% context budget.
 
 ### Directory filtering
 
@@ -209,7 +209,8 @@ DOMAIN_ORDER = [
     "path-traversal", "concurrency", "resource", "secrets", "auth", "ipc",
 ]
 
-def build_packs(db: dict, budget: int = 180_000) -> list[dict]:
+def build_packs(db: dict, budget: int) -> list[dict]:
+    # budget = int(model_context_limit * 0.85) — leaves 15% for output
     packs = []
     for domain, tags in AGENT_DOMAINS.items():
         selected = [s for s in db.values() if set(s["tags"]) & set(tags)]
