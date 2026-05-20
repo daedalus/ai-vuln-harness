@@ -9,12 +9,13 @@ Load this file when writing, reviewing, or debugging harness code.
 
 Converts a repo into a flat, typed snippet database.
 
-Uses `tree-sitter` (v0.25+, not 0.22 — API is incompatible) for function
-extraction. Short sha256 IDs (`sha256:{h[:6]}:{h[-6:]}`) for readability.
+Uses `tree-sitter` (≥ 0.25, required) for AST-level function extraction.
+Regex-based extraction is forbidden — it misses type-anchored re-exports
+and nested-scope functions, creating silent coverage gaps.
 
-Any tokenizer that matches your model's encoding works for token counting —
-`tiktoken` (OpenAI/Anthropic cl100k), `transformers` `AutoTokenizer`, or a
-simple character-based estimate (÷4) as a fallback.
+Uses `tiktoken` (required, no fallback) for per-snippet token counting.
+The character-based estimate (`len//4`) overestimates C code by 30-40%
+and silently inflates pack sizes beyond the 180k budget.
 
 ### Directory filtering
 
@@ -57,16 +58,10 @@ from pathlib import Path
 from tree_sitter import Language, Parser
 import json, hashlib
 
-# Token counting: use whichever tokenizer matches your model.
-# tiktoken (cl100k) works for OpenAI + Anthropic models.
-# transformers AutoTokenizer works for local/HuggingFace models.
-# Fallback: len(text) // 4 (character estimate, good enough for budgeting).
-try:
-    import tiktoken
-    _enc = tiktoken.get_encoding("cl100k_base")
-    count_tokens = lambda text: len(_enc.encode(text))
-except ImportError:
-    count_tokens = lambda text: len(text) // 4
+# Token counting: tiktoken is required. No fallback.
+import tiktoken
+_enc = tiktoken.get_encoding("cl100k_base")
+count_tokens = lambda text: len(_enc.encode(text))
 
 def chunk_repo(root: Path, out: Path):
     snippets = []
@@ -103,25 +98,42 @@ def mk_id(path, node):
     return f"sha256:{h[:6]}:{h[-6:]}"
 ```
 
-### Multi-line function detection (C/C++)
+### Function extraction via tree-sitter AST (not regex)
 
-Many C functions use split signatures where the return type is on one line
-and the function name on the next. Detect these as function starts:
+tree-sitter's AST natively handles multi-line declarations, type-anchored
+re-exports (`int ZEXPORT inflate(...)`), and nested-scope functions —
+cases that regex-based brace-depth matching silently misses:
 
 ```python
-# Two patterns for function start detection:
-_FUNC_START_RE = re.compile(
-    r'\b(static|int|void|char|long|unsigned|size_t|struct|const|'
-    r'FILE|ssize_t|pid_t|uid_t|gid_t|socklen_t|in_addr_t|fd_set|sigset_t|'
-    r'enum|union|volatile|extern|inline|bool|short|double|float)\b.*\w+\s*\('
-)
-_FUNC_DIRECT_RE = re.compile(r'^\s*\w+\s*\(')
-
-def line_is_func_start(line, stripped):
-    return bool(_FUNC_START_RE.search(line)) or bool(_FUNC_DIRECT_RE.match(stripped))
+def extract_functions(path: Path) -> list[dict]:
+    source = path.read_text()
+    tree = parser.parse(bytes(source, "utf8"))
+    snippets = []
+    for node in tree.root_node.named_children:
+        if node.type in ("function_definition", "declaration"):
+            content = source[node.start_byte:node.end_byte]
+            name_node = node.child_by_field_name("name")
+            if not name_node:
+                continue
+            func_name = name_node.text.decode()
+            tc = count_tokens(content)
+            snippets.append({
+                "id": _make_snippet_id(str(path.relative_to(root)), func_name, node.start_point[0]),
+                "file": str(path.relative_to(root)),
+                "language": "c",
+                "kind": "function",
+                "name": func_name,
+                "lines": [node.start_point[0] + 1, node.end_point[0] + 1],
+                "content": content,
+                "token_count": tc,
+                "tags": _tag_content(content),
+                "callees": _extract_callees(content, func_name),
+                "continuation": tc > 800,
+            })
+    return snippets
 ```
 
-Without `_FUNC_DIRECT_RE`, `static int\nauth_password(...)` is silently skipped.
+Regex-based extraction must never be used as a fallback.
 
 ### Self-call filtering in callee extraction
 
@@ -153,15 +165,15 @@ def _make_snippet_id(file: str, name: str, line: int) -> str:
 Never use `hash()` or `id()` — these are non-deterministic across runs due to
 PYTHONHASHSEED randomization.
 
-**Tree-sitter 0.25+ API notes (not backwards compatible):**
+**Tree-sitter 0.25+ API is required (0.22 incompatible):**
 
 ```python
 from tree_sitter import Language, Parser
 
-# 0.22.x (old):
+# 0.22.x (will crash — never use):
 # parser.set_language(C_LANG)
 
-# 0.25.x (current):
+# 0.25.x (required):
 parser = Parser()
 parser.language = C_LANG  # property setter, not method
 

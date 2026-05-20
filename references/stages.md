@@ -33,25 +33,46 @@ Use short sha256 IDs for readability: `sha256:{h[:6]}:{h[-6:]}` (e.g.
 `sha256:e812b9:ab0d84`). Full sha256 is unnecessarily verbose in logs and
 finding references.
 
-### Tree-sitter dependency: avoid it if possible
+### Tree-sitter is required (no regex fallback)
 
-The tree-sitter Python API (v0.25+) is incompatible with v0.22 and requires
-pre-built wheel packages per language (`tree-sitter-c`, `tree-sitter-python`, etc.)
-that are not always available in constrained environments. **Recommendation**: use
-regex-based brace-depth matching for C/C++ instead:
+tree-sitter ≥ 0.25 is a required dependency. Regex-based brace-depth matching
+is forbidden — it misses type-anchored re-exports (`int ZEXPORT inflate(...)`)
+and nested-scope functions. Every such miss is a silent coverage gap that
+cannot be detected from output counts.
+
+The API changed in 0.25.x and is **not backwards compatible** with 0.22:
 
 ```python
-_FUNC_START_RE = re.compile(
-    r'\b(static|int|void|char|long|unsigned|size_t|struct|const|'
-    r'FILE|ssize_t|pid_t|uid_t|gid_t|socklen_t|in_addr_t|fd_set|sigset_t|'
-    r'enum|union|volatile|extern|inline|bool|short|double|float)\b.*\w+\s*\('
-)
-_FUNC_DIRECT_RE = re.compile(r'^\s*\w+\s*\(')
+from tree_sitter import Language, Parser
+
+# 0.22.x (old, incompatible):
+# parser.set_language(C_LANG)
+
+# 0.25.x (required):
+parser = Parser()
+parser.language = C_LANG  # property setter, not method
+
+# For pre-built wheels with capsule API (0.25.2+):
+from tree_sitter_c import language as c_lang
+C_LANG = Language(c_lang())
 ```
 
-The `_FUNC_DIRECT_RE` handles multi-line declarations where return type and
-function name are on separate lines (e.g. `static int\nauth_password(...)`).
-Without it, many C functions are silently missed.
+Verify the version at startup:
+
+```python
+import tree_sitter
+parts = tuple(int(x) for x in tree_sitter.__version__.split('.')[:2])
+if parts < (0, 25):
+    sys.exit('fatal: tree-sitter {tree_sitter.__version__} detected, >= 0.25 required')
+```
+
+While the `_FUNC_DIRECT_RE` pattern is useful for understanding what tree-sitter
+handles automatically, it must never be used as a replacement:
+
+```python
+# For reference only — NOT a fallback:
+_FUNC_DIRECT_RE = re.compile(r'^\s*\w+\s*\(')
+```
 
 ### Callee extraction: filter self-calls
 
