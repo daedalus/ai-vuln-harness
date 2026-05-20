@@ -440,6 +440,7 @@ instead of fetched at runtime:
     "groq:llama3-70b-8192",
     "cerebras:llama3.1-8b",
     "google:gemini-2.5-flash",
+    "zen:deepseek-v4-flash-free",
     "zen:opus-4-2025-05"
   ]
 }
@@ -543,6 +544,14 @@ result = json.loads(resp.read().decode())
 - Base URL: `https://opencode.ai/zen/v1/chat/completions`
 - Also exposes non-standard endpoints at `https://opencode.ai/zen/v1/messages` (Anthropic-compatible) and `https://opencode.ai/zen/v1/responses`.
 - The chat completions endpoint follows the standard OpenAI format and is used by `call_llm()` via the `zen:` prefix.
+- **Free models** (no token cost, all use `zen:` prefix):
+  - `zen:big-pickle` — stealth model, free for a limited time
+  - `zen:deepseek-v4-flash-free` — DeepSeek V4 Flash, free for a limited time
+  - `zen:minimax-m2.5-free` — MiniMax M2.5, free for a limited time
+  - `zen:nemotron-3-super-free` — Nemotron 3 Super (NVIDIA), free for a limited time
+- **Paid models** (per-token billing):
+  - `zen:opus-4-2025-05`, `zen:sonnet-4-2025-05`, etc.
+- Note: Free models may collect data for model improvement during their free period.
 
 ### Multi-Provider Routing
 
