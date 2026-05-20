@@ -1,8 +1,14 @@
-"""Tests for stages/recon.py — recon task building from snippet tags."""
+"""Tests for stages/recon.py — recon task building from snippet tags and git history."""
 
 import unittest
+from unittest.mock import patch, MagicMock
 
-from stages.recon import build_recon_tasks
+from stages.recon import (
+    build_recon_tasks,
+    _scan_git_security_patches,
+    _find_sibling_files,
+    _COMMIT_LINE_PREFIX,
+)
 
 
 class BuildReconTasksTests(unittest.TestCase):
@@ -102,6 +108,208 @@ class BuildReconTasksTests(unittest.TestCase):
         ]
         tasks = build_recon_tasks(snippets)
         self.assertEqual(len(tasks[0]['target_files']), 1)
+
+
+# ===================================================================
+# Git-history patch-gap discovery
+# ===================================================================
+
+class GitSecurityPatchScanTests(unittest.TestCase):
+    @patch('stages.recon.subprocess.run')
+    def test_no_security_commits_returns_empty(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="abc123 feat: add widget\n")
+        result = _scan_git_security_patches('/fake/repo')
+        self.assertEqual(result, set())
+
+    @patch('stages.recon.subprocess.run')
+    def test_security_commit_finds_patched_files(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="abc123 fix overflow in parser\n"),
+            MagicMock(returncode=0, stdout=f"{_COMMIT_LINE_PREFIX}fix overflow in parser\nsrc/parser.c\n"),
+        ]
+        result = _scan_git_security_patches('/fake/repo')
+        self.assertEqual(result, {'src/parser.c'})
+
+    @patch('stages.recon.subprocess.run')
+    def test_multiple_patched_files_across_commits(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="abc123 CVE-2024-0001\ndef456 sec: auth fix\n"),
+            MagicMock(returncode=0, stdout=(
+                f"{_COMMIT_LINE_PREFIX}CVE-2024-0001\nsrc/parser.c\nsrc/lexer.c\n"
+                f"{_COMMIT_LINE_PREFIX}sec: auth fix\nsrc/login.c\n"
+            )),
+        ]
+        result = _scan_git_security_patches('/fake/repo')
+        self.assertEqual(result, {'src/parser.c', 'src/lexer.c', 'src/login.c'})
+
+    @patch('stages.recon.subprocess.run')
+    def test_non_security_commits_skipped(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="abc123 fix overflow\ndef456 refactor: tidy up\n"),
+            MagicMock(returncode=0, stdout=(
+                f"{_COMMIT_LINE_PREFIX}fix overflow\nsrc/parser.c\n"
+                f"{_COMMIT_LINE_PREFIX}refactor: tidy up\nsrc/util.c\n"
+            )),
+        ]
+        result = _scan_git_security_patches('/fake/repo')
+        self.assertEqual(result, {'src/parser.c'})
+
+    @patch('stages.recon.subprocess.run')
+    def test_git_not_available_returns_empty(self, mock_run):
+        mock_run.side_effect = FileNotFoundError()
+        result = _scan_git_security_patches('/fake/repo')
+        self.assertEqual(result, set())
+
+    @patch('stages.recon.subprocess.run')
+    def test_git_non_zero_return_empty(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=128, stdout="fatal: not a git repo\n")
+        result = _scan_git_security_patches('/fake/repo')
+        self.assertEqual(result, set())
+
+    @patch('stages.recon.subprocess.run')
+    def test_empty_history_returns_empty(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        result = _scan_git_security_patches('/fake/repo')
+        self.assertEqual(result, set())
+
+
+class FindSiblingFilesTests(unittest.TestCase):
+    def test_empty_patched_returns_empty(self):
+        self.assertEqual(_find_sibling_files(set(), {'a.c'}), set())
+
+    def test_same_dir_sibling_found(self):
+        patched = {'src/buffer.c'}
+        all_files = {'src/buffer.c', 'src/lexer.c'}
+        self.assertEqual(_find_sibling_files(patched, all_files), {'src/lexer.c'})
+
+    def test_patched_file_excluded(self):
+        patched = {'src/a.c', 'src/b.c'}
+        all_files = {'src/a.c', 'src/b.c', 'src/c.c'}
+        self.assertEqual(_find_sibling_files(patched, all_files), {'src/c.c'})
+
+    def test_different_dir_not_included(self):
+        patched = {'src/a.c'}
+        all_files = {'src/a.c', 'lib/b.c', 'other/d.c'}
+        self.assertEqual(_find_sibling_files(patched, all_files), set())
+
+    def test_multiple_patched_dirs(self):
+        patched = {'src/a.c', 'lib/x.c'}
+        all_files = {'src/a.c', 'src/b.c', 'lib/x.c', 'lib/y.c', 'other/z.c'}
+        self.assertEqual(_find_sibling_files(patched, all_files), {'src/b.c', 'lib/y.c'})
+
+    def test_no_siblings_returns_empty(self):
+        patched = {'src/only.c'}
+        all_files = {'src/only.c'}
+        self.assertEqual(_find_sibling_files(patched, all_files), set())
+
+
+class GitHistoryIntegrationInBuildReconTasksTests(unittest.TestCase):
+    @patch('stages.recon.subprocess.run')
+    def test_no_repo_path_never_calls_git(self, mock_run):
+        tasks = build_recon_tasks([{'file': 'a.c', 'tags': ['memory']}])
+        mock_run.assert_not_called()
+        self.assertEqual(len(tasks), 1)
+
+    @patch('stages.recon.subprocess.run')
+    def test_no_security_commits_no_patch_gap(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="abc123 feat: add\n")
+        tasks = build_recon_tasks(
+            [{'file': 'a.c', 'tags': ['memory']}], repo_path='/repo',
+        )
+        domains = [t['domain'] for t in tasks]
+        self.assertNotIn('patch-gap', domains)
+
+    @patch('stages.recon.subprocess.run')
+    def test_security_commit_creates_patch_gap_domain(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="abc123 fix overflow\n"),
+            MagicMock(returncode=0, stdout=f"{_COMMIT_LINE_PREFIX}fix overflow\nsrc/buffer.c\n"),
+        ]
+        snippets = [
+            {'file': 'src/buffer.c', 'tags': []},
+            {'file': 'src/lexer.c', 'tags': []},
+        ]
+        tasks = build_recon_tasks(snippets, repo_path='/repo')
+        patch_gap = [t for t in tasks if t['domain'] == 'patch-gap']
+        self.assertEqual(len(patch_gap), 1)
+        self.assertEqual(patch_gap[0]['target_files'], ['src/lexer.c'])
+        self.assertEqual(patch_gap[0]['priority'], 'high')
+        self.assertIn('git history', patch_gap[0]['rationale'])
+
+    @patch('stages.recon.subprocess.run')
+    def test_patched_file_is_not_its_own_sibling(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="abc123 CVE-2024-1234\n"),
+            MagicMock(returncode=0, stdout=f"{_COMMIT_LINE_PREFIX}CVE-2024-1234\nsrc/login.c\n"),
+        ]
+        snippets = [
+            {'file': 'src/login.c', 'tags': ['auth']},
+            {'file': 'src/logout.c', 'tags': ['auth']},
+        ]
+        tasks = build_recon_tasks(snippets, repo_path='/repo')
+        patch_gap = [t for t in tasks if t['domain'] == 'patch-gap']
+        self.assertEqual(patch_gap[0]['target_files'], ['src/logout.c'])
+
+    @patch('stages.recon.subprocess.run')
+    def test_sibling_only_if_exists_in_snippets(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="abc123 fix format string\n"),
+            MagicMock(returncode=0, stdout=f"{_COMMIT_LINE_PREFIX}fix format string\nsrc/print.c\n"),
+        ]
+        snippets = [{'file': 'src/print.c', 'tags': []}]
+        tasks = build_recon_tasks(snippets, repo_path='/repo')
+        patch_gap = [t for t in tasks if t['domain'] == 'patch-gap']
+        self.assertEqual(len(patch_gap), 0)
+
+    @patch('stages.recon.subprocess.run')
+    def test_sibling_with_tags_appears_in_both_domains(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="abc123 fix memory corruption\n"),
+            MagicMock(returncode=0, stdout=f"{_COMMIT_LINE_PREFIX}fix memory corruption\nsrc/vuln.c\n"),
+        ]
+        snippets = [
+            {'file': 'src/vuln.c', 'tags': ['memory']},
+            {'file': 'src/vuln2.c', 'tags': ['memory', 'auth']},
+        ]
+        tasks = build_recon_tasks(snippets, repo_path='/repo')
+        domains = {t['domain']: t['target_files'] for t in tasks}
+        self.assertIn('mem-safety', domains)
+        self.assertIn('auth', domains)
+        self.assertIn('patch-gap', domains)
+        self.assertIn('src/vuln2.c', domains['patch-gap'])
+
+    @patch('stages.recon.subprocess.run')
+    def test_git_error_graceful_tag_tasks_still_returned(self, mock_run):
+        mock_run.side_effect = FileNotFoundError()
+        tasks = build_recon_tasks(
+            [{'file': 'a.c', 'tags': ['memory']}], repo_path='/repo',
+        )
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0]['domain'], 'mem-safety')
+
+    @patch('stages.recon.subprocess.run')
+    def test_multiple_patched_dirs_find_siblings_in_each(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="abc123 CVE-2024-0001\n"),
+            MagicMock(returncode=0, stdout=(
+                f"{_COMMIT_LINE_PREFIX}CVE-2024-0001\n"
+                "src/foo/a.c\n"
+                "lib/bar/x.c\n"
+            )),
+        ]
+        snippets = [
+            {'file': 'src/foo/a.c', 'tags': []},
+            {'file': 'src/foo/b.c', 'tags': []},
+            {'file': 'lib/bar/x.c', 'tags': []},
+            {'file': 'lib/bar/y.c', 'tags': []},
+            {'file': 'other/z.c', 'tags': []},
+        ]
+        tasks = build_recon_tasks(snippets, repo_path='/repo')
+        patch_gap = [t for t in tasks if t['domain'] == 'patch-gap']
+        self.assertEqual(len(patch_gap), 1)
+        self.assertIn('src/foo/b.c', patch_gap[0]['target_files'])
+        self.assertIn('lib/bar/y.c', patch_gap[0]['target_files'])
+        self.assertNotIn('other/z.c', patch_gap[0]['target_files'])
 
 
 if __name__ == '__main__':

@@ -60,7 +60,7 @@ def run(mode: str, repo: Path, *,
     for s in snippets:
         s['tags'] = tag_snippet(s, is_library_target=cfg['is_library_target'])
 
-    recon_tasks = build_recon_tasks(snippets)
+    recon_tasks = build_recon_tasks(snippets, repo_path=str(repo))
     _ = build_context_packs(
         snippets,
         recon_tasks=recon_tasks,
