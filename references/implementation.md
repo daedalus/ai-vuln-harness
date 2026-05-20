@@ -94,7 +94,10 @@ def extract_functions(path: Path) -> list[dict]:
     return snippets
 
 def mk_id(path, node):
-    h = hashlib.sha256(f"{path}:{node.child_by_field_name('name').text.decode()}:{node.start_point[0]}".encode()).hexdigest()
+    name = _get_function_name(node)
+    if not name:
+        return None
+    h = hashlib.sha256(f"{path}:{name}:{node.start_point[0]}".encode()).hexdigest()
     return f"sha256:{h[:6]}:{h[-6:]}"
 ```
 
@@ -102,9 +105,26 @@ def mk_id(path, node):
 
 tree-sitter's AST natively handles multi-line declarations, type-anchored
 re-exports (`int ZEXPORT inflate(...)`), and nested-scope functions —
-cases that regex-based brace-depth matching silently misses:
+cases that regex-based brace-depth matching silently misses.
+
+**Important:** `child_by_field_name("name")` is not always present on
+`function_definition` nodes. When the return type is on a separate line
+(e.g. `static int\nfunc_name(...)`), the function name is nested inside a
+`function_declarator` child. Use `_get_function_name()` to handle both cases:
 
 ```python
+def _get_function_name(node) -> str | None:
+    name_node = node.child_by_field_name("name")
+    if name_node:
+        return name_node.text.decode()
+    decl = node.child_by_field_name("declarator")
+    if decl:
+        for c in decl.children:
+            if c.type == "identifier":
+                return c.text.decode()
+    return None
+
+
 def extract_functions(path: Path) -> list[dict]:
     source = path.read_text()
     tree = parser.parse(bytes(source, "utf8"))
@@ -112,10 +132,9 @@ def extract_functions(path: Path) -> list[dict]:
     for node in tree.root_node.named_children:
         if node.type in ("function_definition", "declaration"):
             content = source[node.start_byte:node.end_byte]
-            name_node = node.child_by_field_name("name")
-            if not name_node:
+            func_name = _get_function_name(node)
+            if not func_name:
                 continue
-            func_name = name_node.text.decode()
             tc = count_tokens(content)
             snippets.append({
                 "id": _make_snippet_id(str(path.relative_to(root)), func_name, node.start_point[0]),

@@ -74,6 +74,47 @@ handles automatically, it must never be used as a replacement:
 _FUNC_DIRECT_RE = re.compile(r'^\s*\w+\s*\(')
 ```
 
+### Function name extraction: `child_by_field_name("name")` is not sufficient
+
+tree-sitter-c's `function_definition` node does **not** always expose the
+function name via `child_by_field_name("name")`. When the return type and
+function name are on separate lines (e.g. `static int\naddr_masklen(int af)`),
+the name is nested inside a `function_declarator` child node instead:
+
+```
+function_definition
+  ├── storage_class_specifier: "static"
+  ├── primitive_type: "int"
+  ├── function_declarator: "addr_masklen(int af)"   ← name nested here
+  │     ├── identifier: "addr_masklen"               ← the actual name
+  │     └── parameter_list: "(int af)"
+  └── compound_statement: "{ ... }"
+```
+
+A naive `node.child_by_field_name("name")` returns `None` for these functions,
+causing the ingestor to silently skip them. This is a coverage gap that is hard
+to detect because the output count is lower than expected but still non-zero.
+
+**Fix:** fall back to traversing `function_declarator` children when
+`child_by_field_name("name")` returns `None`:
+
+```python
+def _get_function_name(node) -> str | None:
+    name_node = node.child_by_field_name("name")
+    if name_node:
+        return name_node.text.decode()
+    decl = node.child_by_field_name("declarator")
+    if decl:
+        for c in decl.children:
+            if c.type == "identifier":
+                return c.text.decode()
+    return None
+```
+
+This pattern was discovered during libopenssh analysis, where ~60% of function
+definitions had multi-line return-type declarations and would have been silently
+lost without this fallback.
+
 ### Callee extraction: filter self-calls
 
 When extracting callees from a function body via regex, the function's own name
