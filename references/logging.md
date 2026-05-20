@@ -44,7 +44,7 @@ _log.addHandler(_sh)
 | Level | When to use | Example |
 |---|---|---|
 | `_log.info()` | Stage entry, stage exit with counts, health results, model chain composition | `[stage 4] Hunter cluster: running parallel hunters...` → `-> 12 raw findings, 4 gaps` |
-| `_log.warning()` | Model failure (429/502/503), bad model detection, gapfill retry, truncated JSON | `bad model openrouter:...: 429 Too Many Requests` |
+| `_log.warning()` | Model failure (429/502/503), bad model detection, gapfill retry (model + iteration logged), truncated JSON | `bad model openrouter:...: 429 Too Many Requests`, `gapfill retry 1/2: model zen:deepseek-v4-flash-free produced sentinel-only output for mem-safety, retrying with zen:big-pickle` |
 | `_log.error()` | Pack crash, stage failure, unrecoverable API error, schema validation failure | `pack mem-safety crashed: ConnectionError` |
 | `_log.debug()` | Per-API-call timing, cache hits/misses, per-finding details (not emitted in production) | `call_llm(mem-safety) returned in 12.4s (cache: hit)` |
 

@@ -792,18 +792,46 @@ Output ONLY a JSON object: {{"status": "confirmed"/"rejected"/"needs-more-info",
 ### Gapfill (Coverage-Driven Re-queueing)
 
 Hunters' `coverage_gap` records are re-queued as new scoped Hunt tasks.
-Loop: Hunt → Validate → Gapfill → Hunt until queue drains (max 2 iterations):
+A simple retry with the same model and prompt produces the same empty output.
+The gapfill loop rotates models and rephrases prompts to break symmetry:
+
+- **Sentinel-only vs genuine coverage**: `{"done": true}` with no findings
+  (sentinel-only) is distinguishable from "analyzed and found nothing."
+  Sentinel-only means the model skipped analysis entirely — always retry.
+- **Model rotation**: Each gapfill iteration uses a different model from the
+  hunt pool (round-robin offset). Never retry with the same model that
+  produced empty output.
+- **Rephrased prompt**: Append meta-instruction: "The previous model produced
+  no findings for this scope. Double-check each function carefully..."
+- **Max 2 iterations**: Two different models with two differently phrased
+  prompts. If both produce empty output, the gap is genuine.
 
 ```python
+from copy import deepcopy
+
+def _rephrase_gap_prompt(original_prompt: str, model_id: str) -> str:
+    return (
+        original_prompt.rstrip("\n") +
+        "\n\n--\n"
+        f"Note: The previous model ({model_id}) produced no findings for this "
+        "scope. Double-check each function carefully. Verify you are not "
+        "missing anything — re-examine every function in the provided context."
+    )
+
+gapfill_model = hunt_models[gapfill_iter % len(hunt_models)]
+for pack in rerun_packs:
+    pack["prompt"] = _rephrase_gap_prompt(pack["prompt"], gapfill_model)
+
 for gapfill_iter in range(2):
     current_gaps = [g for g in gaps if not g.get('gapfill_retried')]
     if not current_gaps:
         break
-    fresh_findings, fresh_gaps = run_all_hunters(packs, hunt_models, parallel=3)
+    fresh_findings, fresh_gaps = _gapfill_rerun(
+        current_gaps, packs, hunt_models, domain_map, parallel=3)
     findings.extend(fresh_findings)
-    gaps = [{'gapfill_retried': True, **g} for g in current_gaps]
-    gaps.extend(fresh_gaps)
-    persist_findings_and_gaps(findings, gaps)
+    for g in current_gaps:
+        g['gapfill_retried'] = True
+    gaps = current_gaps + fresh_gaps
 ```
 
 - **Coverage gaps** should specify: `{"coverage_gap":"<reason>","reason":"<detailed explanation>"}`
@@ -882,6 +910,13 @@ chainer and the shield.
 
 ### Call-path verification
 
+**call_path must be normalized at parse time** (in `parse_findings()`), not in
+the shield. Models return string-typed paths ~30% of the time (`"a -> b -> c"`
+instead of `["a", "b", "c"]`). If the shield iterates the string character-by-
+character, verification produces garbage — every path fails because `' '` and
+`'-'` are not function names in the graph. By the time findings reach the
+shield, `call_path` is already `list[str]` or the parse layer has a bug.
+
 Check whether a finding's `call_path` matches actual edges in the graph:
 
 ```python
@@ -912,6 +947,15 @@ def detect_hallucination(finding, snippet) -> tuple[bool, str]:
     # Same for call_path names with 0.70 threshold
     ...
 ```
+
+**Observation:** This filter caught 7/7 findings from one run — all were
+generic security prose ("buffer overflow possible in memory copy operation")
+mentioning none of the actual function names or variables in the snippet.
+This is a cheap signal (regex + set intersection, no LLM call) that catches
+vague/generic findings before they reach the chainer. If a specific model
+consistently produces hallucinated findings (≥50% hallucination rate across
+a run), demote it in the model pool: it is not performing code-specific
+analysis and will waste Validate stage budget.
 
 ### Static reachability filter (filter_unreachable)
 

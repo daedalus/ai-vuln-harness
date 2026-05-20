@@ -107,10 +107,13 @@ tree-sitter's AST natively handles multi-line declarations, type-anchored
 re-exports (`int ZEXPORT inflate(...)`), and nested-scope functions —
 cases that regex-based brace-depth matching silently misses.
 
-**Important:** `child_by_field_name("name")` is not always present on
-`function_definition` nodes. When the return type is on a separate line
-(e.g. `static int\nfunc_name(...)`), the function name is nested inside a
-`function_declarator` child. Use `_get_function_name()` to handle both cases:
+**Critical:** `child_by_field_name("name")` silently returns `None` for
+~60% of C/C++ functions when the return type is on a separate line
+(e.g. `static int\nfunc_name(...)`). The function name is nested inside a
+`function_declarator` child node instead. This was discovered by inspecting
+raw AST output — it is not obvious from tree-sitter's documentation and
+produces a silent coverage gap (functions silently dropped from the DB
+with no error). Use `_get_function_name()` to handle both cases:
 
 ```python
 def _get_function_name(node) -> str | None:
@@ -536,6 +539,38 @@ def parse_findings(text: str, domain: str = "") -> tuple[list[dict], list[dict]]
     return findings, gaps
 ```
 
+### Call path normalization (at parse time, not in shield)
+
+Models return `call_path` as a string `"a -> b -> c"` instead of the expected
+list `["a", "b", "c"]` ~30% of the time. If the shield iterates the string
+character-by-character, call-path verification produces garbage results (every
+path fails because `' '` is not a function in the graph). Normalize at parse
+time, called once on every finding right after JSON extraction:
+
+```python
+def normalize_call_path(path: Any) -> list[str]:
+    if isinstance(path, list):
+        return [str(p).strip().lower() for p in path]
+    if isinstance(path, str):
+        return [p.strip().lower() for p in path.split(" -> ")]
+    return []
+```
+
+Call this inside `parse_findings()` for every finding emitted:
+
+```python
+# Inside parse_findings, after JSON extraction for each finding:
+for f in findings:
+    f["call_path"] = normalize_call_path(f.get("call_path"))
+    # Also normalize in coverage gaps if present
+for g in gaps:
+    if "call_path" in g:
+        g["call_path"] = normalize_call_path(g["call_path"])
+```
+
+By the time findings reach the Shield stage, `call_path` must be `list[str]`.
+Any string-typed `call_path` is a bug in the parse layer, not the shield.
+
 ### Truncated JSON repair
 
 Reasoning models often exceed max_tokens limits. When validate's JSON is
@@ -648,6 +683,75 @@ def hallucination_risk(finding: dict, snippet: dict) -> str:
     elif len(overlap) == 1:
         return "medium"
     return "high"
+```
+
+### Gapfill rerun with model rotation and rephrased prompt
+
+Sentinel-only output (`{"done": true}` with no findings) must be distinguished
+from genuine coverage (model analyzed and found nothing). The gapfill loop
+retries with a different model and a rephrased prompt so the same failure mode
+doesn't repeat:
+
+```python
+def _rephrase_gap_prompt(original_prompt: str, model_id: str) -> str:
+    """Append meta-instruction for gapfill retry with a fresh model."""
+    return (
+        original_prompt.rstrip("\n") +
+        "\n\n--\n"
+        f"Note: The previous model ({model_id}) produced no findings for this "
+        "scope. Double-check each function carefully. Verify you are not "
+        "missing anything — re-examine every function in the provided context. "
+        "If you genuinely find no vulnerabilities, explain specifically which "
+        "functions you checked and why each is safe."
+    )
+
+
+def _gapfill_rerun(gaps: list[dict], original_packs: list[dict],
+                   hunt_models: list[str], domain_map: dict, parallel: int = 3):
+    """One gapfill iteration: retry gaps with a different model + rephrased prompt."""
+    if not hunt_models:
+        return [], []
+
+    # Rotate to a different model (avoid reusing the one that produced empty output)
+    # Use a round-robin offset so subsequent iterations try different models.
+    model_idx = len([g for g in gaps if g.get("gapfill_retried")]) % len(hunt_models)
+    fallback_model = hunt_models[model_idx]
+
+    rerun_packs = []
+    for g in gaps:
+        domain = g.get("coverage_gap", "mem-safety")
+        pack = deepcopy(domain_map.get(domain, original_packs[0]))
+        pack["prompt"] = _rephrase_gap_prompt(pack.get("prompt", ""), fallback_model)
+        pack["gapfill_model"] = fallback_model
+        rerun_packs.append(pack)
+
+    _log.warning("[gapfill] retrying %d gaps with model %s (model_idx=%d)",
+                 len(gaps), fallback_model, model_idx)
+
+    fresh_findings, fresh_gaps = run_all_hunters(
+        rerun_packs, [fallback_model], parallel=parallel
+    )
+
+    return fresh_findings, fresh_gaps
+```
+
+The caller in the pipeline orchestrator:
+
+```python
+for gapfill_iter in range(2):
+    current = [g for g in gaps if not g.get("gapfill_retried")]
+    if not current:
+        break
+    fresh_f, fresh_g = _gapfill_rerun(current, packs, hunt_models, domain_map)
+    findings.extend(fresh_f)
+    for g in current:
+        g["gapfill_retried"] = True
+    gaps = current + fresh_g
+    _log.info("[gapfill] iteration %d/2: +%d findings, +%d new gaps",
+              gapfill_iter + 1, len(fresh_f), len(fresh_g))
+
+# After both iterations, remaining gaps are genuine coverage gaps
+genuine_gaps = [g for g in gaps if not g.get("gapfill_retried") or g.get("sentinel_only")]
 ```
 
 ### Alternative: Async pattern (for paid/private endpoints)

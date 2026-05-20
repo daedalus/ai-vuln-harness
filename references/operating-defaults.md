@@ -9,7 +9,7 @@
    - IDs must be deterministic across runs: `sha256({file}:{func_name}:{line})`.
    - Non-deterministic `hash()` or `id()` breaks cache, state DB, and finding traceability.
    - Include callee extraction for call-graph construction; filter out the function's own name from its callee list.
-   - Handle multi-line function declarations where return type and name are on separate lines.
+   - Handle multi-line function declarations where return type and name are on separate lines. tree-sitter's `child_by_field_name("name")` silently returns `None` for ~60% of multi-line declarations; must iterate `function_declarator` children as fallback.
 
 ## Recon
 

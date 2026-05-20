@@ -52,13 +52,17 @@ These are pass/fail checks, not recommendations.
 - `filter_unreachable()` accepts a `snippet_db` parameter and uses it to
   resolve finding `snippet_id` values to function names for graph reachability.
 - The call graph is keyed on lowercase function names, not snippet IDs.
+- `call_path` must be `list[str]` before the Shield stage. String-typed call
+  paths (e.g., `"a -> b -> c"`) are not tolerated — must be normalized at
+  parse time in `parse_findings()`, not in the shield.
 
 ## Pipeline invariants
 
 - Pipeline stages are ordered: Ingestor → Recon → Coordinator → Hunt →
   Validate → Voting → Shield → Chainer → PoC → Trace → Report.
-- Gapfill loop exists (2 iterations max) after Validate. Without it, coverage
-  gaps from the first hunt pass are silently lost.
+- Gapfill loop exists (2 iterations max) after Validate, each with a different
+  model and rephrased prompt. Without model rotation, the same model produces
+  the same empty output. Without prompt rephrasing, the same failure mode repeats.
 - `output/validated.jsonl` is written after Validate. The file is consumed by
   `--validate-only` and `--resume` modes.
 - `--validate-only` loads cached findings from `output/findings.jsonl` and
