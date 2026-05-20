@@ -53,7 +53,7 @@
 ## Multi-provider routing
 
 8. Multi-provider routing
-   - Prefix model IDs with provider name: `openrouter:...`, `groq:...`, `cerebras:...`
+   - Prefix model IDs with provider name: `openrouter:...`, `groq:...`, `cerebras:...`, `google:...`
    - `call_llm()` resolves the prefix to the right base URL, auth key, and headers.
    - This allows mixing providers in a single flat model chain with no code changes per provider.
 
@@ -64,8 +64,8 @@
      or `os.getcwd() + '/auth.json'` — those break when the harness is invoked
      from a different directory.
    - `~/.local/share/opencode/auth.json` is the global fallback.
-   - Support env vars (`OPENROUTER_API_KEY`, `GROQ_API_KEY`, `CEREBRAS_API_KEY`)
-     as override.
+   - Support env vars (`OPENROUTER_API_KEY`, `GROQ_API_KEY`, `CEREBRAS_API_KEY`,
+     `GOOGLE_API_KEY`) as override.
    - Resolution order: env var → script-dir `auth.json` → global fallback.
      First non-empty value wins.
 

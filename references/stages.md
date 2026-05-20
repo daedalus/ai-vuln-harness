@@ -438,7 +438,8 @@ instead of fetched at runtime:
     "openrouter:deepseek/deepseek-v4-flash:free",
     "openrouter:qwen/qwq-32b:free",
     "groq:llama3-70b-8192",
-    "cerebras:llama3.1-8b"
+    "cerebras:llama3.1-8b",
+    "google:gemini-2.5-flash"
   ]
 }
 ```
@@ -502,8 +503,10 @@ result = json.loads(resp.read().decode())
 - **Proxy support**: Set `https_proxy` env var; urllib respects it natively.
 - **`max_tokens` must be 8192 minimum** — reasoning models consume large
   output budgets for chain-of-thought. 4096 causes truncation.
-- **Auth**: Read API key from project-relative `auth.json` first, then
-  `~/.local/share/opencode/auth.json`, then `OPENROUTER_API_KEY` env var.
+- **Auth**: Read API key from script-relative `auth.json` first, then
+  `~/.local/share/opencode/auth.json`, then the corresponding `*_API_KEY`
+  env var (`OPENROUTER_API_KEY`, `GROQ_API_KEY`, `CEREBRAS_API_KEY`,
+  `GOOGLE_API_KEY`).
 - **Retry on 502/503/504** — these are upstream provider overload, not
   permanent failures. Use exponential backoff.
 
@@ -520,9 +523,18 @@ result = json.loads(resp.read().decode())
 
 - Requires `CEREBRAS_API_KEY` in auth.json or env var.
 - Base URL: `https://api.cerebras.ai/v1/chat/completions`
-- Smallest model selection of the three providers.
+- Smallest model selection.
 - Also geo-blocked to US from some regions.
 - Best for low-latency inference on smaller models.
+
+#### Google (Gemini via OpenAI-compatible endpoint)
+
+- Requires `GOOGLE_API_KEY` in auth.json or env var.
+- Base URL: `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`
+- Provides access to Gemini 2.5 Pro, Gemini 2.5 Flash, and Gemma models.
+- Free tier: 1,500 RPM for Gemini Flash, generous rate limits.
+- Uses the OpenAI-compatible v1beta endpoint — same chat completions format as all other providers.
+- Note: The base URL ends with `/v1beta/openai` (no trailing slash in base), so the full chat completions path is `/v1beta/openai/chat/completions`.
 
 ### Multi-Provider Routing
 
@@ -541,6 +553,9 @@ def call_llm(model_id: str, prompt: str, **kwargs):
     elif provider == "cerebras":
         base_url = "https://api.cerebras.ai/v1"
         api_key = _get_auth_key("cerebras")
+    elif provider == "google":
+        base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+        api_key = _get_auth_key("google")
     else:
         raise ValueError(f"unknown provider: {provider}")
     return _call_openai_compatible(base_url, api_key, model_name, prompt, **kwargs)
