@@ -59,10 +59,15 @@
 
 ## Auth file resolution
 
-9. Auth files: check project-relative path first, fall back to global
-   - `./auth.json` (next to the harness) takes priority.
+9. Auth files: resolve relative to the script directory (`run.py`), not `cwd`
+   - `Path(__file__).parent / 'auth.json'` is the primary path. Never `./auth.json`
+     or `os.getcwd() + '/auth.json'` — those break when the harness is invoked
+     from a different directory.
    - `~/.local/share/opencode/auth.json` is the global fallback.
-   - Support env vars (`OPENROUTER_API_KEY`, `GROQ_API_KEY`, `CEREBRAS_API_KEY`) as override.
+   - Support env vars (`OPENROUTER_API_KEY`, `GROQ_API_KEY`, `CEREBRAS_API_KEY`)
+     as override.
+   - Resolution order: env var → script-dir `auth.json` → global fallback.
+     First non-empty value wins.
 
 ## Proxy support
 
