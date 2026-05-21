@@ -76,7 +76,7 @@ from stages.suppressions import SuppressionRegistry
 logger = logging.getLogger('vuln-harness')
 
 
-def _setup_logging(log_dir: Path | None = None) -> None:
+def _setup_logging(log_dir: Path | None = None, log_file: Path | None = None) -> None:
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
     fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
@@ -86,7 +86,13 @@ def _setup_logging(log_dir: Path | None = None) -> None:
     stderr.setFormatter(fmt)
     root.addHandler(stderr)
 
-    if log_dir:
+    if log_file:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(log_file, encoding='utf-8')
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(fmt)
+        root.addHandler(fh)
+    elif log_dir:
         log_dir.mkdir(parents=True, exist_ok=True)
         fh = logging.FileHandler(log_dir / 'run.log', encoding='utf-8')
         fh.setLevel(logging.DEBUG)
@@ -909,7 +915,9 @@ def main() -> None:
                         help='Run PoC confirmation on findings. Without argument: all findings. '
                              'With ID: that specific finding. Combine with --poc-only to skip API stages.')
     parser.add_argument('--poc-only', action='store_true', dest='poc_only',
-                        help='Skip API stages; load cached findings and gaps, run PoC only.')
+                         help='Skip API stages; load cached findings and gaps, run PoC only.')
+    parser.add_argument('--log-file', type=Path, default=None,
+                         help='Write detailed debug logs to this file instead of <repo>/../run.log')
     args = parser.parse_args()
 
     if args.proxy:
@@ -952,7 +960,10 @@ def main() -> None:
     if mode in ('full', 'max-run', 'all') and not args.auth_json and not Path(Path(__file__).parent / 'auth.json').exists() and not Path(Path.home() / '.local/share/opencode/auth.json').exists():
         logger.warning('No auth.json found; running with empty model pools (will produce 0 findings)')
 
-    _setup_logging(log_dir=Path(args.repo).parent if Path(args.repo).is_absolute() else None)
+    _setup_logging(
+        log_file=args.log_file,
+        log_dir=None if args.log_file else (Path(args.repo).parent if Path(args.repo).is_absolute() else None),
+    )
 
     if args.model_health_check:
         from stages.runtime import fetch_model_limits, health_check_models
