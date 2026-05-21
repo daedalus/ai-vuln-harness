@@ -326,7 +326,8 @@ def run(mode: str, repo: Path, *,
         validate_model_chain_override: list[str] | None = None,
         run_poc_enabled: bool = False,
         poc_finding_id: str | None = None,
-        refresh_models: bool = False) -> dict:
+        refresh_models: bool = False,
+        budget_ratio: float = 0.85) -> dict:
     script_dir = Path(__file__).parent
     cfg = json.loads((script_dir / 'config/defaults.json').read_text())
     stages_cfg = _load_stages_config(script_dir)
