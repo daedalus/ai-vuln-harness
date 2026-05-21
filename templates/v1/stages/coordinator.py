@@ -2,6 +2,25 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+DOMAIN_ORDER = [
+    'mem-safety', 'auth', 'crypto', 'ipc', 'data-flow', 'format-str',
+    'injection', 'path-traversal', 'concurrency', 'resource', 'secrets',
+]
+
+DOMAINS = [
+    {'name': 'mem-safety', 'exclusive': True},
+    {'name': 'auth', 'exclusive': False},
+    {'name': 'crypto', 'exclusive': True},
+    {'name': 'ipc', 'exclusive': False},
+    {'name': 'data-flow', 'exclusive': False},
+    {'name': 'format-str', 'exclusive': True},
+    {'name': 'injection', 'exclusive': True},
+    {'name': 'path-traversal', 'exclusive': True},
+    {'name': 'concurrency', 'exclusive': False},
+    {'name': 'resource', 'exclusive': False},
+    {'name': 'secrets', 'exclusive': True},
+]
+
 
 def build_context_packs(
     snippets: list[dict],
@@ -41,9 +60,22 @@ def build_context_packs(
             domain_context[task['domain']]['cross_repo_targets'] = task['cross_repo_targets']
 
     packs = []
-    for domain, items in domain_snippets.items():
+    domain_iter_order = []
+    if 'all' in domain_snippets:
+        domain_iter_order.append('all')
+    for d in DOMAINS:
+        name = d['name'] if isinstance(d, dict) else d
+        if name in domain_snippets:
+            domain_iter_order.append(name)
+    for domain in domain_snippets:
+        if domain not in domain_iter_order and domain != 'all':
+            domain_iter_order.append(domain)
+    for domain in domain_iter_order:
+        items = domain_snippets[domain]
         token_sum = 0
         pack_snips = []
+        total_tc = sum(int(s.get('token_count') or 0) for s in items)
+        print(f'[coordinator] domain={domain} total_snippets={len(items)} total_token_count={total_tc} budget_tokens={budget_tokens}', file=__import__('sys').stderr)
         for s in items:
             tc = int(s.get('token_count') or 0)
             if token_sum + tc > budget_tokens and pack_snips:

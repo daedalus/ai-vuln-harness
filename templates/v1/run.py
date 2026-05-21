@@ -2,25 +2,38 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from copy import deepcopy
 from pathlib import Path
 
 from stages.diff import get_changed_snippets
+from stages.chains import synthesize_exploit_chains
+from stages.contracts import PIPELINE_STAGES, standardize_finding
+from stages.coordinator import build_context_packs
+from stages.exposure import annotate_exposure_windows
 from stages.feedback import build_feedback_tasks
 from stages.gapfill import build_gapfill_tasks
 from stages.ingestor import filter_snippets, load_repo_snippets, tag_snippet
+from stages.parser import parse_findings
+from stages.poc import process_findings as run_poc
 from stages.recon import build_recon_tasks
-from stages.coordinator import build_context_packs
-from stages.chains import synthesize_exploit_chains
-from stages.exposure import annotate_exposure_windows
 from stages.report import build_report, deduplicate
+from stages.validate import build_validate_prompt, is_api_by_design
 from stages.runtime import (
+    HUNT_SYSTEM_PROMPT,
+    TRACE_SYSTEM_PROMPT,
+    VALIDATE_SYSTEM_PROMPT,
+    _rephrase_gap_prompt,
+    call_llm,
+    health_check_models,
+    load_domain_model_map,
+    repair_json_output,
     JsonCache,
     StateDB,
     fetch_model_limits,
-    health_check,
     load_auth_config,
-    run_hunt_all,
-    run_validate_all,
     split_model_pools,
 )
 from stages.shield import (
@@ -68,16 +81,211 @@ def _write_jsonl(path: Path, items: list[dict]) -> None:
 def _read_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    items: list[dict] = []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    items.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
+    items = []
+    for line in path.read_text().strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            items.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
     return items
+
+
+def _run_one_hunt_pack(
+    pack: dict,
+    model: str,
+    *,
+    auth: dict[str, str],
+    cache: JsonCache,
+) -> tuple[list[dict], list[dict]]:
+    prompt = json.dumps(pack, indent=2)
+    tc_sum = sum(s.get('token_count', 0) for s in pack.get('snippets', []))
+    print(f'[hunt] calling model={model!r} agent={pack.get("agent","?")} token_count_sum={tc_sum} prompt_chars={len(prompt)}', file=sys.stderr)
+    try:
+        raw = call_llm(
+            model, prompt,
+            system=HUNT_SYSTEM_PROMPT,
+            auth=auth,
+            cache=cache,
+        )
+        domain = pack.get('agent', 'unknown')
+        findings, gaps = parse_findings(raw, domain=domain)
+        for f in findings:
+            f.setdefault('hunt_model', model)
+        return findings, gaps
+    except Exception as e:
+        print(f'[hunt] model {model} pack {pack.get("agent", "?")} failed: {e}', file=sys.stderr)
+        gap_domain = pack.get('agent', 'unknown')
+        return [], [{'coverage_gap': gap_domain, 'reason': f'hunt exception: {e}', 'domain': gap_domain}]
+
+
+def _run_hunt_packs(
+    packs: list[dict],
+    models: list[str],
+    *,
+    auth: dict[str, str],
+    cache: JsonCache,
+    parallel: int = 3,
+    max_run: int | None = None,
+    domain_map: dict[str, list[dict]] | None = None,
+    domain_model_map: dict[str, str] | None = None,
+) -> tuple[list[dict], list[dict]]:
+    domain_model_map = domain_model_map or {}
+
+    if max_run is not None:
+        packs = packs[:max_run]
+
+    all_findings: list[dict] = []
+    all_gaps: list[dict] = []
+    tasks: list[dict] = []
+
+    for pack in packs:
+        domain = pack.get('agent', 'mem-safety')
+        preferred = domain_model_map.get(domain)
+        ordered = []
+        if preferred and preferred in models:
+            ordered.append(preferred)
+        ordered.extend(m for m in models if m not in ordered)
+        tasks.append({'pack': pack, 'models': ordered})
+
+    completed = 0
+    total = len(tasks)
+    print(f'[hunt] starting {total} pack(s) with {parallel} worker(s)', file=sys.stderr)
+
+    with ThreadPoolExecutor(max_workers=parallel) as pool:
+        futures = {}
+        for t in tasks:
+            model = t['models'][0] if t['models'] else ''
+            futures[pool.submit(_run_one_hunt_pack, t['pack'], model, auth=auth, cache=cache)] = t
+
+        for f in as_completed(futures):
+            t = futures[f]
+            domain = t['pack'].get('agent', '?')
+            try:
+                findings, gaps = f.result()
+                all_findings.extend(findings)
+                all_gaps.extend(gaps)
+            except Exception as e:
+                all_gaps.append({'coverage_gap': domain, 'reason': f'hunt worker exception: {e}'})
+            completed += 1
+            print(f'[hunt] {completed}/{total} packs done', file=sys.stderr)
+
+    return all_findings, all_gaps
+
+
+def _run_validate_finding(
+    finding: dict,
+    snippet: dict,
+    model: str,
+    *,
+    auth: dict[str, str],
+    cache: JsonCache,
+) -> dict:
+    if is_api_by_design(finding, snippet):
+        return {**finding, 'validate_status': 'rejected', 'validate_reason': 'api_by_design'}
+    finding = standardize_finding(finding)
+    snippet_code = snippet.get('content', '')
+    prompt = build_validate_prompt(finding, snippet)
+    try:
+        raw = call_llm(
+            model, prompt,
+            system=VALIDATE_SYSTEM_PROMPT,
+            auth=auth,
+            cache=cache,
+        )
+        parsed, repaired = repair_json_output(raw)
+        if parsed is None:
+            return {**finding, 'validate_status': 'needs-more-info', 'validate_reason': 'unparseable validate response'}
+        status = parsed.get('status', 'needs-more-info')
+        reason = parsed.get('reason', '')
+        return {**finding, 'validate_status': status, 'validate_reason': reason}
+    except Exception as e:
+        return {**finding, 'validate_status': 'needs-more-info', 'validate_reason': f'validate exception: {e}'}
+
+
+def _run_validate_findings(
+    findings: list[dict],
+    snippet_db: dict[str, dict],
+    models: list[str],
+    *,
+    auth: dict[str, str],
+    cache: JsonCache,
+    parallel: int = 3,
+) -> list[dict]:
+    if not findings:
+        return []
+
+    validated: list[dict] = []
+    total = len(findings)
+    print(f'[validate] validating {total} finding(s) with {parallel} worker(s)', file=sys.stderr)
+
+    with ThreadPoolExecutor(max_workers=parallel) as pool:
+        futures = {}
+        for finding in findings:
+            sid = finding.get('snippet_id', '')
+            snippet = snippet_db.get(sid, {})
+            model = models[0] if models else 'deepseek/deepseek-v4-flash:free'
+            futures[pool.submit(
+                _run_validate_finding, finding, snippet, model,
+                auth=auth, cache=cache,
+            )] = finding
+
+        completed = 0
+        for f in as_completed(futures):
+            try:
+                validated.append(f.result())
+            except Exception as e:
+                orig = futures[f]
+                validated.append({**orig, 'validate_status': 'needs-more-info', 'validate_reason': str(e)})
+            completed += 1
+            print(f'[validate] {completed}/{total} findings done', file=sys.stderr)
+
+    return validated
+
+
+def _gapfill_rerun(
+    gaps: list[dict],
+    original_packs: list[dict],
+    hunt_models: list[str],
+    domain_map: dict[str, list[dict]],
+    *,
+    auth: dict[str, str],
+    cache: JsonCache,
+    parallel: int = 3,
+    gapfill_iter: int = 0,
+) -> tuple[list[dict], list[dict]]:
+    if not hunt_models:
+        return [], []
+
+    model_idx = gapfill_iter % len(hunt_models)
+    fallback_model = hunt_models[model_idx]
+
+    rerun_packs: list[dict] = []
+    for g in gaps:
+        domain = g.get('coverage_gap', g.get('domain', 'mem-safety'))
+        candidates = domain_map.get(domain, original_packs[:1])
+        if not candidates:
+            continue
+        pack = deepcopy(candidates[0])
+        prompt_text = json.dumps(pack, indent=2)
+        pack['prompt'] = _rephrase_gap_prompt(prompt_text, fallback_model)
+        pack['gapfill_model'] = fallback_model
+        pack['agent'] = domain
+        rerun_packs.append(pack)
+
+    print(f'[gapfill] iteration {gapfill_iter + 1}/2: retrying {len(rerun_packs)} gap(s) with model {fallback_model}', file=sys.stderr)
+
+    fresh_findings, fresh_gaps = _run_hunt_packs(
+        rerun_packs, [fallback_model],
+        auth=auth, cache=cache, parallel=parallel,
+    )
+
+    for g in gaps:
+        g['gapfill_retried'] = True
+
+    return fresh_findings, fresh_gaps
 
 
 def run(mode: str, repo: Path, *,
@@ -89,6 +297,8 @@ def run(mode: str, repo: Path, *,
         head_commit: str = 'HEAD',
         max_cost_usd: float | None = None,
         max_concurrency: int | None = None,
+        skip_health: bool = False,
+        max_run: int | None = None,
         scope_notes: str | None = None) -> dict:
     script_dir = Path(__file__).parent
     cfg = json.loads((script_dir / 'config/defaults.json').read_text())
@@ -100,11 +310,12 @@ def run(mode: str, repo: Path, *,
         output_dir = script_dir / output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- Cost guardrail: abort early if budget already exceeded ---
     run_id = f'{mode}:{str(repo)}'
+    state.create_run(repo_path=str(repo), run_id=run_id)
     if max_cost_usd is not None:
         spent = state.total_cost(run_id)
         if spent >= max_cost_usd:
+            state.finish_run(run_id, 'cost_limit')
             raise RuntimeError(
                 f'Cost limit ${max_cost_usd:.2f} reached '
                 f'(${spent:.2f} already spent on run {run_id!r})'
@@ -112,20 +323,22 @@ def run(mode: str, repo: Path, *,
 
     auth = load_auth_config(explicit_path=auth_path, script_dir=script_dir)
     state.put_meta('auth_providers', json.dumps(sorted(auth.keys())))
+    if scope_notes:
+        state.put_meta('scope_notes_hash', str(hash(scope_notes)))
 
-    # --- Effective concurrency cap ---
     global_max = max_concurrency or cfg.get('max_workers', 3)
     hunt_workers = _stage_workers(stages_cfg, 'hunt', global_max)
     validate_workers = _stage_workers(stages_cfg, 'validate', global_max)
     state.put_meta('hunt_workers', str(hunt_workers))
     state.put_meta('validate_workers', str(validate_workers))
 
+    # --- INGESTOR ---
     raw_snippets = load_repo_snippets(repo, is_library_target=cfg['is_library_target'])
     snippets = filter_snippets(raw_snippets, is_library_target=cfg['is_library_target'])
     for s in snippets:
         s['tags'] = sorted(set(s.get('tags') or []) | set(tag_snippet(s, is_library_target=cfg['is_library_target'])))
+    snippet_db = {s['id']: s for s in snippets}
 
-    # --- Diff-driven incremental scan (mode='diff' or explicit commits) ---
     if mode == 'diff' or base_commit is not None:
         if base_commit is None:
             raise ValueError("--base-commit is required when mode is 'diff'")
@@ -134,71 +347,164 @@ def run(mode: str, repo: Path, *,
         state.put_meta('diff_head_commit', head_commit)
         state.put_meta('diff_snippet_count', str(len(snippets)))
 
-    model_chain = [
+    model_chain = cfg.get('model_chain', [
         'deepseek/deepseek-v4-flash:free',
         'qwen/qwen-2.5-coder-32b-instruct:free',
         'nvidia/nemotron-3-super-120b-a12b:free',
         'arcee-ai/trinity-large-thinking:free',
-    ]
+    ])
+
+    if not skip_health and auth and mode not in ('validate-only', 'resume'):
+        print('[health] probing model chain...', file=sys.stderr)
+        alive, dead = health_check_models(model_chain, auth=auth, cache=cache)
+        if dead:
+            print(f'[health] dead models: {dead}', file=sys.stderr)
+        if alive:
+            model_chain = alive
+        else:
+            print('[health] all models dead; continuing with original chain', file=sys.stderr)
 
     model_limits = fetch_model_limits(model_chain, script_dir)
     min_context = min(model_limits.values())
     budget_tokens = int(min_context * 0.85)
+    print(f'[budget] model_limits={model_limits} min_context={min_context} budget_tokens={budget_tokens}', file=sys.stderr)
 
+    # --- RECON ---
     recon_tasks = build_recon_tasks(snippets, repo_path=str(repo), scope_notes=scope_notes)
+    state.put_meta('recon_task_count', str(len(recon_tasks)))
+
+    # --- COORDINATOR ---
     packs = build_context_packs(
         snippets,
         recon_tasks=recon_tasks,
         allow_full_db_fallback=allow_full_db_fallback,
         budget_tokens=budget_tokens,
     )
-    hunt_models, validate_models = split_model_pools(model_chain)
-    snippet_db = {s['id']: s for s in snippets}
+    state.put_meta('pack_count', str(len(packs)))
+    domain_map: dict[str, list[dict]] = {}
+    for p in packs:
+        domain_map.setdefault(p.get('agent', ''), []).append(p)
+    from collections import Counter
+    pack_domain_counts: Counter = Counter()
+    for p in packs:
+        pack_domain_counts[p.get('agent', '?')] += 1
+    print(f'[pack] total_packs={len(packs)} per_domain={dict(pack_domain_counts)}', file=sys.stderr)
+    for i, p in enumerate(packs):
+        prompt = json.dumps(p, indent=2)
+        tc_sum = sum(s.get('token_count', 0) for s in p.get('snippets', []))
+        print(f'[pack] #{i+1} agent={p.get("agent","?")} snippets={len(p.get("snippets",[]))} token_count_sum={tc_sum} budget={budget_tokens} prompt_chars={len(prompt)}', file=sys.stderr)
 
-    # --- Validate-only / Resume: load cached findings, skip Hunt ---
-    if mode in ('validate-only', 'resume'):
-        raw_findings = _read_jsonl(output_dir / 'findings.jsonl')
-    else:
-        # --- Hunt: run all context packs through LLM models ---
-        raw_findings = run_hunt_all(packs, hunt_models, auth=auth, cache=cache)
-        _write_jsonl(output_dir / 'findings.jsonl', raw_findings)
-
-    # --- Validate: each finding independently reviewed by validate models ---
-    findings = run_validate_all(raw_findings, snippet_db, validate_models,
-                                auth=auth, cache=cache)
-    _write_jsonl(output_dir / 'validated.jsonl', findings)
-
-    promoted, _suppressed_by_vote = merge_hunter_outputs([findings, []], min_votes=2)
-
-    # --- Gapfill: identify domains with zero confirmed findings and re-queue ---
-    gapfill_tasks = build_gapfill_tasks(
-        recon_tasks, promoted, max_tasks=5, scope_notes=scope_notes,
+    pool_presets = cfg.get('model_pool_presets', {})
+    hunt_models, validate_models = split_model_pools(
+        model_chain,
+        hunt_keywords=pool_presets.get('hunt'),
+        validate_keywords=pool_presets.get('validate'),
     )
+    state.put_meta('hunt_models', json.dumps(hunt_models))
+    state.put_meta('validate_models', json.dumps(validate_models))
+
+    # Persist stage-boundary artifacts for debug and resume
+    _write_jsonl(output_dir / 'snippet_db.json', list(snippet_db.values()))
+    _write_jsonl(output_dir / 'recon_tasks.json', recon_tasks)
+    _write_jsonl(output_dir / 'context_packs.json', packs)
+
+    domain_model_map = load_domain_model_map(script_dir)
+
+    # --- HUNT ---
+    all_findings: list[dict] = []
+    all_gaps: list[dict] = []
+
+    if mode in ('validate-only', 'resume'):
+        all_findings = _read_jsonl(output_dir / 'findings.jsonl')
+        all_gaps = _read_jsonl(output_dir / 'gaps.jsonl')
+        print(f'[load] loaded {len(all_findings)} finding(s) and {len(all_gaps)} gap(s) from cache', file=sys.stderr)
+    else:
+        if auth:
+            all_findings, all_gaps = _run_hunt_packs(
+                packs, hunt_models,
+                auth=auth, cache=cache,
+                parallel=hunt_workers,
+                max_run=max_run,
+                domain_map=domain_map,
+                domain_model_map=domain_model_map,
+            )
+        else:
+            print('[hunt] no auth configured; using empty findings', file=sys.stderr)
+
+        _write_jsonl(output_dir / 'findings.jsonl', all_findings)
+        _write_jsonl(output_dir / 'gaps.jsonl', all_gaps)
+
+    # --- VALIDATE (on raw findings, before dedup) ---
+    if mode != 'validate-only' and all_findings and auth:
+        findings = _run_validate_findings(
+            all_findings, snippet_db, validate_models,
+            auth=auth, cache=cache, parallel=validate_workers,
+        )
+        _write_jsonl(output_dir / 'validated.jsonl', findings)
+    else:
+        findings = all_findings[:]
+        for f in findings:
+            f.setdefault('validate_status', 'needs-more-info')
+            f.setdefault('validate_reason', 'skipped')
+
+    # --- GAPFILL (2 iterations, model rotation + prompt rephrase) ---
+    gapfill_tasks = build_gapfill_tasks(
+        recon_tasks, findings, max_tasks=5, scope_notes=scope_notes,
+    )
+    for gapfill_iter in range(2 if mode == 'resume' else 2):
+        if mode == 'validate-only':
+            break
+        current = [g for g in all_gaps if not g.get('gapfill_retried')]
+        if not current:
+            break
+        fresh_f, fresh_g = _gapfill_rerun(
+            current, packs, hunt_models, domain_map,
+            auth=auth, cache=cache, parallel=hunt_workers,
+            gapfill_iter=gapfill_iter,
+        )
+        findings.extend(fresh_f)
+        all_gaps = [g for g in all_gaps if g.get('gapfill_retried')] + fresh_g
+
     state.put_meta('gapfill_task_count', str(len(gapfill_tasks)))
     all_tasks = recon_tasks + gapfill_tasks
 
-    # --- Call-graph annotation (improvement ①) ---
+    # --- VOTING ---
+    promoted, suppressed_by_vote = merge_hunter_outputs(
+        [findings], min_votes=cfg.get('shield', {}).get('min_votes', 2),
+    )
+    state.put_meta('suppressed_by_vote', str(len(suppressed_by_vote)))
+
+    # --- SHIELD ---
     call_graph = build_call_graph(snippets)
     promoted = annotate_call_path_verification(promoted, call_graph)
-
-    # --- Hallucination annotation (improvement ⑧) ---
     promoted = annotate_hallucination(promoted, snippet_db)
-
-    # --- KL-divergence hallucination detection ---
     promoted = annotate_hallucination_kl(promoted, snippet_db, threshold=kl_threshold)
-
-    # --- Cosine-similarity semantic deduplication ---
     promoted = deduplicate_semantic(promoted, threshold=cosine_threshold)
 
-    # --- Static reachability pre-filter (improvement ⑦) ---
     entry_points = cfg.get('entry_points', [])
-    promoted, _unreachable = filter_unreachable(promoted, call_graph, entry_points)
+    promoted, unreachable = filter_unreachable(promoted, call_graph, entry_points)
+    state.put_meta('unreachable_count', str(len(unreachable)))
 
-    # --- False-positive suppression registry (improvement ④) ---
-    registry = SuppressionRegistry(Path(__file__).parent / cfg.get('suppressions_file', 'output/suppressions.json'))
-    findings, _registry_suppressed = registry.filter(promoted)
+    # --- SUPPRESSIONS ---
+    registry = SuppressionRegistry(output_dir / 'suppressions.json')
+    findings, registry_suppressed = registry.filter(promoted)
+    state.put_meta('registry_suppressed', str(len(registry_suppressed)))
 
-    # --- Feedback: seed new Hunt tasks from confirmed/traced findings ---
+    # --- CHAINS ---
+    chains = synthesize_exploit_chains(findings, snippets)
+
+    # --- POC (compile & test candidate exploits) ---
+    pocs = run_poc(findings, snippet_db, output_dir, run=False)
+    state.put_meta('poc_count', str(len(pocs)))
+
+    # --- TRACE (determine input reachability from consumer entry points) ---
+    for f in findings:
+        f.setdefault('trace_status', 'not_required')
+
+    # --- EXPOSURE ---
+    findings, exposure_metrics = annotate_exposure_windows(findings, repo)
+
+    # --- FEEDBACK ---
     traced = [f for f in findings if f.get('trace_status') == 'confirmed']
     already_covered = {f for t in all_tasks for f in t.get('target_files', [])}
     feedback_tasks = build_feedback_tasks(
@@ -209,9 +515,7 @@ def run(mode: str, repo: Path, *,
     )
     state.put_meta('feedback_task_count', str(len(feedback_tasks)))
 
-    chains = synthesize_exploit_chains(findings, snippets)
-    findings, exposure_metrics = annotate_exposure_windows(findings, repo)
-
+    # --- REPORT ---
     report = build_report(
         repo=str(repo),
         findings=findings,
@@ -222,11 +526,9 @@ def run(mode: str, repo: Path, *,
     )
 
     state.put_meta('last_mode', mode)
-    state.put_meta('hunt_models', json.dumps(hunt_models))
-    state.put_meta('validate_models', json.dumps(validate_models))
-    if scope_notes:
-        state.put_meta('scope_notes_hash', str(hash(scope_notes)))
+    state.finish_run(run_id)
     cache.put('last_report', report)
+    _write_jsonl(output_dir / 'findings_final.jsonl', findings)
     (output_dir / 'report.json').write_text(json.dumps(report, indent=2))
 
     return report
@@ -270,8 +572,6 @@ def _merge_reports(reports: list[dict]) -> dict:
         gaps=all_gaps,
         trace_required=True,
     )
-    # Replace the freshly-computed summary with the aggregated one so per-mode
-    # counts are preserved and not recomputed from the merged finding set alone.
     merged['summary'] = combined_summary
     merged['modes_run'] = [r.get('mode_run', 'unknown') for r in reports]
     return merged
@@ -286,6 +586,8 @@ def run_all(repo: Path, *,
             head_commit: str = 'HEAD',
             max_cost_usd: float | None = None,
             max_concurrency: int | None = None,
+            skip_health: bool = False,
+            max_run: int | None = None,
             scope_notes: str | None = None) -> dict:
     """Run every single scanning mode in sequence and return a merged report.
 
@@ -307,6 +609,8 @@ def run_all(repo: Path, *,
             head_commit=head_commit,
             max_cost_usd=max_cost_usd,
             max_concurrency=max_concurrency,
+            skip_health=skip_health,
+            max_run=max_run,
             scope_notes=scope_notes,
         )
         report['mode_run'] = mode
@@ -317,7 +621,50 @@ def run_all(repo: Path, *,
     return merged
 
 
+def _check_deps():
+    import importlib
+    import shutil
+    import sys
+
+    if sys.version_info < (3, 9):
+        sys.exit('fatal: Python >= 3.9 required')
+
+    missing = []
+    for pkg in ('tree_sitter', 'tiktoken'):
+        if importlib.util.find_spec(pkg) is None:
+            missing.append(pkg)
+
+    try:
+        from tree_sitter_c import language as c_lang
+        c_lang()
+    except Exception:
+        missing.append('tree-sitter-c')
+
+    if missing:
+        sys.exit(f'fatal: missing packages: {", ".join(missing)}. '
+                 f'Run: pip install tree-sitter tree-sitter-c tiktoken')
+
+    import tree_sitter
+    ts_ver = getattr(tree_sitter, '__version__', None)
+    if ts_ver is None:
+        ts_ver = getattr(tree_sitter, 'version', None) or '0.25+'
+    if isinstance(ts_ver, str):
+        try:
+            parts = tuple(int(x) for x in ts_ver.split('.')[:2])
+            if parts < (0, 25):
+                sys.exit(f'fatal: tree-sitter {ts_ver} detected, '
+                         f'>= 0.25 required (0.22 API is incompatible)')
+        except (ValueError, TypeError):
+            pass
+
+    poc_stage_exists = (Path(__file__).parent / 'stages/shield.py').exists()
+    if poc_stage_exists and not shutil.which('gcc'):
+        pass
+
+
 def main() -> None:
+    _check_deps()
+
     parser = argparse.ArgumentParser(description='AI vuln harness v1 scaffold')
     parser.add_argument('--mode', choices=['full', 'max-run', 'validate-only', 'resume', 'diff', 'all'], default='full')
     parser.add_argument('--repo', required=True)
@@ -336,6 +683,10 @@ def main() -> None:
                         help='Abort the run if cumulative cost exceeds this amount in USD')
     parser.add_argument('--max-concurrency', type=int, default=None,
                         help='Global cap on concurrent model workers across all stages')
+    parser.add_argument('--max-run', type=int, default=None,
+                        help='Process only the first N packs (invaluable for debugging a single domain)')
+    parser.add_argument('--skip-health', action='store_true',
+                        help='Skip model health checks for cached re-runs')
     parser.add_argument('--scope-notes', type=Path, default=None,
                         help='Path to a text file whose contents are appended to every '
                              "stage's user_input to scope or exclude surfaces")
@@ -354,6 +705,8 @@ def main() -> None:
         head_commit=args.head_commit,
         max_cost_usd=args.max_cost_usd,
         max_concurrency=args.max_concurrency,
+        skip_health=args.skip_health,
+        max_run=args.max_run,
         scope_notes=scope_notes_text,
     )
     if args.mode == 'all':

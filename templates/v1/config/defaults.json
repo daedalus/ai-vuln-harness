@@ -7,7 +7,30 @@
   "cache_file": "output/cache.json",
   "state_db": "output/state.db",
   "suppressions_file": "output/suppressions.json",
-  "entry_points": [],
+  "entry_points": ["ssh_main", "sshd_main", "main", "sftp_server_main", "ssh_agent_main", "ssh_keygen_main", "ssh_keyscan_main", "ssh_keysign_main", "ssh_pkcs11_helper_main"],
+  "model_chain": [
+    "deepseek/deepseek-v4-flash:free",
+    "qwen/qwen-2.5-coder-32b-instruct:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "arcee-ai/trinity-large-thinking:free"
+  ],
+  "domain_model_map": {
+    "mem-safety": "openrouter:nvidia/nemotron-nano-12b-v2-vl:free",
+    "data-flow": "openrouter:deepseek/deepseek-v4-flash:free",
+    "crypto": "openrouter:deepseek/deepseek-v4-flash:free",
+    "format-str": "openrouter:deepseek/deepseek-v4-flash:free",
+    "ipc": "openrouter:deepseek/deepseek-v4-flash:free",
+    "auth": "openrouter:deepseek/deepseek-v4-flash:free",
+    "injection": "openrouter:deepseek/deepseek-v4-flash:free",
+    "path-traversal": "openrouter:qwen/qwen-2.5-coder-32b-instruct:free",
+    "concurrency": "openrouter:google/gemma-4-26b-a4b-it:free",
+    "resource": "openrouter:qwen/qwen-2.5-coder-32b-instruct:free",
+    "secrets": "openrouter:deepseek/deepseek-v4-flash:free"
+  },
+  "model_pool_presets": {
+    "hunt": ["deepseek", "qwen", "gemma"],
+    "validate": ["nemotron", "trinity", "z-ai"]
+  },
   "shield": {
     "min_votes": 2,
     "max_reachability_hops": 6,

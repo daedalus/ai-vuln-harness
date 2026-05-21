@@ -12,10 +12,16 @@ from collections import Counter
 from pathlib import Path
 
 
-def split_model_pools(models: list[str]) -> tuple[list[str], list[str]]:
+def split_model_pools(
+    models: list[str],
+    hunt_keywords: list[str] | None = None,
+    validate_keywords: list[str] | None = None,
+) -> tuple[list[str], list[str]]:
     models = list(dict.fromkeys(models))
-    hunt_preferred = [m for m in models if any(k in m for k in ('deepseek', 'qwen', 'gemma'))]
-    validate_preferred = [m for m in models if any(k in m for k in ('nemotron', 'trinity', 'z-ai'))]
+    hunt_kw = hunt_keywords or ['deepseek', 'qwen', 'gemma']
+    validate_kw = validate_keywords or ['nemotron', 'trinity', 'z-ai']
+    hunt_preferred = [m for m in models if any(k in m for k in hunt_kw)]
+    validate_preferred = [m for m in models if any(k in m for k in validate_kw)]
 
     hunt = hunt_preferred[:]
     validate = [m for m in validate_preferred if m not in hunt]
@@ -27,12 +33,10 @@ def split_model_pools(models: list[str]) -> tuple[list[str], list[str]]:
     validate = [m for m in validate if m not in hunt]
     if not validate:
         validate = [m for m in models if m not in hunt]
+    if not hunt:
+        hunt = [m for m in models if m not in validate] or models[:1]
     return hunt, validate
 
-
-# ---------------------------------------------------------------------------
-# Auth configuration
-# ---------------------------------------------------------------------------
 
 _AUTH_DEFAULT_PATHS = [
     lambda script_dir: script_dir / 'auth.json',
@@ -54,20 +58,8 @@ def load_auth_config(
     script_dir: Path | None = None,
     skip_global_fallback: bool = False,
 ) -> dict[str, str]:
-    """Load provider API keys into a flat ``{provider_name: key}`` dict.
-
-    Resolution order (first non-empty value wins per provider):
-    1. Environment variable (``OPENROUTER_API_KEY``, ``GROQ_API_KEY``, …)
-    2. ``--auth-json`` CLI override (*explicit_path*)
-    3. ``{script_dir}/auth.json`` (script-relative, default primary)
-    4. ``~/.local/share/opencode/auth.json`` (global fallback)
-
-    This matches **operating-default № 9**: auth files resolve relative to
-    the script directory, not ``cwd``.
-    """
     keys: dict[str, str] = {}
 
-    # --- 1. File-based sources ---
     candidates: list[Path] = []
     if explicit_path is not None:
         candidates.append(explicit_path)
@@ -89,11 +81,13 @@ def load_auth_config(
                 for provider in _PROVIDER_ENV_MAP:
                     val = data.get(provider) or data.get(f'{provider}_api_key')
                     if val and provider not in keys:
-                        keys[provider] = str(val)
+                        if isinstance(val, dict):
+                            val = val.get('key') or val.get('api_key') or ''
+                        if val:
+                            keys[provider] = str(val)
         except (json.JSONDecodeError, OSError):
             continue
 
-    # --- 2. Environment variable override ---
     for provider, env_var in _PROVIDER_ENV_MAP.items():
         env_val = os.environ.get(env_var)
         if env_val:
@@ -101,10 +95,6 @@ def load_auth_config(
 
     return keys
 
-
-# ---------------------------------------------------------------------------
-# Model limits from /v1/models or models.dev cache
-# ---------------------------------------------------------------------------
 
 _MODELS_DEV_PATH = 'config/models.dev'
 
@@ -115,7 +105,6 @@ _BASE_URLS = {
     'google': 'https://generativelanguage.googleapis.com/v1beta/openai',
     'zen': 'https://opencode.ai/zen/v1',
 }
-
 
 _KNOWN_PROVIDERS = frozenset({'openrouter', 'groq', 'cerebras', 'google', 'zen'})
 
@@ -281,7 +270,6 @@ class StateDB:
         return row[0] if row else None
 
     def create_run(self, repo_path: str, run_id: str) -> None:
-        """Register a new pipeline run.  Idempotent (INSERT OR IGNORE)."""
         cur = self.conn.cursor()
         cur.execute(
             'INSERT OR IGNORE INTO runs(run_id, status, started_at, repo_path) VALUES(?,?,?,?)',
@@ -290,7 +278,6 @@ class StateDB:
         self.conn.commit()
 
     def finish_run(self, run_id: str, status: str = 'completed') -> None:
-        """Mark a run as finished with the given *status* (e.g. 'completed', 'aborted', 'failed')."""
         cur = self.conn.cursor()
         cur.execute(
             'UPDATE runs SET status=?, finished_at=? WHERE run_id=?',
@@ -299,7 +286,6 @@ class StateDB:
         self.conn.commit()
 
     def get_run(self, run_id: str) -> dict | None:
-        """Return run metadata or ``None`` if the run_id is unknown."""
         cur = self.conn.cursor()
         row = cur.execute(
             'SELECT run_id, status, started_at, finished_at, repo_path FROM runs WHERE run_id=?',
@@ -316,11 +302,6 @@ class StateDB:
         }
 
     def record_cost(self, run_id: str, stage: str, amount_usd: float) -> None:
-        """Append a cost entry for *run_id* / *stage*.
-
-        Multiple calls per stage are allowed (e.g. one per Hunt task) — they
-        accumulate so that ``total_cost`` reflects the full spend.
-        """
         cur = self.conn.cursor()
         cur.execute(
             'INSERT INTO costs(run_id, stage, amount_usd, recorded_at) VALUES(?,?,?,?)',
@@ -329,7 +310,6 @@ class StateDB:
         self.conn.commit()
 
     def total_cost(self, run_id: str) -> float:
-        """Return the sum of all recorded cost entries for *run_id* in USD."""
         cur = self.conn.cursor()
         row = cur.execute(
             'SELECT COALESCE(SUM(amount_usd), 0.0) FROM costs WHERE run_id=?',
@@ -340,10 +320,6 @@ class StateDB:
     def close(self) -> None:
         self.conn.close()
 
-
-# ---------------------------------------------------------------------------
-# Cross-run regression analysis (KL-divergence over class distributions)
-# ---------------------------------------------------------------------------
 
 def _smooth_counter(counter: Counter, vocab: set[str], alpha: float = 1.0) -> dict[str, float]:
     total = sum(counter.values()) + alpha * len(vocab)
@@ -362,17 +338,12 @@ def _kl_divergence(p: dict[str, float], q: dict[str, float]) -> float:
 
 
 def js_divergence(p: dict[str, float], q: dict[str, float]) -> float:
-    """Jensen-Shannon divergence — symmetric, bounded [0, log2]."""
     vocab = set(p.keys()) | set(q.keys())
     m = {t: (p.get(t, 0.0) + q.get(t, 0.0)) / 2.0 for t in vocab}
     return (_kl_divergence(p, m) + _kl_divergence(q, m)) / 2.0
 
 
 def class_distribution(findings: list[dict]) -> Counter:
-    """Count findings by vulnerability class.
-
-    Falls back to ``class`` key, then ``attack_class``, then ``cwe_id``.
-    """
     counts: Counter = Counter()
     for f in findings:
         cls = str(f.get('class') or f.get('attack_class') or f.get('cwe_id') or 'unknown').lower()
@@ -381,18 +352,6 @@ def class_distribution(findings: list[dict]) -> Counter:
 
 
 class CrossRunRegression:
-    """Tracks historical run summaries and flags distributional drift
-    via Jensen-Shannon divergence.
-
-    Usage::
-
-        history = CrossRunRegression(Path('output/run_history.jsonl'))
-        history.record_run('2026-05-20T10:00:00Z', findings)
-        drift = history.detect_drift(window=5, threshold=0.15)
-        if drift:
-            print(f'Drift detected: {drift}')
-    """
-
     def __init__(self, path: Path):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -416,7 +375,6 @@ class CrossRunRegression:
             f.write(json.dumps(record) + '\n')
 
     def record_run(self, timestamp: str, findings: list[dict], metadata: dict | None = None) -> dict:
-        """Record a run's class distribution and return the saved record."""
         dist = class_distribution(findings)
         record = {
             'timestamp': timestamp,
@@ -428,16 +386,6 @@ class CrossRunRegression:
         return record
 
     def detect_drift(self, window: int = 5, threshold: float = 0.15) -> list[dict]:
-        """Compare the most recent run against the previous *window* runs.
-
-        Returns a list of drift signals, one per historical run compared.
-        Each signal contains ``js_divergence``, ``vs_timestamp``, and
-        ``changed_classes`` — the classes whose relative frequency shifted by
-        more than 5 percentage points.
-
-        A JS divergence > *threshold* indicates meaningful distributional
-        drift — the model is behaving differently than before.
-        """
         history = self._load_history()
         if len(history) < 2:
             return []
@@ -462,7 +410,6 @@ class CrossRunRegression:
 
             js = js_divergence(current_dist, prev_dist)
 
-            # Find classes whose share shifted by more than 5pp
             changed = []
             all_classes = set(current_dist.keys()) | set(prev_dist.keys())
             for cls in sorted(all_classes):
@@ -490,39 +437,220 @@ class CrossRunRegression:
         return signals
 
 
-# ---------------------------------------------------------------------------
-# Schema repair utility
-# ---------------------------------------------------------------------------
-
 import re as _re
-import time as _time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+
+_RETRYABLE_ERRORS = ('429', '502', '503', '504', 'rate', 'too many', 'try again', 'temporary', 'upstream')
+
+
+def load_domain_model_map(script_dir: Path) -> dict[str, str]:
+    path = script_dir / 'config/defaults.json'
+    try:
+        cfg = json.loads(path.read_text())
+        return cfg.get('domain_model_map', {})
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+HUNT_SYSTEM_PROMPT = (
+    'You are a single-attack-class vulnerability hunter. You have one task, '
+    'one attack class, one scope. You go deep, not wide. Other hunters cover '
+    'other attack classes — you do not stray. Determine whether the given '
+    'attack class is present in the assigned scope. Emit zero or more findings, '
+    'each anchored to specific code lines with verbatim evidence. '
+    'If you find no vulnerabilities, emit {"done": true}.'
+)
+
+VALIDATE_SYSTEM_PROMPT = (
+    'You are an adversarial code reviewer. Your job is to DISPROVE findings, '
+    'not confirm them. Output ONLY a JSON object with "status" '
+    '("confirmed" / "rejected" / "needs-more-info") and "reason".'
+)
+
+TRACE_SYSTEM_PROMPT = (
+    'You are a trace analyst. Determine whether attacker-controlled input can '
+    'reach the vulnerable sink from the consumer entry points. Output ONLY a '
+    'JSON object with "reachable" (true/false), "call_path" (list of function '
+    'names), and "reasoning".'
+)
+
+
+def _get_auth_key(provider: str, auth: dict[str, str] | None = None) -> str | None:
+    if auth:
+        val = auth.get(provider) or auth.get(f'{provider}_api_key')
+        if val:
+            return val
+    env_var = _PROVIDER_ENV_MAP.get(provider)
+    if env_var:
+        return os.environ.get(env_var)
+    return None
+
+
+def call_llm(
+    model_id: str,
+    prompt: str,
+    *,
+    system: str = '',
+    max_tokens: int = 8192,
+    timeout: int = 120,
+    auth: dict[str, str] | None = None,
+    cache: JsonCache | None = None,
+) -> str:
+    ck = cache_key('llm', model_id, prompt + system) if cache else None
+    if ck and cache:
+        cached = cache.get(ck)
+        if cached is not None:
+            return cached if isinstance(cached, str) else json.dumps(cached)
+
+    provider, _, model_name = model_id.partition(':')
+    if provider not in _KNOWN_PROVIDERS:
+        provider = 'openrouter'
+        model_name = model_id
+
+    api_key = _get_auth_key(provider, auth)
+    if not api_key:
+        raise ValueError(f'no auth key for provider: {provider} (model: {model_id})')
+
+    base = _BASE_URLS.get(provider)
+    if not base:
+        raise ValueError(f'unknown provider: {provider}')
+
+    messages = []
+    if system:
+        messages.append({'role': 'system', 'content': system})
+    messages.append({'role': 'user', 'content': prompt})
+
+    payload = {
+        'model': model_name,
+        'max_tokens': max_tokens,
+        'messages': messages,
+    }
+
+    ctx = ssl.create_default_context()
+    req = urllib.request.Request(
+        url=f'{base}/chat/completions',
+        data=json.dumps(payload).encode(),
+        headers={
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json',
+        },
+    )
+
+    last_exception: Exception | None = None
+    for attempt in range(3):
+        try:
+            resp = urllib.request.urlopen(req, context=ctx, timeout=timeout)
+            result = json.loads(resp.read().decode())
+            choices = result.get('choices')
+            if not choices:
+                raise ValueError(f'no_choices: {json.dumps(result)[:200]}')
+            msg = choices[0].get('message', {})
+            content = (msg.get('content') or '')
+            reasoning = (msg.get('reasoning') or '')
+            if not content.strip() and reasoning:
+                content = reasoning
+            if ck and cache:
+                cache.put(ck, content)
+            return content
+        except urllib.error.HTTPError as e:
+            code = e.code
+            estr = str(code)
+            if any(x in estr for x in _RETRYABLE_ERRORS):
+                last_exception = e
+                time.sleep(5 * (attempt + 1))
+                continue
+            raise
+        except (urllib.error.URLError, OSError, json.JSONDecodeError, ValueError) as e:
+            estr = str(e)
+            if any(x in estr for x in _RETRYABLE_ERRORS):
+                last_exception = e
+                time.sleep(5 * (attempt + 1))
+                continue
+            raise
+
+    raise RuntimeError(f'llm call exhausted after 3 retries; last error: {last_exception}')
+
+
+def health_check_models(
+    models: list[str],
+    *,
+    auth: dict[str, str] | None = None,
+    cache: JsonCache | None = None,
+    max_workers: int = 8,
+) -> tuple[list[str], list[tuple[str, str]]]:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    alive: list[str] = []
+    dead: list[tuple[str, str]] = []
+
+    def probe(mid: str) -> tuple[str, bool, str]:
+        try:
+            call_llm(mid, 'Reply with one word: ok', max_tokens=8, auth=auth, cache=cache)
+            return mid, True, ''
+        except Exception as e:
+            return mid, False, str(e)[:120]
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(probe, m): m for m in models}
+        for f in as_completed(futures):
+            mid, ok, err = f.result()
+            if ok:
+                alive.append(mid)
+            else:
+                dead.append((mid, err))
+
+    alive.sort(key=lambda m: models.index(m) if m in models else 999)
+    return alive, dead
+
+
+def _rephrase_gap_prompt(original_prompt: str, model_id: str) -> str:
+    return (
+        original_prompt.rstrip('\n')
+        + '\n\n--\n'
+        + f'Note: The previous model ({model_id}) produced no findings for this '
+        + 'scope. Double-check each function carefully. Verify you are not '
+        + 'missing anything — re-examine every function in the provided context. '
+        + 'If you genuinely find no vulnerabilities, explain specifically which '
+        + 'functions you checked and why each is safe.'
+    )
+
+
+def _repair_truncated_json(text: str) -> str:
+    text = text.strip()
+    if not text.endswith('}'):
+        text += '}'
+    depth = 0
+    for ch in text:
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+    while depth > 0:
+        text += '}'
+        depth -= 1
+    while depth < 0 and text.rfind('}') > text.rfind('{'):
+        text = text.rstrip('}')
+        depth += 1
+    return text
+
+
+def parse_llm_json(text: str) -> dict:
+    parsed, repaired = repair_json_output(text)
+    if parsed is not None:
+        return parsed if isinstance(parsed, dict) else {}
+    repaired = _repair_truncated_json(text)
+    try:
+        return json.loads(repaired)
+    except json.JSONDecodeError:
+        return {}
 
 
 def repair_json_output(raw: str) -> tuple[dict | list | None, bool]:
-    """Attempt to parse JSON from a raw model output string.
-
-    Returns ``(parsed, was_repaired)`` where *was_repaired* is ``True`` when
-    the raw string needed extraction (e.g., the model wrapped its JSON in a
-    markdown code fence or prefixed it with explanatory prose).
-
-    Repair strategy (first successful pass wins):
-
-    1. Direct ``json.loads`` — fast path for well-formed output.
-    2. Strip ````json … ```` or ```` ``` … ```` markdown fences.
-    3. Extract the first balanced ``{ … }`` or ``[ … ]`` block.
-
-    Returns ``(None, False)`` when all three passes fail.
-    """
     raw = raw.strip()
 
-    # Pass 1: direct parse
     try:
         return json.loads(raw), False
     except json.JSONDecodeError:
         pass
 
-    # Pass 2: strip code fences
     fence_match = _re.search(r'```(?:json)?\s*\n?(.*?)```', raw, _re.DOTALL)
     if fence_match:
         try:
@@ -530,7 +658,6 @@ def repair_json_output(raw: str) -> tuple[dict | list | None, bool]:
         except json.JSONDecodeError:
             pass
 
-    # Pass 3: extract first balanced JSON object or array
     for opener, closer in [('{', '}'), ('[', ']')]:
         idx = raw.find(opener)
         if idx == -1:
@@ -548,251 +675,3 @@ def repair_json_output(raw: str) -> tuple[dict | list | None, bool]:
                     break
 
     return None, False
-
-
-# ---------------------------------------------------------------------------
-# LLM calling — throttled, multi-provider
-# ---------------------------------------------------------------------------
-
-_MAX_TOKENS = 8192
-
-# Compiled SSL context (one allocation, reused across all calls)
-_SSL_CTX = ssl.create_default_context()
-
-# Per-provider rate limiter: minimum 20s gap between calls to same provider
-_THROTTLE_MIN_INTERVAL = 20.0
-_last_call_time: dict[str, float] = {}
-
-
-def _throttle(provider: str) -> None:
-    now = _time.time()
-    last = _last_call_time.get(provider, 0.0)
-    elapsed = now - last
-    if elapsed < _THROTTLE_MIN_INTERVAL:
-        _time.sleep(_THROTTLE_MIN_INTERVAL - elapsed)
-    _last_call_time[provider] = _time.time()
-
-
-def _get_auth_key(provider: str, auth: dict[str, str] | None = None) -> str | None:
-    if auth and provider in auth:
-        return auth[provider]
-    env_var = _PROVIDER_ENV_MAP.get(provider)
-    if env_var:
-        return os.environ.get(env_var)
-    return None
-
-
-def call_llm(model_id: str, prompt: str, *,
-             system: str = "",
-             max_tokens: int = _MAX_TOKENS,
-             timeout: int = 120,
-             auth: dict[str, str] | None = None) -> str:
-    provider, _, model_name = model_id.partition(':')
-    api_key = _get_auth_key(provider, auth=auth)
-    if not api_key:
-        raise ValueError(f'no auth key for {provider}')
-
-    base = _BASE_URLS.get(provider)
-    if not base:
-        raise ValueError(f'unknown provider: {provider}')
-
-    messages: list[dict] = []
-    if system:
-        messages.append({'role': 'system', 'content': system})
-    messages.append({'role': 'user', 'content': prompt})
-
-    payload = {
-        'model': model_name,
-        'max_tokens': max_tokens,
-        'messages': messages,
-    }
-
-    _throttle(provider)
-    req = urllib.request.Request(
-        url=f'{base}/chat/completions',
-        data=json.dumps(payload).encode(),
-        headers={
-            'Authorization': f'Bearer {api_key}',
-            'Content-Type': 'application/json',
-        },
-    )
-    try:
-        resp = urllib.request.urlopen(req, context=_SSL_CTX, timeout=timeout)
-        result = json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        body = e.read().decode(errors='replace')[:500]
-        raise RuntimeError(f'HTTP {e.code} from {provider}: {body}') from e
-
-    if 'choices' not in result or not result['choices']:
-        raise ValueError(f'no_choices: {json.dumps(result)[:200]}')
-
-    msg = result['choices'][0]['message']
-    content = (msg.get('content') or '')
-    reasoning = (msg.get('reasoning') or '')
-    if not content.strip() and reasoning:
-        content = reasoning
-    return content
-
-
-# ---------------------------------------------------------------------------
-# Health check — probes all models, returns only the alive ones
-# ---------------------------------------------------------------------------
-
-_health_cache: list[str] | None = None
-
-
-def health_check(models: list[str], auth: dict[str, str], *,
-                 skip: bool = False) -> list[str]:
-    global _health_cache
-    if skip and _health_cache is not None:
-        return _health_cache
-    alive: list[str] = []
-    for mid in models:
-        try:
-            call_llm(mid, 'Reply "ok"', auth=auth, max_tokens=16, timeout=30)
-            alive.append(mid)
-        except Exception:
-            pass
-        _time.sleep(3.0)
-    _health_cache = alive
-    return alive
-
-
-# ---------------------------------------------------------------------------
-# Hunt — per-pack with model fallback chain
-# ---------------------------------------------------------------------------
-
-_HUNT_SYSTEM_PROMPT = (
-    'You are a single-domain vulnerability hunter.\n\n'
-    'Stay in one attack class scope: {domain}.\n'
-    'Output JSONL findings and coverage gaps only.\n'
-    'Every finding must include: snippet_id, severity, class, desc, call_path, status, poc_confirmed.\n'
-    'End with {{"done": true}}.'
-)
-
-
-def run_hunt_pack(pack: dict, model_chain: list[str], *,
-                  auth: dict[str, str] | None = None,
-                  cache: JsonCache | None = None) -> tuple[list[dict], list[dict]]:
-    from stages.parser import parse_findings
-
-    domain = pack.get('agent', 'unknown')
-    prompt = json.dumps(pack)
-    system = _HUNT_SYSTEM_PROMPT.format(domain=domain)
-
-    if cache:
-        ck = f"hunt:{domain}:{hashlib.sha256(prompt.encode()).hexdigest()[:12]}"
-        cached = cache.get(ck)
-        if cached is not None:
-            return parse_findings(cached, domain=domain)
-
-    errors: list[str] = []
-    for model_id in model_chain:
-        for attempt in range(2):
-            try:
-                text = call_llm(model_id, prompt, system=system, auth=auth)
-                if cache:
-                    cache.put(ck, text)
-                return parse_findings(text, domain=domain)
-            except Exception as e:
-                estr = str(e)
-                errors.append(estr[:80])
-                if any(x in estr for x in ('429', '502', '503', '504', 'rate', 'too many')):
-                    wait = 60 * (attempt + 1)
-                    _time.sleep(wait)
-                    prov = model_id.partition(':')[0]
-                    _last_call_time.pop(prov, None)
-                    continue
-                break
-
-    return [], []
-
-
-def run_hunt_all(packs: list[dict], model_chain: list[str], *,
-                 auth: dict[str, str] | None = None,
-                 cache: JsonCache | None = None) -> list[dict]:
-    if not packs or not model_chain:
-        return []
-
-    all_findings: list[dict] = []
-    for pack in packs:
-        findings, _ = run_hunt_pack(pack, model_chain, auth=auth, cache=cache)
-        all_findings.extend(findings)
-    return all_findings
-
-
-# ---------------------------------------------------------------------------
-# Validate — per-finding with repair
-# ---------------------------------------------------------------------------
-
-_VALIDATE_SYSTEM_PROMPT = (
-    'You are adversarial validation.\n\n'
-    'Disprove findings where possible.\n'
-    'You MUST inspect the actual source snippet supplied in the prompt context.\n'
-    'Reject API-by-design patterns when exploitability depends on consumer misuse.\n'
-    'Output ONE JSON object: {{"status": "confirmed|rejected|needs-more-info", "reason": "..."}}'
-)
-
-
-def run_validate_finding(finding: dict, snippet: dict,
-                         model_id: str, *,
-                         auth: dict[str, str] | None = None,
-                         cache: JsonCache | None = None) -> dict:
-    from stages.validate import build_validate_prompt
-
-    prompt = build_validate_prompt(finding, snippet)
-
-    if cache:
-        ck = f"validate:{model_id}:{finding.get('snippet_id', '?')}:{finding.get('class', '?')}"
-        cached = cache.get(ck)
-        if cached is not None:
-            try:
-                parsed = json.loads(cached)
-                return {
-                    **finding,
-                    'validate_status': parsed.get('status', 'needs-more-info'),
-                    'validate_reason': parsed.get('reason', ''),
-                }
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-    text = call_llm(model_id, prompt, system=_VALIDATE_SYSTEM_PROMPT, auth=auth)
-    if cache:
-        cache.put(ck, text)
-
-    parsed, _ = repair_json_output(text)
-    if isinstance(parsed, dict):
-        return {
-            **finding,
-            'validate_status': parsed.get('status', 'needs-more-info'),
-            'validate_reason': parsed.get('reason', ''),
-        }
-    return {
-        **finding,
-        'validate_status': 'needs-more-info',
-        'validate_reason': 'unparseable validate response',
-    }
-
-
-def run_validate_all(findings: list[dict], snippet_db: dict[str, dict],
-                     model_chain: list[str], *,
-                     auth: dict[str, str] | None = None,
-                     cache: JsonCache | None = None) -> list[dict]:
-    if not findings or not model_chain:
-        return findings
-
-    validated: list[dict] = []
-    for finding in findings:
-        snippet = snippet_db.get(finding.get('snippet_id', ''), {})
-        try:
-            result = run_validate_finding(finding, snippet, model_chain[0],
-                                          auth=auth, cache=cache)
-            validated.append(result)
-        except Exception:
-            validated.append({
-                **finding,
-                'validate_status': 'needs-more-info',
-                'validate_reason': 'validate exception',
-            })
-
-    return validated

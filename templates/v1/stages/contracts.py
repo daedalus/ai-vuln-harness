@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+PIPELINE_STAGES = [
+    'ingestor', 'recon', 'coordinator', 'hunt', 'validate',
+    'voting', 'shield', 'chainer', 'poc', 'trace', 'report',
+]
+
 REQUIRED_FINDING_FIELDS = {
     'snippet_id',
     'severity',

@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from stages.runtime import (
+    HUNT_SYSTEM_PROMPT,
     JsonCache,
     StateDB,
     cache_key,
@@ -18,11 +19,13 @@ from stages.runtime import (
     fetch_model_limits,
     load_auth_config,
     repair_json_output,
-    run_hunt_all,
-    run_hunt_pack,
-    run_validate_all,
-    run_validate_finding,
     split_model_pools,
+)
+from run import (
+    _run_one_hunt_pack as run_hunt_pack,
+    _run_hunt_packs as run_hunt_all,
+    _run_validate_finding as run_validate_finding,
+    _run_validate_findings as run_validate_all,
 )
 
 
@@ -306,7 +309,7 @@ class FetchModelLimitsTests(unittest.TestCase):
 
 class _MockedCallTests(unittest.TestCase):
     def setUp(self):
-        patcher = patch('stages.runtime._time.sleep')
+        patcher = patch('stages.runtime.time.sleep')
         self.addCleanup(patcher.stop)
         self._sleep_mock = patcher.start()
 
@@ -371,26 +374,28 @@ class RunHuntPackTests(_MockedCallTests):
         }
 
         with patch('stages.runtime.urllib.request.urlopen', return_value=FakeResponse()):
-            findings, gaps = run_hunt_pack(pack, ['openrouter:test:free'], auth={'openrouter': 'sk-test'})
+            findings, gaps = run_hunt_pack(pack, 'openrouter:test:free', auth={'openrouter': 'sk-test'}, cache=None)
 
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]['class'], 'buffer-overflow')
 
-    def test_run_hunt_pack_returns_empty_gaps_without_auth(self):
+    def test_run_hunt_pack_no_auth_returns_gap(self):
         pack = {'agent': 'test', 'snippets': []}
-        findings, gaps = run_hunt_pack(pack, ['openrouter:test:free'])
-        self.assertEqual(findings, [])
-        self.assertEqual(gaps, [])
+        findings, gaps = run_hunt_pack(pack, 'openrouter:test:free', auth=None, cache=None)
+        self.assertEqual(len(findings), 0)
+        self.assertEqual(len(gaps), 1)
+        self.assertIn('coverage_gap', gaps[0])
 
 
 class RunHuntAllTests(unittest.TestCase):
     def test_run_hunt_all_empty_packs(self):
-        result = run_hunt_all([], ['test:free'])
-        self.assertEqual(result, [])
+        result = run_hunt_all([], ['test:free'], auth={'openrouter': 'sk-test'}, cache=None)
+        self.assertEqual(result, ([], []))
 
     def test_run_hunt_all_empty_models(self):
-        result = run_hunt_all([{'agent': 'test', 'snippets': []}], [])
-        self.assertEqual(result, [])
+        result = run_hunt_all([{'agent': 'test', 'snippets': []}], [], auth={'openrouter': 'sk-test'}, cache=None)
+        self.assertEqual(len(result[0]), 0)
+        self.assertEqual(len(result[1]), 1)
 
 
 class RunValidateFindingTests(_MockedCallTests):
@@ -413,7 +418,7 @@ class RunValidateFindingTests(_MockedCallTests):
         with patch('stages.runtime.urllib.request.urlopen', return_value=FakeResponse()):
             result = run_validate_finding(
                 finding, snippet, 'openrouter:test:free',
-                auth={'openrouter': 'sk-test'},
+                auth={'openrouter': 'sk-test'}, cache=None,
             )
 
         self.assertEqual(result['validate_status'], 'confirmed')
@@ -436,40 +441,42 @@ class RunValidateFindingTests(_MockedCallTests):
         with patch('stages.runtime.urllib.request.urlopen', return_value=FakeResponse()):
             result = run_validate_finding(
                 finding, snippet, 'openrouter:test:free',
-                auth={'openrouter': 'sk-test'},
+                auth={'openrouter': 'sk-test'}, cache=None,
             )
 
         self.assertEqual(result['validate_status'], 'needs-more-info')
-        self.assertEqual(result['validate_reason'], 'unparseable validate response')
+        self.assertIn('unparseable', result.get('validate_reason', ''))
 
 
 class RunValidateAllTests(unittest.TestCase):
     def test_run_validate_all_empty(self):
-        result = run_validate_all([], {}, ['test:free'])
+        result = run_validate_all([], {}, ['test:free'], auth={'openrouter': 'sk-test'}, cache=None)
         self.assertEqual(result, [])
 
     def test_run_validate_all_no_models(self):
-        result = run_validate_all([{'snippet_id': 's1'}], {}, [])
-        self.assertEqual(result, [{'snippet_id': 's1'}])
+        result = run_validate_all([{'snippet_id': 's1'}], {}, [], auth={'openrouter': 'sk-test'}, cache=None)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['snippet_id'], 's1')
+        self.assertEqual(result[0].get('validate_status'), 'needs-more-info')
 
     def test_run_validate_all_no_findings(self):
-        result = run_validate_all([], {'s1': {}}, ['test:free'])
+        result = run_validate_all([], {'s1': {}}, ['test:free'], auth={'openrouter': 'sk-test'}, cache=None)
         self.assertEqual(result, [])
 
 
-class RunHuntPackCacheTests(unittest.TestCase):
+class RunHuntPackCacheTests(_MockedCallTests):
     def test_run_hunt_pack_uses_cache(self):
         cache = JsonCache.__new__(JsonCache)
         cache.data = {}
         cache.path = None
 
         pack = {'agent': 'test', 'snippets': [{'id': 's1', 'content': 'int x = 1;'}]}
-        prompt = json.dumps(pack)
+        prompt = json.dumps(pack, indent=2)
         import hashlib
-        ck = f"hunt:test:{hashlib.sha256(prompt.encode()).hexdigest()[:12]}"
+        ck = f"llm:openrouter:test:free:{hashlib.sha256((prompt + HUNT_SYSTEM_PROMPT).encode()).hexdigest()[:12]}"
         cache.data[ck] = '{"snippet_id": "s1", "class": "uaf"}\n{"done": true}'
 
-        findings, gaps = run_hunt_pack(pack, ['openrouter:test:free'], cache=cache)
+        findings, gaps = run_hunt_pack(pack, 'openrouter:test:free', auth={'openrouter': 'sk-test'}, cache=cache)
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]['class'], 'uaf')
 

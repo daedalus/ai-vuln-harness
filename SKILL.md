@@ -20,6 +20,9 @@ High-level guide for building a production-style AI vulnerability harness.
 - Hardening AI scanner signal-to-noise
 - Turning one-off prompts into reproducible security operations
 
+## Canonical pipeline stages:
+- INGESTOR → RECON → COORDINATOR → HUNT → VALIDATE → GAPFILL → VOTING → SHIELD → SUPPRESSIONS → CHAINS → POC → TRACE → EXPOSURE → FEEDBACK → REPORT
+
 ## Runnable scaffold (v1)
 
 Use the executable reference scaffold at:
