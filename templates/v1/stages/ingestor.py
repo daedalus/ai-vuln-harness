@@ -6,6 +6,12 @@ from collections import defaultdict
 from pathlib import Path, PurePosixPath
 
 DEFAULT_EXCLUDE_DIRS = {'test', 'tests', 'examples', 'example', 'contrib'}
+
+SNIPPET_REQUIRED_FIELDS = {
+    'id', 'file', 'language', 'kind', 'name', 'lines',
+    'content', 'tags', 'token_count', 'callees', 'continuation',
+}
+
 _INPUT_SYSCALLS = ('read(', 'recv(', 'recvfrom(', 'fgets(', 'fread(', 'accept(', 'getenv(', 'request.', 'http', 'socket')
 _SUPPORTED_EXTENSIONS = {'.c', '.cc', '.cpp', '.go', '.h', '.js', '.py', '.rs', '.ts'}
 _CST_EXTENSIONS = {'.c', '.h'}

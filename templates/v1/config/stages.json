@@ -1,5 +1,5 @@
 {
-  "_comment": "Per-stage model pool and concurrency configuration. Model diversity between hunt and validate is load-bearing: it implements deliberate disagreement (different models are less likely to share the same blind spots). Trace runs on the validate pool because the evilsocket/audit paper calls it 'the stage that matters most'.",
+  "_comment": "Per-stage model pool and concurrency configuration.",
   "defaults": {
     "repair_attempts": 1
   },

@@ -99,11 +99,6 @@ def recompile_and_run_unvalidated_vulnerable_snippet(
     timeout_seconds: int = 10,
     sandbox_prefix: list[str] | None = None,
 ) -> dict:
-    """Compile and execute a C/C++ unvalidated_vulnerable_snippet in an isolated workspace.
-
-    `sandbox_prefix` allows callers to wrap execution in an isolated runner,
-    e.g. a container or qemu command prefix.
-    """
     source = _extract_unvalidated_vulnerable_snippet(finding)
     result = {
         'compile_attempted': False,

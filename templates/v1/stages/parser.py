@@ -91,7 +91,14 @@ def parse_findings(text: str, domain: str = '') -> tuple[list[dict], list[dict]]
     return findings, gaps
 
 
+def _normalize_call_path(item: dict) -> None:
+    cp = item.get('call_path')
+    if isinstance(cp, str):
+        item['call_path'] = [s.strip() for s in cp.split('->')] if '->' in cp else [cp]
+
+
 def _classify_item(item: dict, findings: list[dict], gaps: list[dict]) -> None:
+    _normalize_call_path(item)
     item.setdefault('status', 'raw')
     item.setdefault('poc_confirmed', False)
     if item.get('done') is True:

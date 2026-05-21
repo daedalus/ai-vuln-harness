@@ -12,16 +12,10 @@ from collections import Counter
 from pathlib import Path
 
 
-def split_model_pools(
-    models: list[str],
-    hunt_keywords: list[str] | None = None,
-    validate_keywords: list[str] | None = None,
-) -> tuple[list[str], list[str]]:
+def split_model_pools(models: list[str]) -> tuple[list[str], list[str]]:
     models = list(dict.fromkeys(models))
-    hunt_kw = hunt_keywords or ['deepseek', 'qwen', 'gemma']
-    validate_kw = validate_keywords or ['nemotron', 'trinity', 'z-ai']
-    hunt_preferred = [m for m in models if any(k in m for k in hunt_kw)]
-    validate_preferred = [m for m in models if any(k in m for k in validate_kw)]
+    hunt_preferred = [m for m in models if any(k in m for k in ('deepseek', 'qwen', 'gemma'))]
+    validate_preferred = [m for m in models if any(k in m for k in ('nemotron', 'trinity', 'z-ai'))]
 
     hunt = hunt_preferred[:]
     validate = [m for m in validate_preferred if m not in hunt]
@@ -121,25 +115,19 @@ def _strip_provider(model_id: str) -> str:
 
 def fetch_model_limits(models: list[str], script_dir: Path) -> dict[str, int]:
     models_dev = script_dir / _MODELS_DEV_PATH
-
-    if models_dev.exists():
-        cache = json.loads(models_dev.read_text())
-        now = time.time()
-        good = {k: v for k, v in cache.items()
-                if now - v.get('last_updated', 0) < 86400 * 7}
-        if all(m in good for m in models if m):
-            return {m: good[m]['context_window'] for m in models if m}
-    else:
-        cache = {}
-        models_dev.parent.mkdir(parents=True, exist_ok=True)
+    models_dev.parent.mkdir(parents=True, exist_ok=True)
 
     limits: dict[str, int] = {}
     updated: dict[str, float] = {}
     ctx = ssl.create_default_context()
     per_provider: dict[str, list[str]] = {}
-    for m in models:
-        if m:
-            per_provider.setdefault(_resolve_provider(m), []).append(m)
+    if models:
+        for m in models:
+            if m:
+                per_provider.setdefault(_resolve_provider(m), []).append(m)
+    else:
+        for prov in ('openrouter', 'groq', 'cerebras', 'google', 'zen'):
+            per_provider.setdefault(prov, [])
 
     for provider, provider_models in per_provider.items():
         base = _BASE_URLS.get(provider)
@@ -151,24 +139,25 @@ def fetch_model_limits(models: list[str], script_dir: Path) -> dict[str, int]:
             data = json.loads(resp.read().decode())
             for entry in data.get('data', []):
                 eid = entry.get('id', '')
+                if not eid.endswith(':free'):
+                    continue
                 ctx_win = entry.get('context_length') or entry.get('context_window') or 0
+                if not ctx_win:
+                    continue
                 bare = _strip_provider(eid)
-                if bare in provider_models and ctx_win:
-                    limits[bare] = int(ctx_win)
-                    updated[bare] = time.time()
+                if provider_models and bare not in provider_models:
+                    continue
+                limits[bare] = int(ctx_win)
+                updated[bare] = time.time()
         except (urllib.error.URLError, OSError, json.JSONDecodeError):
             pass
 
     if limits:
-        cache.update({
-            mid: {
-                'context_window': cw,
-                'max_output_tokens': cw,
-                'last_updated': updated.get(mid, time.time()),
-            }
-            for mid, cw in limits.items()
-        })
-        models_dev.write_text(json.dumps(cache, indent=2))
+        cache_data = {m: {'context_window': cw, 'max_output_tokens': cw, 'last_updated': updated.get(m, time.time())} for m, cw in limits.items()}
+        models_dev.write_text(json.dumps(cache_data, indent=2))
+
+    if not models:
+        return limits
 
     fallback = {m: limits[m] for m in models if m and m in limits}
     missing = [m for m in models if m and m not in fallback]
@@ -441,14 +430,19 @@ import re as _re
 
 _RETRYABLE_ERRORS = ('429', '502', '503', '504', 'rate', 'too many', 'try again', 'temporary', 'upstream')
 
-
-def load_domain_model_map(script_dir: Path) -> dict[str, str]:
-    path = script_dir / 'config/defaults.json'
-    try:
-        cfg = json.loads(path.read_text())
-        return cfg.get('domain_model_map', {})
-    except (OSError, json.JSONDecodeError):
-        return {}
+_MODEL_BY_DOMAIN = {
+    'mem-safety':     'openrouter:nvidia/nemotron-nano-12b-v2-vl:free',
+    'data-flow':      'openrouter:deepseek/deepseek-v4-flash:free',
+    'crypto':         'openrouter:deepseek/deepseek-v4-flash:free',
+    'format-str':     'openrouter:deepseek/deepseek-v4-flash:free',
+    'ipc':            'openrouter:deepseek/deepseek-v4-flash:free',
+    'auth':           'openrouter:deepseek/deepseek-v4-flash:free',
+    'injection':      'openrouter:deepseek/deepseek-v4-flash:free',
+    'path-traversal': 'openrouter:qwen/qwen-2.5-coder-32b-instruct:free',
+    'concurrency':    'openrouter:google/gemma-4-26b-a4b-it:free',
+    'resource':       'openrouter:qwen/qwen-2.5-coder-32b-instruct:free',
+    'secrets':        'openrouter:deepseek/deepseek-v4-flash:free',
+}
 
 HUNT_SYSTEM_PROMPT = (
     'You are a single-attack-class vulnerability hunter. You have one task, '
@@ -473,11 +467,11 @@ TRACE_SYSTEM_PROMPT = (
 )
 
 
-def _get_auth_key(provider: str, auth: dict[str, str] | None = None) -> str | None:
+def _get_auth_key(provider: str, auth: dict | None = None) -> str | None:
     if auth:
         val = auth.get(provider) or auth.get(f'{provider}_api_key')
         if val:
-            return val
+            return val.get('key') if isinstance(val, dict) else str(val)
     env_var = _PROVIDER_ENV_MAP.get(provider)
     if env_var:
         return os.environ.get(env_var)
@@ -500,10 +494,9 @@ def call_llm(
         if cached is not None:
             return cached if isinstance(cached, str) else json.dumps(cached)
 
-    provider, _, model_name = model_id.partition(':')
-    if provider not in _KNOWN_PROVIDERS:
-        provider = 'openrouter'
-        model_name = model_id
+    provider = _resolve_provider(model_id)
+    model_name = _strip_provider(model_id)
+    print(f"[call_llm] model_id={model_id!r} provider={provider!r} model_name={model_name!r}", flush=True)
 
     api_key = _get_auth_key(provider, auth)
     if not api_key:
@@ -557,14 +550,14 @@ def call_llm(
                 last_exception = e
                 time.sleep(5 * (attempt + 1))
                 continue
-            raise
+            raise RuntimeError(f'HTTP {code} from {base}/chat/completions (model={model_name})') from e
         except (urllib.error.URLError, OSError, json.JSONDecodeError, ValueError) as e:
             estr = str(e)
             if any(x in estr for x in _RETRYABLE_ERRORS):
                 last_exception = e
                 time.sleep(5 * (attempt + 1))
                 continue
-            raise
+            raise RuntimeError(f'{type(e).__name__} from {base}/chat/completions (model={model_name}): {e}') from e
 
     raise RuntimeError(f'llm call exhausted after 3 retries; last error: {last_exception}')
 

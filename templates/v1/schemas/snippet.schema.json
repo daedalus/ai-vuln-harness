@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Snippet",
+  "type": "object",
+  "required": ["id", "file", "language", "kind", "name", "lines", "content", "tags", "token_count", "callees", "continuation"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^sha256:[a-f0-9]{6}:[a-f0-9]{6}$"},
+    "file": {"type": "string"},
+    "language": {"type": "string"},
+    "kind": {"type": "string", "enum": ["function", "method", "class", "block"]},
+    "name": {"type": "string"},
+    "lines": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+    "content": {"type": "string"},
+    "imports": {"type": "array", "items": {"type": "string"}},
+    "callees": {"type": "array", "items": {"type": "string"}},
+    "callers": {"type": "array", "items": {"type": "string"}},
+    "tags": {"type": "array", "items": {"type": "string"}},
+    "token_count": {"type": "integer", "minimum": 0},
+    "continuation": {"type": "boolean"}
+  }
+}
