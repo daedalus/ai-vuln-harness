@@ -25,9 +25,19 @@ High-level guide for building a production-style AI vulnerability harness.
 
 ## Runnable scaffold (v1)
 
-Use the executable reference scaffold at:
+The executable reference scaffold lives at:
 
 - `/home/dclavijo/.opencode/skills/ai-vuln-harness/templates/v1`.
+
+**IMPORTANT: Never edit the template in place.** Before making any changes,
+copy the entire `templates/v1/` directory to your working directory first:
+
+```
+cp -a /home/dclavijo/.opencode/skills/ai-vuln-harness/templates/v1/ ./my-harness/
+```
+
+Then edit the copy (`./my-harness/`). This preserves the reference template
+for reuse and multiple projects.
 
 It includes:
 
