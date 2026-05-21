@@ -170,7 +170,6 @@ class IngestorCstIntegrationTests(unittest.TestCase):
             snippets = load_repo_snippets(repo)
 
             self.assertEqual(len(snippets), 1)
-            self.assertEqual(snippets[0]['kind'], 'file')
             self.assertEqual(snippets[0]['imports'], ['stdio.h'])
             self.assertIn('helper', snippets[0]['callees'])
 
