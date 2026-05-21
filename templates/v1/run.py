@@ -58,6 +58,28 @@ def _stage_workers(stages_cfg: dict, stage: str, global_max: int) -> int:
     return min(per_stage, global_max)
 
 
+def _write_jsonl(path: Path, items: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'w') as f:
+        for item in items:
+            f.write(json.dumps(item) + '\n')
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    items: list[dict] = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    items.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    return items
+
+
 def run(mode: str, repo: Path, *,
         auth_path: Path | None = None,
         kl_threshold: float = 5.0,
@@ -68,10 +90,15 @@ def run(mode: str, repo: Path, *,
         max_cost_usd: float | None = None,
         max_concurrency: int | None = None,
         scope_notes: str | None = None) -> dict:
-    cfg = json.loads((Path(__file__).parent / 'config/defaults.json').read_text())
-    stages_cfg = _load_stages_config(Path(__file__).parent)
-    state = StateDB(Path(__file__).parent / cfg['state_db'])
-    cache = JsonCache(Path(__file__).parent / cfg['cache_file'])
+    script_dir = Path(__file__).parent
+    cfg = json.loads((script_dir / 'config/defaults.json').read_text())
+    stages_cfg = _load_stages_config(script_dir)
+    state = StateDB(script_dir / cfg['state_db'])
+    cache = JsonCache(script_dir / cfg['cache_file'])
+    output_dir = Path(cfg['cache_file']).parent
+    if not output_dir.is_absolute():
+        output_dir = script_dir / output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Cost guardrail: abort early if budget already exceeded ---
     run_id = f'{mode}:{str(repo)}'
@@ -83,7 +110,7 @@ def run(mode: str, repo: Path, *,
                 f'(${spent:.2f} already spent on run {run_id!r})'
             )
 
-    auth = load_auth_config(explicit_path=auth_path, script_dir=Path(__file__).parent)
+    auth = load_auth_config(explicit_path=auth_path, script_dir=script_dir)
     state.put_meta('auth_providers', json.dumps(sorted(auth.keys())))
 
     # --- Effective concurrency cap ---
@@ -114,7 +141,7 @@ def run(mode: str, repo: Path, *,
         'arcee-ai/trinity-large-thinking:free',
     ]
 
-    model_limits = fetch_model_limits(model_chain, Path(__file__).parent)
+    model_limits = fetch_model_limits(model_chain, script_dir)
     min_context = min(model_limits.values())
     budget_tokens = int(min_context * 0.85)
 
@@ -128,12 +155,18 @@ def run(mode: str, repo: Path, *,
     hunt_models, validate_models = split_model_pools(model_chain)
     snippet_db = {s['id']: s for s in snippets}
 
-    # --- Hunt: run all context packs through LLM models ---
-    raw_findings = run_hunt_all(packs, hunt_models, auth=auth, cache=cache)
+    # --- Validate-only / Resume: load cached findings, skip Hunt ---
+    if mode in ('validate-only', 'resume'):
+        raw_findings = _read_jsonl(output_dir / 'findings.jsonl')
+    else:
+        # --- Hunt: run all context packs through LLM models ---
+        raw_findings = run_hunt_all(packs, hunt_models, auth=auth, cache=cache)
+        _write_jsonl(output_dir / 'findings.jsonl', raw_findings)
 
     # --- Validate: each finding independently reviewed by validate models ---
     findings = run_validate_all(raw_findings, snippet_db, validate_models,
                                 auth=auth, cache=cache)
+    _write_jsonl(output_dir / 'validated.jsonl', findings)
 
     promoted, _suppressed_by_vote = merge_hunter_outputs([findings, []], min_votes=2)
 
@@ -194,6 +227,7 @@ def run(mode: str, repo: Path, *,
     if scope_notes:
         state.put_meta('scope_notes_hash', str(hash(scope_notes)))
     cache.put('last_report', report)
+    (output_dir / 'report.json').write_text(json.dumps(report, indent=2))
 
     return report
 
