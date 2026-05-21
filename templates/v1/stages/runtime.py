@@ -24,10 +24,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import sqlite3
 import ssl
+import threading
 import time
 import urllib.request
 from collections import Counter
@@ -608,6 +610,84 @@ def call_llm(
             raise RuntimeError(f'{type(e).__name__} from {base}/chat/completions (model={model_name}): {e}') from e
 
     raise RuntimeError(f'llm call exhausted after 3 retries; last error: {last_exception}')
+
+
+class ModelPool:
+    """Thread-safe pool of alive models ranked by capability (context length descending).
+
+    ``pick()`` returns the most capable alive model. ``mark_dead()`` removes a
+    model on permanent failure so subsequent calls skip to the next best.
+    This enables transparent fallback across model failures in a single
+    request without callers managing model chains.
+    """
+
+    def __init__(self, models: list[str], limits: dict[str, int]):
+        self._models = sorted(models, key=lambda m: -limits.get(m, 0))
+        self._dead: set[str] = set()
+        self._lock = threading.Lock()
+
+    def pick(self) -> str | None:
+        """Return the best alive model, or None if the pool is empty."""
+        with self._lock:
+            for m in self._models:
+                if m not in self._dead:
+                    return m
+            return None
+
+    def mark_dead(self, model: str) -> None:
+        """Remove *model* from the pool permanently."""
+        with self._lock:
+            self._dead.add(model)
+
+    @property
+    def alive(self) -> list[str]:
+        """Return all currently-alive models, most capable first."""
+        with self._lock:
+            return [m for m in self._models if m not in self._dead]
+
+    @property
+    def is_empty(self) -> bool:
+        return self.pick() is None
+
+
+def call_llm_from_pool(
+    pool: ModelPool,
+    prompt: str,
+    *,
+    system: str = '',
+    max_tokens: int = 8192,
+    timeout: int = 120,
+    auth: dict[str, str] | None = None,
+    cache: JsonCache | None = None,
+) -> str:
+    """Call an LLM using the best available model from *pool*.
+
+    Picks the most capable alive model and calls ``call_llm`` (which retries
+    3× on 429/502/503/504).  If the model permanently fails, marks it dead
+    and retries with the next best model.  Continues until a model succeeds
+    or the pool is exhausted.
+    """
+    last_exception: Exception | None = None
+    while not pool.is_empty:
+        model = pool.pick()
+        if model is None:
+            break
+        try:
+            return call_llm(
+                model, prompt,
+                system=system, max_tokens=max_tokens,
+                timeout=timeout, auth=auth, cache=cache,
+            )
+        except Exception as e:
+            estr = str(e)
+            if any(x in estr for x in _RETRYABLE_ERRORS):
+                logger = logging.getLogger('vuln-harness')
+                logger.warning('[pool] model %s failed: %s — marking dead, retrying next', model, estr[:100])
+                pool.mark_dead(model)
+                last_exception = e
+                continue
+            raise
+    raise RuntimeError(f'model pool exhausted; last error: {last_exception}')
 
 
 def health_check_models(

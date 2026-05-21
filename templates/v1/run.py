@@ -50,8 +50,10 @@ from stages.runtime import (
     HUNT_SYSTEM_PROMPT,
     TRACE_SYSTEM_PROMPT,
     VALIDATE_SYSTEM_PROMPT,
+    ModelPool,
     _rephrase_gap_prompt,
     call_llm,
+    call_llm_from_pool,
     health_check_models,
     JsonCache,
     StateDB,
@@ -143,6 +145,32 @@ def _run_one_hunt_pack(
         return [], [{'coverage_gap': gap_domain, 'reason': f'hunt exception: {e}', 'domain': gap_domain}]
 
 
+def _run_one_hunt_pack_from_pool(
+    pack: dict,
+    pool: ModelPool,
+    *,
+    auth: dict[str, str],
+    cache: JsonCache,
+) -> tuple[list[dict], list[dict]]:
+    prompt = pack.get('prompt') or json.dumps(pack, indent=2)
+    tc_sum = sum(s.get('token_count', 0) for s in pack.get('snippets', []))
+    logger.info('hunt pack %s pooled prompt_chars=%d', pack.get('agent', '?'), len(prompt))
+    try:
+        raw = call_llm_from_pool(
+            pool, prompt,
+            system=HUNT_SYSTEM_PROMPT,
+            auth=auth,
+            cache=cache,
+        )
+        domain = pack.get('agent', 'unknown')
+        findings, gaps = parse_findings(raw, domain=domain)
+        return findings, gaps
+    except Exception as e:
+        logger.warning('hunt pack %s pooled failed: %s', pack.get('agent', '?'), e)
+        gap_domain = pack.get('agent', 'unknown')
+        return [], [{'coverage_gap': gap_domain, 'reason': f'hunt exception: {e}', 'domain': gap_domain}]
+
+
 def _run_hunt_packs(
     packs: list[dict],
     models: list[str],
@@ -152,6 +180,7 @@ def _run_hunt_packs(
     parallel: int = 3,
     max_run: int | None = None,
     domain_map: dict[str, list[dict]] | None = None,
+    model_pool: ModelPool | None = None,
 ) -> tuple[list[dict], list[dict]]:
     from stages.runtime import _MODEL_BY_DOMAIN
 
@@ -160,26 +189,34 @@ def _run_hunt_packs(
 
     all_findings: list[dict] = []
     all_gaps: list[dict] = []
-    tasks: list[dict] = []
 
-    for pack in packs:
-        domain = pack.get('agent', 'mem-safety')
-        preferred = _MODEL_BY_DOMAIN.get(domain)
-        ordered = []
-        if preferred and preferred in models:
-            ordered.append(preferred)
-        ordered.extend(m for m in models if m not in ordered)
-        tasks.append({'pack': pack, 'models': ordered})
+    if model_pool is not None:
+        tasks = [{'pack': p} for p in packs]
+    else:
+        tasks: list[dict] = []
+        for pack in packs:
+            domain = pack.get('agent', 'mem-safety')
+            preferred = _MODEL_BY_DOMAIN.get(domain)
+            ordered = []
+            if preferred and preferred in models:
+                ordered.append(preferred)
+            ordered.extend(m for m in models if m not in ordered)
+            tasks.append({'pack': pack, 'models': ordered})
 
     completed = 0
     total = len(tasks)
-    logger.info('hunt starting %d pack(s) with %d worker(s)', total, parallel)
+    logger.info('hunt starting %d pack(s) with %d worker(s)%s',
+                total, parallel,
+                ' (pooled)' if model_pool else '')
 
     with ThreadPoolExecutor(max_workers=parallel) as pool:
         futures = {}
         for t in tasks:
-            model = t['models'][0] if t['models'] else ''
-            futures[pool.submit(_run_one_hunt_pack, t['pack'], model, auth=auth, cache=cache)] = t
+            if model_pool is not None:
+                futures[pool.submit(_run_one_hunt_pack_from_pool, t['pack'], model_pool, auth=auth, cache=cache)] = t
+            else:
+                model = t['models'][0] if t['models'] else ''
+                futures[pool.submit(_run_one_hunt_pack, t['pack'], model, auth=auth, cache=cache)] = t
 
         for f in as_completed(futures):
             t = futures[f]
@@ -228,6 +265,38 @@ def _run_validate_finding(
         return {**finding, 'validate_status': 'needs-more-info', 'validate_reason': f'validate exception: {e}'}
 
 
+def _run_validate_finding_from_pool(
+    finding: dict,
+    snippet: dict,
+    pool: ModelPool,
+    *,
+    auth: dict[str, str],
+    cache: JsonCache,
+) -> dict:
+    if is_api_by_design(finding, snippet):
+        return {**finding, 'validate_status': 'rejected', 'validate_reason': 'api_by_design'}
+    finding = standardize_finding(finding)
+    snippet_code = snippet.get('content', '')
+    prompt = build_validate_prompt(finding, snippet)
+    try:
+        raw = call_llm_from_pool(
+            pool, prompt,
+            system=VALIDATE_SYSTEM_PROMPT,
+            auth=auth,
+            cache=cache,
+        )
+        parsed, _repaired = repair_json_output(raw)
+        if not parsed:
+            parsed = {}
+        status = parsed.get('status', 'needs-more-info')
+        reason = parsed.get('reason', '') or ''
+        if not parsed:
+            reason = f'unparseable LLM response: {raw[:200]}'
+        return {**finding, 'validate_status': status, 'validate_reason': reason}
+    except Exception as e:
+        return {**finding, 'validate_status': 'needs-more-info', 'validate_reason': f'validate exception: {e}'}
+
+
 def _run_validate_findings(
     findings: list[dict],
     snippet_db: dict[str, dict],
@@ -236,24 +305,33 @@ def _run_validate_findings(
     auth: dict[str, str],
     cache: JsonCache,
     parallel: int = 3,
+    model_pool: ModelPool | None = None,
 ) -> list[dict]:
     if not findings:
         return []
 
     validated: list[dict] = []
     total = len(findings)
-    logger.info('validate validating %d finding(s) with %d worker(s)', total, parallel)
+    logger.info('validate validating %d finding(s) with %d worker(s)%s',
+                total, parallel,
+                ' (pooled)' if model_pool else '')
 
     with ThreadPoolExecutor(max_workers=parallel) as pool:
         futures = {}
         for finding in findings:
             sid = finding.get('snippet_id', '')
             snippet = snippet_db.get(sid, {})
-            model = models[0] if models else 'deepseek/deepseek-v4-flash:free'
-            futures[pool.submit(
-                _run_validate_finding, finding, snippet, model,
-                auth=auth, cache=cache,
-            )] = finding
+            if model_pool is not None:
+                futures[pool.submit(
+                    _run_validate_finding_from_pool, finding, snippet, model_pool,
+                    auth=auth, cache=cache,
+                )] = finding
+            else:
+                model = models[0] if models else 'deepseek/deepseek-v4-flash:free'
+                futures[pool.submit(
+                    _run_validate_finding, finding, snippet, model,
+                    auth=auth, cache=cache,
+                )] = finding
 
         completed = 0
         for f in as_completed(futures):
@@ -278,6 +356,7 @@ def _gapfill_rerun(
     cache: JsonCache,
     parallel: int = 3,
     gapfill_iter: int = 0,
+    model_pool: ModelPool | None = None,
 ) -> tuple[list[dict], list[dict]]:
     if not hunt_models:
         return [], []
@@ -298,11 +377,14 @@ def _gapfill_rerun(
         pack['agent'] = domain
         rerun_packs.append(pack)
 
-    logger.info('gapfill iteration %d/2: retrying %d gap(s) with model %s', gapfill_iter + 1, len(rerun_packs), fallback_model)
+    logger.info('gapfill iteration %d/2: retrying %d gap(s) with model %s%s',
+                gapfill_iter + 1, len(rerun_packs), fallback_model,
+                ' (pooled)' if model_pool else '')
 
     fresh_findings, fresh_gaps = _run_hunt_packs(
         rerun_packs, [fallback_model],
         auth=auth, cache=cache, parallel=parallel,
+        model_pool=model_pool,
     )
 
     for g in gaps:
@@ -350,7 +432,8 @@ def run(mode: str, repo: Path, *,
         run_poc_enabled: bool = False,
         poc_finding_id: str | None = None,
         refresh_models: bool = False,
-        budget_ratio: float = 0.85) -> dict:
+        budget_ratio: float = 0.85,
+        pooled: bool = False) -> dict:
     script_dir = Path(__file__).parent
     cfg = json.loads((script_dir / 'config/defaults.json').read_text())
     stages_cfg = _load_stages_config(script_dir)
@@ -467,8 +550,15 @@ def run(mode: str, repo: Path, *,
                     i + 1, p.get('agent', '?'), len(p.get('snippets', [])), tc_sum, budget_tokens, len(prompt))
     _persist_jsonl(output_dir / 'context_packs.json', packs)
 
-    hunt_models, validate_models = split_model_pools(model_chain)
-    if validate_model_chain_override:
+    if pooled:
+        model_pool = ModelPool(model_chain, model_limits)
+        hunt_models = model_pool.alive
+        validate_models = model_pool.alive
+        state.put_meta('pooled', 'true')
+    else:
+        model_pool = None
+        hunt_models, validate_models = split_model_pools(model_chain)
+    if validate_model_chain_override and not pooled:
         validate_models = validate_model_chain_override
     state.put_meta('hunt_models', json.dumps(hunt_models))
     state.put_meta('validate_models', json.dumps(validate_models))
@@ -489,6 +579,7 @@ def run(mode: str, repo: Path, *,
                 parallel=hunt_workers,
                 max_run=max_run,
                 domain_map=domain_map,
+                model_pool=model_pool if pooled else None,
             )
         else:
             logger.warning('no auth configured; using empty findings')
@@ -501,6 +592,7 @@ def run(mode: str, repo: Path, *,
         validated = _run_validate_findings(
             all_findings, snippet_db, validate_models,
             auth=auth, cache=cache, parallel=validate_workers,
+            model_pool=model_pool if pooled else None,
         )
         _persist_jsonl(output_dir / 'validated.jsonl', validated)
     else:
@@ -521,6 +613,7 @@ def run(mode: str, repo: Path, *,
             current, packs, hunt_models, domain_map,
             auth=auth, cache=cache, parallel=hunt_workers,
             gapfill_iter=gapfill_iter,
+            model_pool=model_pool if pooled else None,
         )
         validated.extend(fresh_f)
         all_gaps = [g for g in all_gaps if g.get('gapfill_retried')] + fresh_g
@@ -665,7 +758,8 @@ def run_all(repo: Path, *,
             run_poc_enabled: bool = False,
             poc_finding_id: str | None = None,
         refresh_models: bool = False,
-        budget_ratio: float = 0.85) -> dict:
+        budget_ratio: float = 0.85,
+        pooled: bool = False) -> dict:
     reports: list[dict] = []
     for mode in _SINGLE_MODES:
         if mode == 'diff' and base_commit is None:
@@ -692,6 +786,7 @@ def run_all(repo: Path, *,
             poc_finding_id=poc_finding_id,
             refresh_models=refresh_models,
             budget_ratio=budget_ratio,
+            pooled=pooled,
         )
         report['mode_run'] = mode
         reports.append(report)
@@ -786,6 +881,10 @@ def main() -> None:
                         help='Fraction of min_context to use as token budget (default: 0.85)')
     parser.add_argument('--refresh-models', action='store_true',
                         help='Invalidate model limits cache before this run')
+    parser.add_argument('--pooled', action='store_true',
+                        help='Use pooled model mode: all alive models go into a shared pool ranked by '
+                             'capability. call_llm picks the best model; on failure marks it dead and '
+                             'retries with the next best. Applies to both Hunt and Validate stages.')
     parser.add_argument('--poc', type=str, nargs='?', const='all', default=None, dest='poc_finding',
                         help='Run PoC confirmation on findings. Without argument: all findings. '
                              'With ID: that specific finding. Combine with --poc-only to skip API stages.')
@@ -826,6 +925,7 @@ def main() -> None:
         poc_finding_id=args.poc_finding if args.poc_finding != 'all' else None,
         refresh_models=args.refresh_models,
         budget_ratio=args.budget_ratio,
+        pooled=args.pooled,
     )
 
     # Validate that auth exists for non-cached modes
