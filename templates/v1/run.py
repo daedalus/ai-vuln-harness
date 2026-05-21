@@ -59,7 +59,9 @@ from stages.runtime import (
     StateDB,
     fetch_model_limits,
     load_auth_config,
+    load_packs_pickle,
     repair_json_output,
+    save_packs_pickle,
     split_model_pools,
 )
 from stages.shield import (
@@ -452,7 +454,8 @@ def run(mode: str, repo: Path, *,
         poc_finding_id: str | None = None,
         refresh_models: bool = False,
         budget_ratio: float = 0.85,
-        pooled: bool = False) -> dict:
+        pooled: bool = False,
+        load_packs_cache: bool = False) -> dict:
     script_dir = Path(__file__).parent
     cfg = json.loads((script_dir / 'config/defaults.json').read_text())
     stages_cfg = _load_stages_config(script_dir)
@@ -549,12 +552,18 @@ def run(mode: str, repo: Path, *,
     _persist_jsonl(output_dir / 'recon_tasks.json', recon_tasks)
 
     # --- COORDINATOR ---
-    packs = build_context_packs(
-        snippets,
-        recon_tasks=recon_tasks,
-        allow_full_db_fallback=allow_full_db_fallback,
-        budget_tokens=budget_tokens,
-    )
+    packs_pkl = output_dir / 'context_packs.pkl'
+    if load_packs_cache and packs_pkl.exists():
+        logger.info('loading context packs from %s', packs_pkl)
+        packs = load_packs_pickle(packs_pkl)
+    else:
+        packs = build_context_packs(
+            snippets,
+            recon_tasks=recon_tasks,
+            allow_full_db_fallback=allow_full_db_fallback,
+            budget_tokens=budget_tokens,
+        )
+        save_packs_pickle(packs, packs_pkl)
     state.put_meta('pack_count', str(len(packs)))
     domain_map: dict[str, list[dict]] = {}
     for p in packs:
@@ -786,7 +795,8 @@ def run_all(repo: Path, *,
             poc_finding_id: str | None = None,
         refresh_models: bool = False,
         budget_ratio: float = 0.85,
-        pooled: bool = False) -> dict:
+        pooled: bool = False,
+        load_packs_cache: bool = False) -> dict:
     reports: list[dict] = []
     for mode in _SINGLE_MODES:
         if mode == 'diff' and base_commit is None:
@@ -814,6 +824,7 @@ def run_all(repo: Path, *,
             refresh_models=refresh_models,
             budget_ratio=budget_ratio,
             pooled=pooled,
+            load_packs_cache=load_packs_cache,
         )
         report['mode_run'] = mode
         reports.append(report)
@@ -908,6 +919,8 @@ def main() -> None:
                         help='Fraction of min_context to use as token budget (default: 0.85)')
     parser.add_argument('--refresh-models', action='store_true',
                         help='Invalidate model limits cache before this run')
+    parser.add_argument('--load-packs-cache', action='store_true',
+                         help='Load context packs from cached pickle instead of rebuilding')
     parser.add_argument('--pooled', action='store_true',
                         help='Use pooled model mode: all alive models go into a shared pool ranked by '
                              'capability. call_llm picks the best model; on failure marks it dead and '
@@ -955,6 +968,7 @@ def main() -> None:
         refresh_models=args.refresh_models,
         budget_ratio=args.budget_ratio,
         pooled=args.pooled,
+        load_packs_cache=args.load_packs_cache,
     )
 
     # Validate that auth exists for non-cached modes

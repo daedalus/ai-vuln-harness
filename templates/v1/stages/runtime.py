@@ -23,10 +23,12 @@ call_llm retry strategy:
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 import math
 import os
+import pickle
 import sqlite3
 import ssl
 import threading
@@ -227,6 +229,28 @@ class JsonCache:
     def put(self, key: str, value):
         self.data[key] = value
         self.path.write_text(json.dumps(self.data, indent=2))
+
+
+class _SafeUnpickler(pickle.Unpickler):
+    _SAFE_TYPES = frozenset({
+        dict, list, tuple, set, str, int, float, bool, bytes, type(None),
+    })
+
+    def find_class(self, module: str, name: str) -> type:
+        if module == 'builtins':
+            for t in self._SAFE_TYPES:
+                if t.__name__ == name:
+                    return t
+        raise pickle.UnpicklingError(f'sanitized pickle rejected {module}.{name}')
+
+
+def save_packs_pickle(packs: list[dict], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(pickle.dumps(packs))
+
+
+def load_packs_pickle(path: Path) -> list[dict]:
+    return _SafeUnpickler(io.BytesIO(path.read_bytes())).load()
 
 
 class StateDB:
