@@ -644,7 +644,7 @@ class CoordinatorDeeperEdgeTests(unittest.TestCase):
             {'task_id': 't1', 'domain': 'mem', 'attack_class': 'overflow',
              'target_files': ['a.c', 'b.c'], 'rationale': 'r', 'priority': 'high'},
         ]
-        packs = build_context_packs(snippets, tasks, budget_tokens=100)
+        packs = build_context_packs(snippets, tasks, budget_tokens=70)
         self.assertEqual(len(packs), 2)
 
     def test_recon_task_missing_priority(self):

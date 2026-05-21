@@ -31,6 +31,7 @@ all domain filters EXCEPT ``data-flow`` when targeting compiled libraries.
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 
 DOMAIN_ORDER = [
@@ -101,20 +102,29 @@ def build_context_packs(
     for domain in domain_snippets:
         if domain not in domain_iter_order and domain != 'all':
             domain_iter_order.append(domain)
+    _token_enc = None
+
+    def _prompt_tokens(pack: dict) -> int:
+        nonlocal _token_enc
+        text = json.dumps(pack, indent=2)
+        if _token_enc is None:
+            import tiktoken  # type: ignore
+            _token_enc = tiktoken.get_encoding('cl100k_base')
+        return max(1, len(_token_enc.encode(text)))
+
     for domain in domain_iter_order:
         items = domain_snippets[domain]
-        token_sum = 0
         pack_snips = []
-        total_tc = sum(int(s.get('token_count') or 0) for s in items)
-        print(f'[coordinator] domain={domain} total_snippets={len(items)} total_token_count={total_tc} budget_tokens={budget_tokens}', file=__import__('sys').stderr)
         for s in items:
-            tc = int(s.get('token_count') or 0)
-            if token_sum + tc > budget_tokens and pack_snips:
-                packs.append(_make_pack(domain, pack_snips, security_context=domain_context.get(domain)))
-                token_sum = 0
-                pack_snips = []
             pack_snips.append(s)
-            token_sum += tc
+            pack = _make_pack(domain, pack_snips, security_context=domain_context.get(domain))
+            prompt_tokens = _prompt_tokens(pack)
+            print(f'[coordinator] domain={domain} snippets={len(pack_snips)} prompt_tokens={prompt_tokens} budget={budget_tokens}', file=__import__('sys').stderr)
+            if prompt_tokens > budget_tokens:
+                pack_snips.pop()
+                if pack_snips:
+                    packs.append(_make_pack(domain, pack_snips, security_context=domain_context.get(domain)))
+                pack_snips = [s]
         if pack_snips:
             packs.append(_make_pack(domain, pack_snips, security_context=domain_context.get(domain)))
 

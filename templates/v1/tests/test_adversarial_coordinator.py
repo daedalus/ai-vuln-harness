@@ -20,7 +20,7 @@ class CoordinatorBudgetBoundaryTests(unittest.TestCase):
         tasks = [
             {'task_id': 't1', 'domain': 'mem', 'attack_class': 'overflow', 'target_files': ['a.c', 'b.c'], 'rationale': 'r', 'priority': 'high'},
         ]
-        packs = build_context_packs(snippets, tasks, budget_tokens=180)
+        packs = build_context_packs(snippets, tasks, budget_tokens=90)
         self.assertEqual(len(packs), 1)
         self.assertEqual(len(packs[0]['snippets']), 2)
 
@@ -32,7 +32,7 @@ class CoordinatorBudgetBoundaryTests(unittest.TestCase):
         tasks = [
             {'task_id': 't1', 'domain': 'mem', 'attack_class': 'overflow', 'target_files': ['a.c', 'b.c'], 'rationale': 'r', 'priority': 'high'},
         ]
-        packs = build_context_packs(snippets, tasks, budget_tokens=150)
+        packs = build_context_packs(snippets, tasks, budget_tokens=70)
         self.assertEqual(len(packs), 2)
 
     def test_zero_budget_creates_separate_packs(self):
