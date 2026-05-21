@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import subprocess
 from pathlib import Path
+from collections import defaultdict
 
 _LOGIC_CHAIN_TAG_PAIRS: list[frozenset[str]] = [
     frozenset({'auth', 'external-input'}),
@@ -126,6 +127,51 @@ def _find_sibling_files(
     return siblings
 
 
+def _normalise_dependency_name(raw: str) -> str:
+    dep = raw.strip().strip('"').strip("'")
+    if dep.startswith('@'):
+        parts = dep.split('/')
+        return '/'.join(parts[:2]) if len(parts) >= 2 else dep
+    separators = ['/', '.', '::']
+    for sep in separators:
+        if sep in dep:
+            dep = dep.split(sep, 1)[0]
+            break
+    return dep
+
+
+def _is_external_dependency(dep: str) -> bool:
+    dep = dep.strip()
+    if not dep:
+        return False
+    if dep.startswith(('.', '/')):
+        return False
+    if dep.endswith(('.c', '.cc', '.cpp', '.h', '.py', '.go', '.rs', '.ts', '.js')):
+        return False
+    return True
+
+
+def build_dependency_graph(snippets: list[dict]) -> dict:
+    dep_to_files: dict[str, set[str]] = defaultdict(set)
+    file_to_deps: dict[str, set[str]] = defaultdict(set)
+    for snippet in snippets:
+        file = str(snippet.get('file') or '')
+        if not file:
+            continue
+        for imp in snippet.get('imports') or []:
+            dep = _normalise_dependency_name(str(imp))
+            if not _is_external_dependency(dep):
+                continue
+            dep_to_files[dep].add(file)
+            file_to_deps[file].add(dep)
+    return {
+        'external_dependencies': sorted(dep_to_files.keys()),
+        'dependency_to_files': {k: sorted(v) for k, v in sorted(dep_to_files.items())},
+        'file_to_dependencies': {k: sorted(v) for k, v in sorted(file_to_deps.items())},
+        'files_with_external_deps': sorted(file_to_deps.keys()),
+    }
+
+
 def build_recon_tasks(
     snippets: list[dict],
     repo_path: str | Path | None = None,
@@ -161,7 +207,11 @@ def build_recon_tasks(
     for domain, files in _detect_logic_chains(snippets).items():
         domain_to_files.setdefault(domain, set()).update(files)
 
-    _HIGH_PRIORITY = {'mem-safety', 'data-flow', 'crypto', 'patch-gap', 'logic-chain'}
+    dependency_graph = build_dependency_graph(snippets)
+    if dependency_graph['files_with_external_deps']:
+        domain_to_files.setdefault('supply-chain', set()).update(dependency_graph['files_with_external_deps'])
+
+    _HIGH_PRIORITY = {'mem-safety', 'data-flow', 'crypto', 'patch-gap', 'logic-chain', 'supply-chain'}
 
     tasks = []
     for idx, (domain, files) in enumerate(sorted(domain_to_files.items()), start=1):
@@ -172,6 +222,11 @@ def build_recon_tasks(
             rationale = (
                 'multi-component attack chain: file contains tag combinations '
                 'that can compose into complex exploit paths'
+            )
+        elif domain == 'supply-chain':
+            rationale = (
+                'files with external dependency edges; prioritize cross-repo '
+                'supply-chain discovery paths'
             )
         else:
             rationale = f'{domain} targets derived from tags'
@@ -185,6 +240,10 @@ def build_recon_tasks(
         }
         if domain == 'logic-chain':
             task['task_type'] = 'logic_chain'
+        if domain == 'supply-chain':
+            task['task_type'] = 'supply_chain'
+            task['dependency_graph'] = dependency_graph
+            task['cross_repo_targets'] = dependency_graph['external_dependencies']
         if scope_notes:
             task['scope_notes'] = scope_notes
         tasks.append(task)

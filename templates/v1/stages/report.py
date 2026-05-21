@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from .contracts import standardize_finding
 from .validate import is_api_by_design, requires_trace_before_fix_now
 
@@ -89,6 +91,7 @@ def build_report(
     chains: list[dict],
     gaps: list[dict],
     trace_required: bool = True,
+    exposure_metrics: dict | None = None,
 ) -> dict:
     deduped = deduplicate(findings)
     bucketed = []
@@ -104,10 +107,14 @@ def build_report(
         bucketed.append(item)
 
     summary['chains_feasible'] = sum(1 for c in chains if c.get('feasible'))
+    if exposure_metrics:
+        summary['avg_exposure_window_days'] = float(exposure_metrics.get('avg_exposure_window_days', 0.0))
+        summary['median_exposure_window_days'] = float(exposure_metrics.get('median_exposure_window_days', 0.0))
+        summary['oldest_open_exposure_days'] = float(exposure_metrics.get('oldest_open_exposure_days', 0.0))
 
     return {
         'repo': repo,
-        'scan_date': '1970-01-01T00:00:00Z',
+        'scan_date': datetime.now(timezone.utc).isoformat(),
         'bucket_definitions': {
             'fix_now': 'CRITICAL/HIGH + confirmed + non-empty graph-verified call path + reachable external-input path',
             'backlog': (
@@ -120,4 +127,5 @@ def build_report(
         'findings': bucketed,
         'chains': chains,
         'gaps': gaps,
+        'exposure_window_kpis': exposure_metrics or {},
     }

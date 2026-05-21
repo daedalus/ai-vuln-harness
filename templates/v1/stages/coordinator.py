@@ -31,9 +31,14 @@ def build_context_packs(
         ]
 
     domain_snippets: dict[str, list[dict]] = defaultdict(list)
+    domain_context: dict[str, dict] = defaultdict(dict)
     for task in recon_tasks or []:
         for f in task.get('target_files', []):
             domain_snippets[task['domain']].extend(by_file.get(f, []))
+        if task.get('dependency_graph'):
+            domain_context[task['domain']]['dependency_graph'] = task['dependency_graph']
+        if task.get('cross_repo_targets'):
+            domain_context[task['domain']]['cross_repo_targets'] = task['cross_repo_targets']
 
     packs = []
     for domain, items in domain_snippets.items():
@@ -42,23 +47,23 @@ def build_context_packs(
         for s in items:
             tc = int(s.get('token_count') or 0)
             if token_sum + tc > budget_tokens and pack_snips:
-                packs.append(_make_pack(domain, pack_snips))
+                packs.append(_make_pack(domain, pack_snips, security_context=domain_context.get(domain)))
                 token_sum = 0
                 pack_snips = []
             pack_snips.append(s)
             token_sum += tc
         if pack_snips:
-            packs.append(_make_pack(domain, pack_snips))
+            packs.append(_make_pack(domain, pack_snips, security_context=domain_context.get(domain)))
 
     return packs
 
 
-def _make_pack(domain: str, snippets: list[dict]) -> dict:
+def _make_pack(domain: str, snippets: list[dict], security_context: dict | None = None) -> dict:
     return {
         'agent': domain,
         'guidance': f'Focus only on {domain}.',
         'snippets': snippets,
         'cross_refs': {},
-        'security_context': {},
+        'security_context': security_context or {},
         'known_entries': [],
     }

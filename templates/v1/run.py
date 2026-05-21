@@ -10,6 +10,8 @@ from stages.gapfill import build_gapfill_tasks
 from stages.ingestor import filter_snippets, load_repo_snippets, tag_snippet
 from stages.recon import build_recon_tasks
 from stages.coordinator import build_context_packs
+from stages.chains import synthesize_exploit_chains
+from stages.exposure import annotate_exposure_windows
 from stages.parser import parse_findings
 from stages.report import build_report, deduplicate
 from stages.runtime import JsonCache, StateDB, fetch_model_limits, load_auth_config, split_model_pools
@@ -164,12 +166,16 @@ def run(mode: str, repo: Path, *,
     )
     state.put_meta('feedback_task_count', str(len(feedback_tasks)))
 
+    chains = synthesize_exploit_chains(findings, snippets)
+    findings, exposure_metrics = annotate_exposure_windows(findings, repo)
+
     report = build_report(
         repo=str(repo),
         findings=findings,
-        chains=[],
+        chains=chains,
         gaps=[{'domain': t['domain'], 'files': t['target_files']} for t in gapfill_tasks],
         trace_required=cfg['is_library_target'],
+        exposure_metrics=exposure_metrics,
     )
 
     state.put_meta('last_mode', mode)
