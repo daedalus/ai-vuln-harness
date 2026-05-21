@@ -304,7 +304,14 @@ class FetchModelLimitsTests(unittest.TestCase):
             self.assertEqual(result.get('stale-model:free'), 999)
 
 
-class CallLlmTests(unittest.TestCase):
+class _MockedCallTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch('stages.runtime._time.sleep')
+        self.addCleanup(patcher.stop)
+        self._sleep_mock = patcher.start()
+
+
+class CallLlmTests(_MockedCallTests):
     def test_call_llm_returns_content(self):
         mock_response = {
             'choices': [{'message': {'content': 'Hello, world!'}}],
@@ -340,7 +347,7 @@ class CallLlmTests(unittest.TestCase):
             call_llm('openrouter:test:free', 'test', auth={})
 
 
-class RunHuntPackTests(unittest.TestCase):
+class RunHuntPackTests(_MockedCallTests):
     def test_run_hunt_pack_parses_findings(self):
         hunt_output = (
             '{"snippet_id": "s1", "class": "buffer-overflow", "severity": "HIGH", '
@@ -364,15 +371,16 @@ class RunHuntPackTests(unittest.TestCase):
         }
 
         with patch('stages.runtime.urllib.request.urlopen', return_value=FakeResponse()):
-            findings = run_hunt_pack(pack, 'openrouter:test:free', auth={'openrouter': 'sk-test'})
+            findings, gaps = run_hunt_pack(pack, ['openrouter:test:free'], auth={'openrouter': 'sk-test'})
 
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]['class'], 'buffer-overflow')
 
-    def test_run_hunt_pack_raises_without_auth(self):
+    def test_run_hunt_pack_returns_empty_gaps_without_auth(self):
         pack = {'agent': 'test', 'snippets': []}
-        with self.assertRaises(ValueError):
-            run_hunt_pack(pack, 'openrouter:test:free')
+        findings, gaps = run_hunt_pack(pack, ['openrouter:test:free'])
+        self.assertEqual(findings, [])
+        self.assertEqual(gaps, [])
 
 
 class RunHuntAllTests(unittest.TestCase):
@@ -385,7 +393,7 @@ class RunHuntAllTests(unittest.TestCase):
         self.assertEqual(result, [])
 
 
-class RunValidateFindingTests(unittest.TestCase):
+class RunValidateFindingTests(_MockedCallTests):
     def test_run_validate_finding_extracts_status(self):
         validate_output = '{"status": "confirmed", "reason": "reachable via user input"}'
 
@@ -458,10 +466,10 @@ class RunHuntPackCacheTests(unittest.TestCase):
         pack = {'agent': 'test', 'snippets': [{'id': 's1', 'content': 'int x = 1;'}]}
         prompt = json.dumps(pack)
         import hashlib
-        ck = f"hunt:openrouter:test:free:{hashlib.sha256(prompt.encode()).hexdigest()[:12]}"
+        ck = f"hunt:test:{hashlib.sha256(prompt.encode()).hexdigest()[:12]}"
         cache.data[ck] = '{"snippet_id": "s1", "class": "uaf"}\n{"done": true}'
 
-        findings = run_hunt_pack(pack, 'openrouter:test:free', cache=cache)
+        findings, gaps = run_hunt_pack(pack, ['openrouter:test:free'], cache=cache)
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]['class'], 'uaf')
 

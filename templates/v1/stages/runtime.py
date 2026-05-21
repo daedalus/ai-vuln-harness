@@ -551,10 +551,26 @@ def repair_json_output(raw: str) -> tuple[dict | list | None, bool]:
 
 
 # ---------------------------------------------------------------------------
-# LLM calling — hunt / validate orchestration
+# LLM calling — throttled, multi-provider
 # ---------------------------------------------------------------------------
 
 _MAX_TOKENS = 8192
+
+# Compiled SSL context (one allocation, reused across all calls)
+_SSL_CTX = ssl.create_default_context()
+
+# Per-provider rate limiter: minimum 20s gap between calls to same provider
+_THROTTLE_MIN_INTERVAL = 20.0
+_last_call_time: dict[str, float] = {}
+
+
+def _throttle(provider: str) -> None:
+    now = _time.time()
+    last = _last_call_time.get(provider, 0.0)
+    elapsed = now - last
+    if elapsed < _THROTTLE_MIN_INTERVAL:
+        _time.sleep(_THROTTLE_MIN_INTERVAL - elapsed)
+    _last_call_time[provider] = _time.time()
 
 
 def _get_auth_key(provider: str, auth: dict[str, str] | None = None) -> str | None:
@@ -569,7 +585,7 @@ def _get_auth_key(provider: str, auth: dict[str, str] | None = None) -> str | No
 def call_llm(model_id: str, prompt: str, *,
              system: str = "",
              max_tokens: int = _MAX_TOKENS,
-             timeout: int = 60,
+             timeout: int = 120,
              auth: dict[str, str] | None = None) -> str:
     provider, _, model_name = model_id.partition(':')
     api_key = _get_auth_key(provider, auth=auth)
@@ -590,6 +606,8 @@ def call_llm(model_id: str, prompt: str, *,
         'max_tokens': max_tokens,
         'messages': messages,
     }
+
+    _throttle(provider)
     req = urllib.request.Request(
         url=f'{base}/chat/completions',
         data=json.dumps(payload).encode(),
@@ -598,9 +616,15 @@ def call_llm(model_id: str, prompt: str, *,
             'Content-Type': 'application/json',
         },
     )
-    ctx = ssl.create_default_context()
-    resp = urllib.request.urlopen(req, context=ctx, timeout=timeout)
-    result = json.loads(resp.read().decode())
+    try:
+        resp = urllib.request.urlopen(req, context=_SSL_CTX, timeout=timeout)
+        result = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors='replace')[:500]
+        raise RuntimeError(f'HTTP {e.code} from {provider}: {body}') from e
+
+    if 'choices' not in result or not result['choices']:
+        raise ValueError(f'no_choices: {json.dumps(result)[:200]}')
 
     msg = result['choices'][0]['message']
     content = (msg.get('content') or '')
@@ -611,7 +635,31 @@ def call_llm(model_id: str, prompt: str, *,
 
 
 # ---------------------------------------------------------------------------
-# Hunt — per-pack and parallel
+# Health check — probes all models, returns only the alive ones
+# ---------------------------------------------------------------------------
+
+_health_cache: list[str] | None = None
+
+
+def health_check(models: list[str], auth: dict[str, str], *,
+                 skip: bool = False) -> list[str]:
+    global _health_cache
+    if skip and _health_cache is not None:
+        return _health_cache
+    alive: list[str] = []
+    for mid in models:
+        try:
+            call_llm(mid, 'Reply "ok"', auth=auth, max_tokens=16, timeout=30)
+            alive.append(mid)
+        except Exception:
+            pass
+        _time.sleep(3.0)
+    _health_cache = alive
+    return alive
+
+
+# ---------------------------------------------------------------------------
+# Hunt — per-pack with model fallback chain
 # ---------------------------------------------------------------------------
 
 _HUNT_SYSTEM_PROMPT = (
@@ -623,9 +671,9 @@ _HUNT_SYSTEM_PROMPT = (
 )
 
 
-def run_hunt_pack(pack: dict, model_id: str, *,
+def run_hunt_pack(pack: dict, model_chain: list[str], *,
                   auth: dict[str, str] | None = None,
-                  cache: JsonCache | None = None) -> list[dict]:
+                  cache: JsonCache | None = None) -> tuple[list[dict], list[dict]]:
     from stages.parser import parse_findings
 
     domain = pack.get('agent', 'unknown')
@@ -633,45 +681,48 @@ def run_hunt_pack(pack: dict, model_id: str, *,
     system = _HUNT_SYSTEM_PROMPT.format(domain=domain)
 
     if cache:
-        ck = f"hunt:{model_id}:{hashlib.sha256(prompt.encode()).hexdigest()[:12]}"
+        ck = f"hunt:{domain}:{hashlib.sha256(prompt.encode()).hexdigest()[:12]}"
         cached = cache.get(ck)
         if cached is not None:
-            findings, _ = parse_findings(cached, domain=domain)
-            return findings
+            return parse_findings(cached, domain=domain)
 
-    text = call_llm(model_id, prompt, system=system, auth=auth)
-    if cache:
-        cache.put(ck, text)
+    errors: list[str] = []
+    for model_id in model_chain:
+        for attempt in range(2):
+            try:
+                text = call_llm(model_id, prompt, system=system, auth=auth)
+                if cache:
+                    cache.put(ck, text)
+                return parse_findings(text, domain=domain)
+            except Exception as e:
+                estr = str(e)
+                errors.append(estr[:80])
+                if any(x in estr for x in ('429', '502', '503', '504', 'rate', 'too many')):
+                    wait = 60 * (attempt + 1)
+                    _time.sleep(wait)
+                    prov = model_id.partition(':')[0]
+                    _last_call_time.pop(prov, None)
+                    continue
+                break
 
-    findings, _ = parse_findings(text, domain=domain)
-    return findings
+    return [], []
 
 
 def run_hunt_all(packs: list[dict], model_chain: list[str], *,
                  auth: dict[str, str] | None = None,
-                 max_workers: int = 3,
                  cache: JsonCache | None = None) -> list[dict]:
     if not packs or not model_chain:
         return []
 
     all_findings: list[dict] = []
-
-    def _hunt(pack: dict) -> list[dict]:
-        return run_hunt_pack(pack, model_chain[0], auth=auth, cache=cache)
-
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_hunt, p): p.get('agent', '?') for p in packs}
-        for f in as_completed(futures):
-            try:
-                all_findings.extend(f.result())
-            except Exception:
-                pass
-
+    for pack in packs:
+        findings, _ = run_hunt_pack(pack, model_chain, auth=auth, cache=cache)
+        all_findings.extend(findings)
     return all_findings
 
 
 # ---------------------------------------------------------------------------
-# Validate — per-finding and parallel
+# Validate — per-finding with repair
 # ---------------------------------------------------------------------------
 
 _VALIDATE_SYSTEM_PROMPT = (
@@ -726,23 +777,22 @@ def run_validate_finding(finding: dict, snippet: dict,
 def run_validate_all(findings: list[dict], snippet_db: dict[str, dict],
                      model_chain: list[str], *,
                      auth: dict[str, str] | None = None,
-                     max_workers: int = 3,
                      cache: JsonCache | None = None) -> list[dict]:
     if not findings or not model_chain:
         return findings
 
     validated: list[dict] = []
-
-    def _validate(f: dict) -> dict:
-        snippet = snippet_db.get(f.get('snippet_id', ''), {})
-        return run_validate_finding(f, snippet, model_chain[0], auth=auth, cache=cache)
-
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_validate, f): f.get('snippet_id', '?') for f in findings}
-        for f in as_completed(futures):
-            try:
-                validated.append(f.result())
-            except Exception:
-                pass
+    for finding in findings:
+        snippet = snippet_db.get(finding.get('snippet_id', ''), {})
+        try:
+            result = run_validate_finding(finding, snippet, model_chain[0],
+                                          auth=auth, cache=cache)
+            validated.append(result)
+        except Exception:
+            validated.append({
+                **finding,
+                'validate_status': 'needs-more-info',
+                'validate_reason': 'validate exception',
+            })
 
     return validated

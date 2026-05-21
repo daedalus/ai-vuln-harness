@@ -17,6 +17,7 @@ from stages.runtime import (
     JsonCache,
     StateDB,
     fetch_model_limits,
+    health_check,
     load_auth_config,
     run_hunt_all,
     run_validate_all,
@@ -128,12 +129,11 @@ def run(mode: str, repo: Path, *,
     snippet_db = {s['id']: s for s in snippets}
 
     # --- Hunt: run all context packs through LLM models ---
-    raw_findings = run_hunt_all(packs, hunt_models, auth=auth,
-                                max_workers=hunt_workers, cache=cache)
+    raw_findings = run_hunt_all(packs, hunt_models, auth=auth, cache=cache)
 
     # --- Validate: each finding independently reviewed by validate models ---
     findings = run_validate_all(raw_findings, snippet_db, validate_models,
-                                auth=auth, max_workers=validate_workers, cache=cache)
+                                auth=auth, cache=cache)
 
     promoted, _suppressed_by_vote = merge_hunter_outputs([findings, []], min_votes=2)
 
