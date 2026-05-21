@@ -45,6 +45,31 @@ def _git_file_bounds(repo: Path, file_path: str) -> tuple[datetime | None, datet
     return first_date, last_date
 
 
+def _annotate_one_window(finding: dict, repo: Path, now: datetime) -> tuple[dict, float | None, bool]:
+    file_path = str(finding.get('file') or '')
+    if not file_path:
+        return finding, None, False
+
+    first_seen, latest_commit = _git_file_bounds(repo, file_path)
+    if first_seen is None:
+        return finding, None, False
+
+    is_resolved = str(finding.get('status', '')).lower() in {'rejected', 'fixed'}
+    end = latest_commit if is_resolved and latest_commit else now
+    window_days = max(0.0, (end - first_seen).total_seconds() / 86400.0)
+
+    entry = {
+        **finding,
+        'exposure_window': {
+            'first_seen_commit_date': first_seen.isoformat(),
+            'fixed_commit_date': end.isoformat() if is_resolved else None,
+            'days': round(window_days, 2),
+            'resolved': is_resolved,
+        },
+    }
+    return entry, window_days, is_resolved
+
+
 def annotate_exposure_windows(findings: list[dict], repo: Path) -> tuple[list[dict], dict]:
     now = datetime.now(timezone.utc)
     tracked: list[dict] = []
@@ -52,35 +77,18 @@ def annotate_exposure_windows(findings: list[dict], repo: Path) -> tuple[list[di
     resolved = 0
 
     for finding in findings:
-        file_path = str(finding.get('file') or '')
-        if not file_path:
-            tracked.append(finding)
-            continue
-
-        first_seen, latest_commit = _git_file_bounds(repo, file_path)
-        if first_seen is None:
-            tracked.append(finding)
-            continue
-
-        is_resolved = str(finding.get('status', '')).lower() in {'rejected', 'fixed'}
-        end = latest_commit if is_resolved and latest_commit else now
-        window_days = max(0.0, (end - first_seen).total_seconds() / 86400.0)
-        windows.append(window_days)
+        entry, window_days, is_resolved = _annotate_one_window(finding, repo, now)
+        tracked.append(entry)
+        if window_days is not None:
+            windows.append(window_days)
         if is_resolved:
             resolved += 1
 
-        tracked.append({
-            **finding,
-            'exposure_window': {
-                'first_seen_commit_date': first_seen.isoformat(),
-                'fixed_commit_date': end.isoformat() if is_resolved else None,
-                'days': round(window_days, 2),
-                'resolved': is_resolved,
-            },
-        })
-
-    open_windows = [f.get('exposure_window', {}).get('days') for f in tracked if f.get('exposure_window') and not f['exposure_window'].get('resolved')]
-    open_windows = [float(v) for v in open_windows if isinstance(v, (int, float))]
+    open_windows = [
+        float(v)
+        for f in tracked
+        if (ew := f.get('exposure_window')) and not ew.get('resolved') and isinstance(v := ew.get('days'), (int, float))
+    ]
 
     metrics = {
         'findings_tracked': len([f for f in tracked if f.get('exposure_window')]),

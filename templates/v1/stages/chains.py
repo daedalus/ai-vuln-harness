@@ -71,6 +71,66 @@ def _mitigations(finding_a: dict, finding_b: dict) -> list[str]:
     return out
 
 
+def _should_chain(
+    a: dict, b: dict, by_id: dict, seen_pairs: set[tuple[str, str]]
+) -> tuple[bool, str, str, str, str]:
+    a_file = str(a.get('file') or by_id.get(a.get('snippet_id'), {}).get('file') or '')
+    b_file = str(b.get('file') or by_id.get(b.get('snippet_id'), {}).get('file') or '')
+    if not a_file or not b_file:
+        return False, '', '', '', ''
+    pair = tuple(sorted((a.get('snippet_id', ''), b.get('snippet_id', ''))))
+    if pair in seen_pairs:
+        return False, '', '', '', ''
+    seen_pairs.add(pair)
+
+    comp_a = _component(a_file)
+    comp_b = _component(b_file)
+    cross_component = comp_a != comp_b
+    severe = min(
+        _SEV_RANK.get(str(a.get('severity', '')).upper(), 0),
+        _SEV_RANK.get(str(b.get('severity', '')).upper(), 0),
+    ) >= 2
+    if not (cross_component or severe):
+        return False, '', '', '', ''
+    return True, a_file, b_file, comp_a, comp_b
+
+
+def _build_chain(a: dict, b: dict, a_file: str, b_file: str, comp_a: str, comp_b: str, chain_id: str) -> dict:
+    cross_component = comp_a != comp_b
+    cvss = _cvss_for(a.get('severity', 'LOW'), cross_component)
+    return {
+        'chain_id': chain_id,
+        'feasible': bool(a.get('call_path_verified', True) and b.get('call_path_verified', True)),
+        'components': sorted({comp_a, comp_b}),
+        'steps': [
+            {
+                'snippet_id': a.get('snippet_id'),
+                'file': a_file,
+                'class': a.get('class'),
+                'severity': a.get('severity'),
+                'cwe': _cwe_for(a),
+            },
+            {
+                'snippet_id': b.get('snippet_id'),
+                'file': b_file,
+                'class': b.get('class'),
+                'severity': b.get('severity'),
+                'cwe': _cwe_for(b),
+            },
+        ],
+        'cvss': {
+            'vector': 'AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H' if cross_component else 'AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H',
+            'score': cvss,
+        },
+        'narrative': (
+            f'Attacker chains {a.get("class", "initial access")} in {a_file} '
+            f'with {b.get("class", "impact escalation")} in {b_file} '
+            f'to move from {comp_a} into {comp_b}.'
+        ),
+        'mitigations': _mitigations(a, b),
+    }
+
+
 def synthesize_exploit_chains(findings: list[dict], snippets: list[dict], max_chains: int = 20) -> list[dict]:
     by_id = {s.get('id'): s for s in snippets}
     confirmed = [f for f in findings if str(f.get('status', '')).lower() == 'confirmed']
@@ -80,57 +140,10 @@ def synthesize_exploit_chains(findings: list[dict], snippets: list[dict], max_ch
     seen_pairs: set[tuple[str, str]] = set()
     for i, a in enumerate(confirmed):
         for b in confirmed[i + 1:]:
-            a_file = str(a.get('file') or by_id.get(a.get('snippet_id'), {}).get('file') or '')
-            b_file = str(b.get('file') or by_id.get(b.get('snippet_id'), {}).get('file') or '')
-            if not a_file or not b_file:
+            ok, a_file, b_file, comp_a, comp_b = _should_chain(a, b, by_id, seen_pairs)
+            if not ok:
                 continue
-            pair = tuple(sorted((a.get('snippet_id', ''), b.get('snippet_id', ''))))
-            if pair in seen_pairs:
-                continue
-            seen_pairs.add(pair)
-
-            comp_a = _component(a_file)
-            comp_b = _component(b_file)
-            cross_component = comp_a != comp_b
-            severe = min(
-                _SEV_RANK.get(str(a.get('severity', '')).upper(), 0),
-                _SEV_RANK.get(str(b.get('severity', '')).upper(), 0),
-            ) >= 2
-            if not (cross_component or severe):
-                continue
-
-            cvss = _cvss_for(a.get('severity', 'LOW'), cross_component)
-            chain = {
-                'chain_id': f'chain-{len(chains) + 1:04d}',
-                'feasible': bool(a.get('call_path_verified', True) and b.get('call_path_verified', True)),
-                'components': sorted({comp_a, comp_b}),
-                'steps': [
-                    {
-                        'snippet_id': a.get('snippet_id'),
-                        'file': a_file,
-                        'class': a.get('class'),
-                        'severity': a.get('severity'),
-                        'cwe': _cwe_for(a),
-                    },
-                    {
-                        'snippet_id': b.get('snippet_id'),
-                        'file': b_file,
-                        'class': b.get('class'),
-                        'severity': b.get('severity'),
-                        'cwe': _cwe_for(b),
-                    },
-                ],
-                'cvss': {
-                    'vector': 'AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H' if cross_component else 'AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H',
-                    'score': cvss,
-                },
-                'narrative': (
-                    f'Attacker chains {a.get("class", "initial access")} in {a_file} '
-                    f'with {b.get("class", "impact escalation")} in {b_file} '
-                    f'to move from {comp_a} into {comp_b}.'
-                ),
-                'mitigations': _mitigations(a, b),
-            }
+            chain = _build_chain(a, b, a_file, b_file, comp_a, comp_b, f'chain-{len(chains) + 1:04d}')
             chains.append(chain)
             if len(chains) >= max_chains:
                 return chains

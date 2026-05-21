@@ -188,6 +188,25 @@ def _tokenise(text: str) -> set[str]:
     return {t.lower() for t in re.findall(r'[A-Za-z_][A-Za-z0-9_]{3,}', text)}
 
 
+def _check_desc_tokens(desc: str, content_tokens: set[str]) -> tuple[bool, str]:
+    desc_tokens = {t for t in _tokenise(desc) if len(t) > 3}
+    missing_desc = desc_tokens - content_tokens
+    if desc_tokens and len(missing_desc) / len(desc_tokens) > 0.60:
+        return True, f'desc tokens not in snippet: {sorted(missing_desc)[:5]}'
+    return False, 'ok'
+
+
+def _check_call_path(finding: dict, content_tokens: set[str]) -> tuple[bool, str]:
+    missing_path = []
+    for name in _call_path_names(finding):
+        if len(name) >= 3 and name not in content_tokens:
+            missing_path.append(name)
+    path_names = [n for n in _call_path_names(finding) if len(n) >= 3]
+    if path_names and len(missing_path) / len(path_names) > 0.70:
+        return True, f'call_path names not in snippet: {missing_path[:5]}'
+    return False, 'ok'
+
+
 def detect_hallucination(finding: dict, snippet: dict) -> tuple[bool, str]:
     """Return ``(hallucinated, reason)``.
 
@@ -204,28 +223,15 @@ def detect_hallucination(finding: dict, snippet: dict) -> tuple[bool, str]:
         return False, 'no-snippet-content'
 
     content_tokens = _tokenise(content)
-    # Also include explicit callers/callees names
     for name in list(snippet.get('callers') or []) + list(snippet.get('callees') or []):
         content_tokens.add(name.lower())
 
-    # --- desc token check ---
-    desc = str(finding.get('desc') or '')
-    desc_tokens = {t for t in _tokenise(desc) if len(t) > 3}
-    missing_desc = desc_tokens - content_tokens
-    # Allow up to 30% of desc tokens to be absent (LLMs paraphrase)
-    if desc_tokens and len(missing_desc) / len(desc_tokens) > 0.60:
-        return True, f'desc tokens not in snippet: {sorted(missing_desc)[:5]}'
-
-    # --- call_path check ---
-    missing_path = []
-    for name in _call_path_names(finding):
-        if len(name) >= 3 and name not in content_tokens:
-            missing_path.append(name)
-    # Flag only if *most* call path names are absent
-    path_names = [n for n in _call_path_names(finding) if len(n) >= 3]
-    if path_names and len(missing_path) / len(path_names) > 0.70:
-        return True, f'call_path names not in snippet: {missing_path[:5]}'
-
+    result = _check_desc_tokens(str(finding.get('desc') or ''), content_tokens)
+    if result[0]:
+        return result
+    result = _check_call_path(finding, content_tokens)
+    if result[0]:
+        return result
     return False, 'ok'
 
 

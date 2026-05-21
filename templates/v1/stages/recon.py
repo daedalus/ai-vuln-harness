@@ -41,6 +41,68 @@ _SECURITY_PATTERNS: list[re.Pattern] = [
 
 _COMMIT_LINE_PREFIX = '---COMMIT---'
 
+_DOMAIN_TAGS: dict[str, set[str]] = {
+    'mem-safety': {'memory', 'unsafe', 'integer-arith'},
+    'auth': {'auth'},
+    'crypto': {'crypto'},
+    'ipc': {'ipc'},
+    'data-flow': {'external-input'},
+    'format-str': {'format-string'},
+}
+
+
+def _map_snippet_to_domains(
+    snippet: dict,
+    domain_to_files: dict[str, set[str]],
+) -> None:
+    file = snippet.get('file', '')
+    if not file:
+        return
+    tags = set(snippet.get('tags', []))
+    for domain, trigger_tags in _DOMAIN_TAGS.items():
+        if trigger_tags & tags:
+            domain_to_files.setdefault(domain, set()).add(file)
+
+
+def _build_task(
+    domain: str,
+    files: set[str],
+    idx: int,
+    dependency_graph: dict | None = None,
+    scope_notes: str | None = None,
+) -> dict:
+    _HIGH_PRIORITY = {'mem-safety', 'data-flow', 'crypto', 'patch-gap', 'logic-chain', 'supply-chain'}
+    priority = 'high' if domain in _HIGH_PRIORITY else 'medium'
+    rationale_map = {
+        'patch-gap': 'sibling files of security-patched files (git history grep)',
+        'logic-chain': (
+            'multi-component attack chain: file contains tag combinations '
+            'that can compose into complex exploit paths'
+        ),
+        'supply-chain': (
+            'files with external dependency edges; prioritize cross-repo '
+            'supply-chain discovery paths'
+        ),
+    }
+    rationale = rationale_map.get(domain, f'{domain} targets derived from tags')
+    task: dict = {
+        'task_id': f't_{domain}_{idx}',
+        'domain': domain,
+        'attack_class': domain,
+        'target_files': sorted(files),
+        'rationale': rationale,
+        'priority': priority,
+    }
+    if domain == 'logic-chain':
+        task['task_type'] = 'logic_chain'
+    if domain == 'supply-chain':
+        task['task_type'] = 'supply_chain'
+        task['dependency_graph'] = dependency_graph
+        task['cross_repo_targets'] = dependency_graph['external_dependencies']
+    if scope_notes:
+        task['scope_notes'] = scope_notes
+    return task
+
 
 def _scan_git_security_patches(repo_path: str | Path) -> set[str]:
     try:
@@ -180,20 +242,7 @@ def build_recon_tasks(
     domain_to_files: dict[str, set[str]] = {}
 
     for s in snippets:
-        file = s.get('file', '')
-        tags = s.get('tags', [])
-        if any(t in tags for t in ('memory', 'unsafe', 'integer-arith')):
-            domain_to_files.setdefault('mem-safety', set()).add(file)
-        if 'auth' in tags:
-            domain_to_files.setdefault('auth', set()).add(file)
-        if 'crypto' in tags:
-            domain_to_files.setdefault('crypto', set()).add(file)
-        if 'ipc' in tags:
-            domain_to_files.setdefault('ipc', set()).add(file)
-        if 'external-input' in tags:
-            domain_to_files.setdefault('data-flow', set()).add(file)
-        if 'format-string' in tags:
-            domain_to_files.setdefault('format-str', set()).add(file)
+        _map_snippet_to_domains(s, domain_to_files)
 
     if repo_path is not None:
         all_files = {s['file'] for s in snippets if 'file' in s}
@@ -203,7 +252,6 @@ def build_recon_tasks(
             if siblings:
                 domain_to_files.setdefault('patch-gap', set()).update(siblings)
 
-    # --- Logic-chain detection: emit tasks for multi-component attack paths ---
     for domain, files in _detect_logic_chains(snippets).items():
         domain_to_files.setdefault(domain, set()).update(files)
 
@@ -211,40 +259,7 @@ def build_recon_tasks(
     if dependency_graph['files_with_external_deps']:
         domain_to_files.setdefault('supply-chain', set()).update(dependency_graph['files_with_external_deps'])
 
-    _HIGH_PRIORITY = {'mem-safety', 'data-flow', 'crypto', 'patch-gap', 'logic-chain', 'supply-chain'}
-
     tasks = []
     for idx, (domain, files) in enumerate(sorted(domain_to_files.items()), start=1):
-        priority = 'high' if domain in _HIGH_PRIORITY else 'medium'
-        if domain == 'patch-gap':
-            rationale = 'sibling files of security-patched files (git history grep)'
-        elif domain == 'logic-chain':
-            rationale = (
-                'multi-component attack chain: file contains tag combinations '
-                'that can compose into complex exploit paths'
-            )
-        elif domain == 'supply-chain':
-            rationale = (
-                'files with external dependency edges; prioritize cross-repo '
-                'supply-chain discovery paths'
-            )
-        else:
-            rationale = f'{domain} targets derived from tags'
-        task: dict = {
-            'task_id': f't_{domain}_{idx}',
-            'domain': domain,
-            'attack_class': domain,
-            'target_files': sorted(files),
-            'rationale': rationale,
-            'priority': priority,
-        }
-        if domain == 'logic-chain':
-            task['task_type'] = 'logic_chain'
-        if domain == 'supply-chain':
-            task['task_type'] = 'supply_chain'
-            task['dependency_graph'] = dependency_graph
-            task['cross_repo_targets'] = dependency_graph['external_dependencies']
-        if scope_notes:
-            task['scope_notes'] = scope_notes
-        tasks.append(task)
+        tasks.append(_build_task(domain, files, idx, dependency_graph, scope_notes))
     return tasks

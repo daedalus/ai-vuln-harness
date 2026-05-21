@@ -64,48 +64,61 @@ def _extract_objects(text: str) -> list[dict]:
     return objs
 
 
+def _parse_json_body(text: str, domain: str, findings: list[dict], gaps: list[dict]) -> bool | None:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        return None
+    saw_done = False
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        _classify_item(item, findings, gaps)
+        saw_done = saw_done or item.get('done') is True
+    if saw_done and not findings and not gaps:
+        gaps.append(_sentinel_gap(domain, 'sentinel-only JSON body'))
+    return saw_done
+
+
+def _parse_line_by_line(text: str, findings: list[dict], gaps: list[dict]) -> bool:
+    saw_done = False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            obj = _balanced_json_prefix(line)
+        if not isinstance(obj, dict):
+            continue
+        _classify_item(obj, findings, gaps)
+        saw_done = saw_done or obj.get('done') is True
+    return saw_done
+
+
 def parse_findings(text: str, domain: str = '') -> tuple[list[dict], list[dict]]:
     findings: list[dict] = []
     gaps: list[dict] = []
-    saw_done = False
 
     if not text or not text.strip():
         return findings, gaps
 
-    try:
-        data = json.loads(text)
-        if isinstance(data, dict):
-            data = [data]
-        if isinstance(data, list):
-            for item in data:
-                if not isinstance(item, dict):
-                    continue
-                _classify_item(item, findings, gaps)
-                saw_done = saw_done or item.get('done') is True
-            if saw_done and not findings and not gaps:
-                gaps.append(_sentinel_gap(domain, 'sentinel-only JSON body'))
-            return findings, gaps
-    except json.JSONDecodeError:
-        pass
+    result = _parse_json_body(text, domain, findings, gaps)
+    if result is not None:
+        return findings, gaps
 
+    saw_done = False
     for obj in _extract_objects(text):
         _classify_item(obj, findings, gaps)
         saw_done = saw_done or obj.get('done') is True
 
     if not findings and not gaps and not saw_done:
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            obj = None
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                obj = _balanced_json_prefix(line)
-            if not isinstance(obj, dict):
-                continue
-            _classify_item(obj, findings, gaps)
-            saw_done = saw_done or obj.get('done') is True
+        saw_done = _parse_line_by_line(text, findings, gaps)
 
     if saw_done and not findings and not gaps:
         gaps.append(_sentinel_gap(domain, 'sentinel-only output'))

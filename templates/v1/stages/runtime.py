@@ -38,33 +38,30 @@ from collections import Counter
 from pathlib import Path
 
 
-def split_model_pools(models: list[str]) -> tuple[list[str], list[str]]:
-    """Split model chain into disjoint Hunt and Validate pools.
+def _preferred_by_keyword(models: list[str], keywords: tuple[str, ...]) -> list[str]:
+    return [m for m in models if any(k in m for k in keywords)]
 
-    Hunt gets models matching deepseek/qwen/gemma; Validate gets
-    nemotron/trinity/z-ai. If the chain is too small for a clean split,
-    the strongest model goes to Validate because disagreement beats
-    agreement — if Validate uses the same model as Hunt, correlated
-    biases slip through (confirmed by zlib run: deepseek-v4-flash
-    reported gzprintf as HIGH format-string; nemotron-nano correctly
-    rejected it as API-by-design).
-    """
-    models = list(dict.fromkeys(models))
-    hunt_preferred = [m for m in models if any(k in m for k in ('deepseek', 'qwen', 'gemma'))]
-    validate_preferred = [m for m in models if any(k in m for k in ('nemotron', 'trinity', 'z-ai'))]
 
-    hunt = hunt_preferred[:]
-    validate = [m for m in validate_preferred if m not in hunt]
-
+def _distribute_remaining(models: list[str], hunt: list[str], validate: list[str]) -> None:
     for m in models:
         if m not in hunt and m not in validate:
             (hunt if len(hunt) <= len(validate) else validate).append(m)
 
-    validate = [m for m in validate if m not in hunt]
+
+def _ensure_both_nonempty(models: list[str], hunt: list[str], validate: list[str]) -> None:
     if not validate:
-        validate = [m for m in models if m not in hunt]
+        validate[:] = [m for m in models if m not in hunt]
     if not hunt:
-        hunt = [m for m in models if m not in validate] or models[:1]
+        hunt[:] = [m for m in models if m not in validate] or models[:1]
+
+
+def split_model_pools(models: list[str]) -> tuple[list[str], list[str]]:
+    models = list(dict.fromkeys(models))
+    hunt = _preferred_by_keyword(models, ('deepseek', 'qwen', 'gemma'))
+    validate = [m for m in _preferred_by_keyword(models, ('nemotron', 'trinity', 'z-ai')) if m not in hunt]
+    _distribute_remaining(models, hunt, validate)
+    validate[:] = [m for m in validate if m not in hunt]
+    _ensure_both_nonempty(models, hunt, validate)
     return hunt, validate
 
 
@@ -80,6 +77,26 @@ _PROVIDER_ENV_MAP = {
     'google': 'GOOGLE_API_KEY',
     'zen': 'ZEN_API_KEY',
 }
+
+
+def _load_auth_from_paths(candidates: list[Path], seen: set[Path], keys: dict[str, str]) -> None:
+    for path in candidates:
+        resolved = path.resolve()
+        if resolved in seen or not resolved.exists():
+            continue
+        seen.add(resolved)
+        try:
+            data = json.loads(resolved.read_text())
+            if isinstance(data, dict):
+                for provider in _PROVIDER_ENV_MAP:
+                    val = data.get(provider) or data.get(f'{provider}_api_key')
+                    if val and provider not in keys:
+                        if isinstance(val, dict):
+                            val = val.get('key') or val.get('api_key') or ''
+                        if val:
+                            keys[provider] = str(val)
+        except (json.JSONDecodeError, OSError):
+            continue
 
 
 def load_auth_config(
@@ -100,23 +117,7 @@ def load_auth_config(
         candidates.extend(fn(script_dir) for fn in paths)
 
     seen: set[Path] = set()
-    for path in candidates:
-        resolved = path.resolve()
-        if resolved in seen or not resolved.exists():
-            continue
-        seen.add(resolved)
-        try:
-            data = json.loads(resolved.read_text())
-            if isinstance(data, dict):
-                for provider in _PROVIDER_ENV_MAP:
-                    val = data.get(provider) or data.get(f'{provider}_api_key')
-                    if val and provider not in keys:
-                        if isinstance(val, dict):
-                            val = val.get('key') or val.get('api_key') or ''
-                        if val:
-                            keys[provider] = str(val)
-        except (json.JSONDecodeError, OSError):
-            continue
+    _load_auth_from_paths(candidates, seen, keys)
 
     for provider, env_var in _PROVIDER_ENV_MAP.items():
         env_val = os.environ.get(env_var)
@@ -149,6 +150,52 @@ def _strip_provider(model_id: str) -> str:
     return rest if prov in _KNOWN_PROVIDERS and sep else model_id
 
 
+def _fetch_provider_limits(provider: str, provider_models: list[str], ctx: ssl.SSLContext) -> dict[str, int]:
+    base = _BASE_URLS.get(provider)
+    if not base:
+        return {}
+    limits: dict[str, int] = {}
+    try:
+        req = urllib.request.Request(f'{base}/models')
+        resp = urllib.request.urlopen(req, context=ctx, timeout=15)
+        data = json.loads(resp.read().decode())
+        for entry in data.get('data', []):
+            eid = entry.get('id', '')
+            if not eid.endswith(':free'):
+                continue
+            ctx_win = entry.get('context_length') or entry.get('context_window') or 0
+            if not ctx_win:
+                continue
+            bare = _strip_provider(eid)
+            if provider_models and bare not in provider_models:
+                continue
+            limits[bare] = int(ctx_win)
+    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        pass
+    return limits
+
+
+def _write_model_cache(limits: dict[str, int], updated: dict[str, float], models_dev: Path) -> None:
+    cache_data = {
+        m: {'context_window': cw, 'max_output_tokens': cw, 'last_updated': updated.get(m, time.time())}
+        for m, cw in limits.items()
+    }
+    models_dev.write_text(json.dumps(cache_data, indent=2))
+
+
+def _resolve_model_limits(limits: dict[str, int], models: list[str], models_dev: Path) -> dict[str, int]:
+    fallback = {m: limits[m] for m in models if m and m in limits}
+    missing = [m for m in models if m and m not in fallback]
+    if missing and models_dev.exists():
+        cache_data = json.loads(models_dev.read_text())
+        for m in missing:
+            if m in cache_data:
+                fallback[m] = cache_data[m]['context_window']
+    if not fallback:
+        fallback = {m: 128_000 for m in models if m}
+    return fallback
+
+
 def fetch_model_limits(models: list[str], script_dir: Path) -> dict[str, int]:
     models_dev = script_dir / _MODELS_DEV_PATH
     models_dev.parent.mkdir(parents=True, exist_ok=True)
@@ -166,46 +213,18 @@ def fetch_model_limits(models: list[str], script_dir: Path) -> dict[str, int]:
             per_provider.setdefault(prov, [])
 
     for provider, provider_models in per_provider.items():
-        base = _BASE_URLS.get(provider)
-        if not base:
-            continue
-        try:
-            req = urllib.request.Request(f'{base}/models')
-            resp = urllib.request.urlopen(req, context=ctx, timeout=15)
-            data = json.loads(resp.read().decode())
-            for entry in data.get('data', []):
-                eid = entry.get('id', '')
-                if not eid.endswith(':free'):
-                    continue
-                ctx_win = entry.get('context_length') or entry.get('context_window') or 0
-                if not ctx_win:
-                    continue
-                bare = _strip_provider(eid)
-                if provider_models and bare not in provider_models:
-                    continue
-                limits[bare] = int(ctx_win)
-                updated[bare] = time.time()
-        except (urllib.error.URLError, OSError, json.JSONDecodeError):
-            pass
+        provider_limits = _fetch_provider_limits(provider, provider_models, ctx)
+        for bare, cw in provider_limits.items():
+            limits[bare] = cw
+            updated[bare] = time.time()
 
     if limits:
-        cache_data = {m: {'context_window': cw, 'max_output_tokens': cw, 'last_updated': updated.get(m, time.time())} for m, cw in limits.items()}
-        models_dev.write_text(json.dumps(cache_data, indent=2))
+        _write_model_cache(limits, updated, models_dev)
 
     if not models:
         return limits
 
-    fallback = {m: limits[m] for m in models if m and m in limits}
-    missing = [m for m in models if m and m not in fallback]
-    if missing and models_dev.exists():
-        cache_data = json.loads(models_dev.read_text())
-        for m in missing:
-            if m in cache_data:
-                fallback[m] = cache_data[m]['context_window']
-
-    if not fallback:
-        fallback = {m: 128_000 for m in models if m}
-    return fallback
+    return _resolve_model_limits(limits, models, models_dev)
 
 
 def cache_key(stage: str, model: str, text: str) -> str:
@@ -543,6 +562,62 @@ def _get_auth_key(provider: str, auth: dict | None = None) -> str | None:
     return None
 
 
+def _call_llm_once(req: urllib.request.Request, ctx: ssl.SSLContext, timeout: int, model_name: str, provider: str) -> str:
+    log = logging.getLogger('vuln-harness')
+    resp = urllib.request.urlopen(req, context=ctx, timeout=timeout)
+    result = json.loads(resp.read().decode())
+    choices = result.get('choices')
+    if not choices:
+        raise ValueError(f'no_choices: {json.dumps(result)[:200]}')
+    msg = choices[0].get('message', {})
+    content = (msg.get('content') or '')
+    reasoning = (msg.get('reasoning') or '')
+    if not content.strip() and reasoning:
+        log.debug('reasoning model: using message.reasoning as content')
+        content = reasoning
+    completion_tokens = result.get('usage', {}).get('completion_tokens', 0)
+    log.info('Got %d completion tokens from %s %s', completion_tokens, provider, model_name)
+    return content
+
+
+def _call_llm_with_retry(
+    req: urllib.request.Request,
+    ctx: ssl.SSLContext,
+    timeout: int,
+    model_name: str,
+    provider: str,
+    base_url: str,
+    cache: JsonCache | None,
+    ck: str | None,
+) -> str:
+    log = logging.getLogger('vuln-harness')
+    last_exception: Exception | None = None
+    for attempt in range(3):
+        try:
+            content = _call_llm_once(req, ctx, timeout, model_name, provider)
+            if ck and cache:
+                cache.put(ck, content)
+            return content
+        except urllib.error.HTTPError as e:
+            code = e.code
+            estr = str(code)
+            if any(x in estr for x in _RETRYABLE_ERRORS):
+                log.debug('retry attempt %d/3 for %s due to HTTP %s (backoff %ds)', attempt + 1, model_name, estr, 5 * (attempt + 1))
+                last_exception = e
+                time.sleep(5 * (attempt + 1))
+                continue
+            raise RuntimeError(f'HTTP {code} from {base_url}/chat/completions (model={model_name})') from e
+        except (urllib.error.URLError, OSError, json.JSONDecodeError, ValueError) as e:
+            estr = str(e)
+            if any(x in estr for x in _RETRYABLE_ERRORS):
+                log.debug('retry attempt %d/3 for %s due to %s (backoff %ds)', attempt + 1, model_name, estr[:60], 5 * (attempt + 1))
+                last_exception = e
+                time.sleep(5 * (attempt + 1))
+                continue
+            raise RuntimeError(f'{type(e).__name__} from {base_url}/chat/completions (model={model_name}): {e}') from e
+    raise RuntimeError(f'llm call exhausted after 3 retries; last error: {last_exception}')
+
+
 def call_llm(
     model_id: str,
     prompt: str,
@@ -580,8 +655,8 @@ def call_llm(
     if not api_key:
         raise ValueError(f'no auth key for provider: {provider} (model: {model_id})')
 
-    base = _BASE_URLS.get(provider)
-    if not base:
+    base_url = _BASE_URLS.get(provider)
+    if not base_url:
         raise ValueError(f'unknown provider: {provider}')
 
     messages = []
@@ -597,7 +672,7 @@ def call_llm(
 
     ctx = ssl.create_default_context()
     req = urllib.request.Request(
-        url=f'{base}/chat/completions',
+        url=f'{base_url}/chat/completions',
         data=json.dumps(payload).encode(),
         headers={
             'Authorization': f'Bearer {api_key}',
@@ -605,44 +680,7 @@ def call_llm(
         },
     )
 
-    last_exception: Exception | None = None
-    for attempt in range(3):
-        try:
-            resp = urllib.request.urlopen(req, context=ctx, timeout=timeout)
-            result = json.loads(resp.read().decode())
-            choices = result.get('choices')
-            if not choices:
-                raise ValueError(f'no_choices: {json.dumps(result)[:200]}')
-            msg = choices[0].get('message', {})
-            content = (msg.get('content') or '')
-            reasoning = (msg.get('reasoning') or '')
-            if not content.strip() and reasoning:
-                log.debug('reasoning model: using message.reasoning as content')
-                content = reasoning
-            completion_tokens = result.get('usage', {}).get('completion_tokens', 0)
-            log.info('Got %d completion tokens from %s %s', completion_tokens, provider, model_name)
-            if ck and cache:
-                cache.put(ck, content)
-            return content
-        except urllib.error.HTTPError as e:
-            code = e.code
-            estr = str(code)
-            if any(x in estr for x in _RETRYABLE_ERRORS):
-                log.debug('retry attempt %d/3 for %s due to HTTP %s (backoff %ds)', attempt + 1, model_name, estr, 5 * (attempt + 1))
-                last_exception = e
-                time.sleep(5 * (attempt + 1))
-                continue
-            raise RuntimeError(f'HTTP {code} from {base}/chat/completions (model={model_name})') from e
-        except (urllib.error.URLError, OSError, json.JSONDecodeError, ValueError) as e:
-            estr = str(e)
-            if any(x in estr for x in _RETRYABLE_ERRORS):
-                log.debug('retry attempt %d/3 for %s due to %s (backoff %ds)', attempt + 1, model_name, estr[:60], 5 * (attempt + 1))
-                last_exception = e
-                time.sleep(5 * (attempt + 1))
-                continue
-            raise RuntimeError(f'{type(e).__name__} from {base}/chat/completions (model={model_name}): {e}') from e
-
-    raise RuntimeError(f'llm call exhausted after 3 retries; last error: {last_exception}')
+    return _call_llm_with_retry(req, ctx, timeout, model_name, provider, base_url, cache, ck)
 
 
 class ModelPool:

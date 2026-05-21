@@ -39,18 +39,7 @@ def _downgrade_severity(sev: str) -> str:
     return _RANK_SEV.get(max(rank - 1, 0), 'INFORMATIONAL')
 
 
-def bucket_finding(finding: dict, trace_required: bool = True, trace_confirmed: bool = False) -> tuple[str, str]:
-    f = standardize_finding(finding)
-    sev = str(f.get('severity', 'LOW')).upper()
-    status = f.get('status', 'raw')
-
-    if status == 'rejected':
-        return 'false_positive', f"Rejected by Validate: {f.get('validate_reason', 'insufficient evidence')}"
-
-    if is_api_by_design(f, {'name': f.get('function_name', ''), 'content': f.get('desc', '')}):
-        return 'backlog', 'API-by-design behavior; requires consumer misuse context'
-
-    # Improvement ②: fix_now requires a non-empty, graph-verified call path.
+def _check_call_path_blocker(f: dict, sev: str, status: str) -> tuple[str, str] | None:
     if sev in {'CRITICAL', 'HIGH'} and status == 'confirmed':
         call_path = f.get('call_path') or []
         if not call_path:
@@ -64,6 +53,23 @@ def bucket_finding(finding: dict, trace_required: bool = True, trace_confirmed: 
                 f"({f.get('call_path_reason', 'unknown reason')}). "
                 'Verify the path against the call graph before escalating.'
             )
+    return None
+
+
+def bucket_finding(finding: dict, trace_required: bool = True, trace_confirmed: bool = False) -> tuple[str, str]:
+    f = standardize_finding(finding)
+    sev = str(f.get('severity', 'LOW')).upper()
+    status = f.get('status', 'raw')
+
+    if status == 'rejected':
+        return 'false_positive', f"Rejected by Validate: {f.get('validate_reason', 'insufficient evidence')}"
+
+    if is_api_by_design(f, {'name': f.get('function_name', ''), 'content': f.get('desc', '')}):
+        return 'backlog', 'API-by-design behavior; requires consumer misuse context'
+
+    blocker = _check_call_path_blocker(f, sev, status)
+    if blocker is not None:
+        return blocker
 
     # Improvement ⑤: downgrade severity for unconfirmed/needs-more-info findings.
     if not f.get('poc_confirmed') and status in {'needs-more-info', 'raw'}:

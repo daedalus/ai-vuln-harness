@@ -78,6 +78,183 @@ from stages.suppressions import SuppressionRegistry
 logger = logging.getLogger('vuln-harness')
 
 
+def _ingest_snippets(repo: Path, output_dir: Path, reingest: bool, cfg: dict) -> tuple[list[dict], dict]:
+    snippet_db_path = output_dir / 'snippet_db.json'
+    if reingest and snippet_db_path.exists():
+        snippet_db = json.loads(snippet_db_path.read_text())
+        if isinstance(snippet_db, list):
+            snippet_db = {s['id']: s for s in snippet_db}
+        snippets = list(snippet_db.values())
+    else:
+        raw_snippets = load_repo_snippets(repo, is_library_target=cfg['is_library_target'])
+        snippets = filter_snippets(raw_snippets, is_library_target=cfg['is_library_target'])
+        for s in snippets:
+            s['tags'] = sorted(set(s.get('tags') or []) | set(tag_snippet(s, is_library_target=cfg['is_library_target'])))
+        snippet_db = {s['id']: s for s in snippets}
+        snippet_db_path.write_text(json.dumps(snippet_db, indent=2))
+    return snippets, snippet_db
+
+
+def _apply_diff_filter(mode: str, base_commit: str | None, repo: Path, snippets: list[dict], head_commit: str, state: StateDB) -> list[dict]:
+    if mode != 'diff' and base_commit is None:
+        return snippets
+    if base_commit is None:
+        raise ValueError("--base-commit is required when mode is 'diff'")
+    snippets = get_changed_snippets(repo, snippets, base_commit, head_commit)
+    state.put_meta('diff_base_commit', base_commit)
+    state.put_meta('diff_head_commit', head_commit)
+    state.put_meta('diff_snippet_count', str(len(snippets)))
+    return snippets
+
+
+def _resolve_model_chain(model_chain_override: list[str] | None, skip_health: bool, auth: dict, mode: str, cache: JsonCache) -> list[str]:
+    model_chain = model_chain_override or [
+        'deepseek/deepseek-v4-flash:free',
+        'qwen/qwen-2.5-coder-32b-instruct:free',
+        'nvidia/nemotron-3-super-120b-a12b:free',
+        'arcee-ai/trinity-large-thinking:free',
+    ]
+    if not skip_health and auth and mode not in ('validate-only', 'resume', 'poc-only'):
+        alive, dead = health_check_models(model_chain, auth=auth, cache=cache)
+        cache.put('model_health_alive', alive)
+        cache.put('model_health_dead', dead)
+        cache.put('model_health_timestamp', time.time())
+        if dead:
+            logger.warning('dead models: %s', dead)
+        if alive:
+            model_chain = alive
+        else:
+            logger.warning('all models dead; continuing with original chain')
+    elif skip_health:
+        cached_alive = cache.get('model_health_alive')
+        if cached_alive:
+            model_chain = cached_alive
+    return model_chain
+
+
+def _resolve_pools(model_chain: list[str], model_limits: dict, pooled: bool, validate_model_chain_override: list[str] | None, state: StateDB) -> tuple[list[str], list[str], ModelPool | None]:
+    if pooled:
+        model_pool = ModelPool(model_chain, model_limits)
+        hunt_models = model_pool.alive
+        validate_models = model_pool.alive
+        state.put_meta('pooled', 'true')
+    else:
+        model_pool = None
+        hunt_models, validate_models = split_model_pools(model_chain)
+    if validate_model_chain_override and not pooled:
+        validate_models = validate_model_chain_override
+    return hunt_models, validate_models, model_pool
+
+
+def _run_hunt_stage(mode: str, auth: dict, packs: list[dict], hunt_models: list[str], cache: JsonCache, hunt_workers: int, max_run: int | None, domain_map: dict, model_pool: ModelPool | None, output_dir: Path) -> tuple[list[dict], list[dict]]:
+    if mode in ('validate-only', 'resume', 'poc-only'):
+        all_findings = _load_jsonl(output_dir / 'findings.jsonl')
+        all_gaps = _load_jsonl(output_dir / 'gaps.jsonl')
+        return all_findings, all_gaps
+    if not auth:
+        logger.warning('no auth configured; using empty findings')
+        return [], []
+    all_findings, all_gaps = _run_hunt_packs(
+        packs, hunt_models,
+        auth=auth, cache=cache, parallel=hunt_workers,
+        max_run=max_run, domain_map=domain_map,
+        model_pool=model_pool,
+    )
+    _persist_jsonl(output_dir / 'findings.jsonl', all_findings)
+    _persist_jsonl(output_dir / 'gaps.jsonl', all_gaps)
+    return all_findings, all_gaps
+
+
+def _run_validate_stage(mode: str, all_findings: list[dict], snippet_db: dict, validate_models: list[str], auth: dict, cache: JsonCache, validate_workers: int, model_pool: ModelPool | None, output_dir: Path) -> list[dict]:
+    if mode in ('validate-only', 'poc-only') or not all_findings or not auth:
+        validated = all_findings[:]
+        for f in validated:
+            f.setdefault('validate_status', 'needs-more-info')
+            f.setdefault('validate_reason', 'skipped')
+        return validated
+    validated = _run_validate_findings(
+        all_findings, snippet_db, validate_models,
+        auth=auth, cache=cache, parallel=validate_workers,
+        model_pool=model_pool if pooled else None,
+    )
+    _persist_jsonl(output_dir / 'validated.jsonl', validated)
+    return validated
+
+
+def _run_gapfill_loop(recon_tasks: list[dict], validated: list[dict], all_gaps: list[dict], packs: list[dict], hunt_models: list[str], domain_map: dict, auth: dict, cache: JsonCache, hunt_workers: int, model_pool: ModelPool | None, scope_notes: str | None) -> tuple[list[dict], list[dict], list[dict]]:
+    gapfill_tasks = build_gapfill_tasks(recon_tasks, validated, max_tasks=5, scope_notes=scope_notes)
+    for gapfill_iter in range(2):
+        current = [g for g in all_gaps if not g.get('gapfill_retried')]
+        if not current:
+            break
+        fresh_f, fresh_g = _gapfill_rerun(
+            current, packs, hunt_models, domain_map,
+            auth=auth, cache=cache, parallel=hunt_workers,
+            gapfill_iter=gapfill_iter,
+            model_pool=model_pool,
+        )
+        validated.extend(fresh_f)
+        all_gaps = [g for g in all_gaps if g.get('gapfill_retried')] + fresh_g
+    return validated, all_gaps, gapfill_tasks
+
+
+def _build_coordinator_packs(snippets: list[dict], recon_tasks: list[dict] | None, output_dir: Path, budget_tokens: int, allow_full_db_fallback: bool, load_packs_cache: bool) -> list[dict]:
+    packs_pkl = output_dir / 'context_packs.pkl'
+    if load_packs_cache and packs_pkl.exists():
+        return load_packs_pickle(packs_pkl)
+    packs = build_context_packs(snippets, recon_tasks=recon_tasks, allow_full_db_fallback=allow_full_db_fallback, budget_tokens=budget_tokens)
+    save_packs_pickle(packs, packs_pkl)
+    return packs
+
+
+def _build_domain_map(packs: list[dict]) -> dict[str, list[dict]]:
+    from collections import Counter
+    dm: dict[str, list[dict]] = {}
+    for p in packs:
+        dm.setdefault(p.get('agent', ''), []).append(p)
+    counts: Counter = Counter()
+    for p in packs:
+        counts[p.get('agent', '?')] += 1
+    logger.info('pack total=%d per_domain=%s', len(packs), dict(counts))
+    for i, p in enumerate(packs):
+        tc_sum = sum(s.get('token_count', 0) for s in p.get('snippets', []))
+        logger.info('pack #%d agent=%s snippets=%d token_count_sum=%d prompt_chars=%d',
+                    i + 1, p.get('agent', '?'), len(p.get('snippets', [])), tc_sum, len(json.dumps(p, indent=2)))
+    return dm
+
+
+def _run_poc_stage(findings: list[dict], snippet_db: dict, output_dir: Path, run_poc_enabled: bool, poc_finding_id: str | None) -> list[dict]:
+    if not run_poc_enabled:
+        return []
+    target = findings
+    if poc_finding_id and poc_finding_id != 'all':
+        target = [f for f in findings if f.get('id') == poc_finding_id or f.get('finding_id') == poc_finding_id]
+    if not target:
+        _persist_jsonl(output_dir / 'pocs.jsonl', [])
+        return []
+    pocs = run_poc(target, snippet_db)
+    _persist_jsonl(output_dir / 'pocs.jsonl', pocs)
+    return pocs
+
+
+def _run_trace_stage(findings: list[dict], state: StateDB) -> None:
+    for f in findings:
+        f.setdefault('trace_status', 'not_required')
+    state.put_meta('trace_results', json.dumps(
+        {'not_required': len([f for f in findings if f.get('trace_status') == 'not_required'])}
+    ))
+
+
+def _run_shield_stage(promoted: list[dict], snippet_db: dict, cfg: dict, kl_threshold: float, cosine_threshold: float) -> tuple[list[dict], list[dict]]:
+    call_graph = build_call_graph(list(snippet_db.values()))
+    promoted = annotate_call_path_verification(promoted, call_graph)
+    promoted = annotate_hallucination(promoted, snippet_db)
+    promoted = annotate_hallucination_kl(promoted, snippet_db, threshold=kl_threshold)
+    promoted = deduplicate_semantic(promoted, threshold=cosine_threshold)
+    entry_points = cfg.get('entry_points', [])
+    return filter_unreachable(promoted, call_graph, entry_points)
+
+
 def _setup_logging(log_dir: Path | None = None, log_file: Path | None = None) -> None:
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
@@ -468,10 +645,7 @@ def run(mode: str, repo: Path, *,
         spent = state.total_cost(run_id)
         if spent >= max_cost_usd:
             state.finish_run(run_id, 'cost_limit')
-            raise RuntimeError(
-                f'Cost limit ${max_cost_usd:.2f} reached '
-                f'(${spent:.2f} already spent on run {run_id!r})'
-            )
+            raise RuntimeError(f'Cost limit ${max_cost_usd:.2f} reached (${spent:.2f} already spent)')
 
     auth = load_auth_config(explicit_path=auth_path, script_dir=script_dir)
     state.put_meta('auth_providers', json.dumps(sorted(auth.keys())))
@@ -479,258 +653,71 @@ def run(mode: str, repo: Path, *,
     global_max = max_concurrency or cfg.get('max_workers', 3)
     hunt_workers = _stage_workers(stages_cfg, 'hunt', global_max)
     validate_workers = _stage_workers(stages_cfg, 'validate', global_max)
+    output_dir = script_dir / 'output'
+    output_dir.mkdir(parents=True, exist_ok=True)
     state.put_meta('hunt_workers', str(hunt_workers))
     state.put_meta('validate_workers', str(validate_workers))
 
-    output_dir = script_dir / 'output'
-    output_dir.mkdir(parents=True, exist_ok=True)
+    snippets, snippet_db = _ingest_snippets(repo, output_dir, reingest, cfg)
+    snippets = _apply_diff_filter(mode, base_commit, repo, snippets, head_commit, state)
 
-    # --- INGESTOR ---
-    snippet_db_path = output_dir / 'snippet_db.json'
-    if reingest and snippet_db_path.exists():
-        logger.info('reingest enabled: loading snippet_db from %s', snippet_db_path)
-        snippet_db = json.loads(snippet_db_path.read_text())
-        if isinstance(snippet_db, list):
-            snippet_db = {s['id']: s for s in snippet_db}
-        snippets = list(snippet_db.values())
-    else:
-        raw_snippets = load_repo_snippets(repo, is_library_target=cfg['is_library_target'])
-        snippets = filter_snippets(raw_snippets, is_library_target=cfg['is_library_target'])
-        for s in snippets:
-            s['tags'] = sorted(set(s.get('tags') or []) | set(tag_snippet(s, is_library_target=cfg['is_library_target'])))
-        snippet_db = {s['id']: s for s in snippets}
-        snippet_db_path.write_text(json.dumps(snippet_db, indent=2))
-
-    if mode == 'diff' or base_commit is not None:
-        if base_commit is None:
-            raise ValueError("--base-commit is required when mode is 'diff'")
-        snippets = get_changed_snippets(repo, snippets, base_commit, head_commit)
-        state.put_meta('diff_base_commit', base_commit)
-        state.put_meta('diff_head_commit', head_commit)
-        state.put_meta('diff_snippet_count', str(len(snippets)))
-
-    model_chain = model_chain_override or [
-        'deepseek/deepseek-v4-flash:free',
-        'qwen/qwen-2.5-coder-32b-instruct:free',
-        'nvidia/nemotron-3-super-120b-a12b:free',
-        'arcee-ai/trinity-large-thinking:free',
-    ]
-
-    if not skip_health and auth and mode not in ('validate-only', 'resume', 'poc-only'):
-        logger.info('probing model chain (%d models)...', len(model_chain))
-        logger.debug('health check models: %s', model_chain)
-        alive, dead = health_check_models(model_chain, auth=auth, cache=cache)
-        cache.put('model_health_alive', alive)
-        cache.put('model_health_dead', dead)
-        cache.put('model_health_timestamp', time.time())
-        if dead:
-            logger.warning('dead models: %s', dead)
-        if alive:
-            model_chain = alive
-        else:
-            logger.warning('all models dead; continuing with original chain')
-    elif skip_health:
-        cached_alive = cache.get('model_health_alive')
-        if cached_alive:
-            logger.info('using cached health results: %d alive model(s)', len(cached_alive))
-            model_chain = cached_alive
-
+    model_chain = _resolve_model_chain(model_chain_override, skip_health, auth, mode, cache)
     if refresh_models:
-        limits_path = script_dir / 'config' / 'model_limits.json'
-        if limits_path.exists():
-            limits_path.unlink()
-            logger.info('refreshed model limits cache')
-
+        p = script_dir / 'config/model_limits.json'
+        if p.exists():
+            p.unlink()
     model_limits = fetch_model_limits(model_chain, script_dir)
-    min_context = min(model_limits.values())
-    budget_tokens = int(min_context * budget_ratio)
-    logger.info('budget model_limits=%s min_context=%d budget_ratio=%.2f budget_tokens=%d', model_limits, min_context, budget_ratio, budget_tokens)
+    budget_tokens = int(min(model_limits.values()) * budget_ratio)
 
-    # --- RECON ---
     recon_tasks = build_recon_tasks(snippets, repo_path=str(repo), scope_notes=scope_notes)
     state.put_meta('recon_task_count', str(len(recon_tasks)))
     _persist_jsonl(output_dir / 'recon_tasks.json', recon_tasks)
 
-    # --- COORDINATOR ---
-    packs_pkl = output_dir / 'context_packs.pkl'
-    if load_packs_cache and packs_pkl.exists():
-        logger.info('loading context packs from %s', packs_pkl)
-        packs = load_packs_pickle(packs_pkl)
-    else:
-        packs = build_context_packs(
-            snippets,
-            recon_tasks=recon_tasks,
-            allow_full_db_fallback=allow_full_db_fallback,
-            budget_tokens=budget_tokens,
-        )
-        save_packs_pickle(packs, packs_pkl)
+    packs = _build_coordinator_packs(snippets, recon_tasks, output_dir, budget_tokens, allow_full_db_fallback, load_packs_cache)
     state.put_meta('pack_count', str(len(packs)))
-    domain_map: dict[str, list[dict]] = {}
-    for p in packs:
-        domain_map.setdefault(p.get('agent', ''), []).append(p)
-    from collections import Counter
-    pack_domain_counts: Counter = Counter()
-    for p in packs:
-        pack_domain_counts[p.get('agent', '?')] += 1
-    logger.info('pack total=%d per_domain=%s', len(packs), dict(pack_domain_counts))
-    for i, p in enumerate(packs):
-        prompt = json.dumps(p, indent=2)
-        tc_sum = sum(s.get('token_count', 0) for s in p.get('snippets', []))
-        logger.info('pack #%d agent=%s snippets=%d token_count_sum=%d budget=%d prompt_chars=%d',
-                    i + 1, p.get('agent', '?'), len(p.get('snippets', [])), tc_sum, budget_tokens, len(prompt))
+    domain_map = _build_domain_map(packs)
     _persist_jsonl(output_dir / 'context_packs.json', packs)
 
-    if pooled:
-        from stages.runtime import _resolve_provider, _strip_provider
-        logger.debug('building ModelPool from %d models: %s', len(model_chain), model_chain)
-        model_pool = ModelPool(model_chain, model_limits)
-        for m in model_chain:
-            logger.info('[health] %s %s alive', _resolve_provider(m), _strip_provider(m))
-        hunt_models = model_pool.alive
-        validate_models = model_pool.alive
-        logger.debug('pooled mode: %d alive models (hunt=%d, validate=%d)',
-                     len(model_chain), len(hunt_models), len(validate_models))
-        state.put_meta('pooled', 'true')
-    else:
-        model_pool = None
-        hunt_models, validate_models = split_model_pools(model_chain)
-    if validate_model_chain_override and not pooled:
-        validate_models = validate_model_chain_override
-    state.put_meta('hunt_models', json.dumps(hunt_models))
-    state.put_meta('validate_models', json.dumps(validate_models))
+    hunt_models, validate_models, model_pool = _resolve_pools(model_chain, model_limits, pooled, validate_model_chain_override, state)
 
-    # --- HUNT ---
-    all_findings: list[dict] = []
-    all_gaps: list[dict] = []
+    all_findings, all_gaps = _run_hunt_stage(mode, auth, packs, hunt_models, cache, hunt_workers, max_run, domain_map, model_pool, output_dir)
 
-    if mode in ('validate-only', 'resume', 'poc-only'):
-        all_findings = _load_jsonl(output_dir / 'findings.jsonl')
-        all_gaps = _load_jsonl(output_dir / 'gaps.jsonl')
-        logger.info('loaded %d finding(s) and %d gap(s) from cache', len(all_findings), len(all_gaps))
-    else:
-        if auth:
-            all_findings, all_gaps = _run_hunt_packs(
-                packs, hunt_models,
-                auth=auth, cache=cache,
-                parallel=hunt_workers,
-                max_run=max_run,
-                domain_map=domain_map,
-                model_pool=model_pool if pooled else None,
-            )
-        else:
-            logger.warning('no auth configured; using empty findings')
+    validated = _run_validate_stage(mode, all_findings, snippet_db, validate_models, auth, cache, validate_workers, model_pool, output_dir)
 
-        _persist_jsonl(output_dir / 'findings.jsonl', all_findings)
-        _persist_jsonl(output_dir / 'gaps.jsonl', all_gaps)
-
-    # --- VALIDATE (on raw findings, before dedup) ---
-    if mode not in ('validate-only', 'poc-only') and all_findings and auth:
-        validated = _run_validate_findings(
-            all_findings, snippet_db, validate_models,
-            auth=auth, cache=cache, parallel=validate_workers,
-            model_pool=model_pool if pooled else None,
-        )
-        _persist_jsonl(output_dir / 'validated.jsonl', validated)
-    else:
-        validated = all_findings[:]
-        for f in validated:
-            f.setdefault('validate_status', 'needs-more-info')
-            f.setdefault('validate_reason', 'skipped')
-
-    # --- GAPFILL (2 iterations, model rotation + prompt rephrase) ---
-    gapfill_tasks = build_gapfill_tasks(
-        recon_tasks, validated, max_tasks=5, scope_notes=scope_notes,
-    )
-    for gapfill_iter in range(2):
-        current = [g for g in all_gaps if not g.get('gapfill_retried')]
-        if not current:
-            break
-        fresh_f, fresh_g = _gapfill_rerun(
-            current, packs, hunt_models, domain_map,
-            auth=auth, cache=cache, parallel=hunt_workers,
-            gapfill_iter=gapfill_iter,
-            model_pool=model_pool if pooled else None,
-        )
-        validated.extend(fresh_f)
-        all_gaps = [g for g in all_gaps if g.get('gapfill_retried')] + fresh_g
-
+    validated, all_gaps, gapfill_tasks = _run_gapfill_loop(recon_tasks, validated, all_gaps, packs, hunt_models, domain_map, auth, cache, hunt_workers, model_pool, scope_notes)
     state.put_meta('gapfill_task_count', str(len(gapfill_tasks)))
     all_tasks = recon_tasks + gapfill_tasks
 
-    # --- VOTING ---
-    promoted, suppressed_by_vote = merge_hunter_outputs(
-        [validated], min_votes=cfg.get('shield', {}).get('min_votes', 2),
-    )
+    promoted, suppressed_by_vote = merge_hunter_outputs([validated], min_votes=cfg.get('shield', {}).get('min_votes', 2))
     state.put_meta('suppressed_by_vote', str(len(suppressed_by_vote)))
 
-    # --- SHIELD ---
-    call_graph = build_call_graph(snippets)
-    promoted = annotate_call_path_verification(promoted, call_graph)
-    promoted = annotate_hallucination(promoted, snippet_db)
-    promoted = annotate_hallucination_kl(promoted, snippet_db, threshold=kl_threshold)
-    promoted = deduplicate_semantic(promoted, threshold=cosine_threshold)
-
-    entry_points = cfg.get('entry_points', [])
-    promoted, unreachable = filter_unreachable(promoted, call_graph, entry_points)
+    promoted, unreachable = _run_shield_stage(promoted, snippet_db, cfg, kl_threshold, cosine_threshold)
     state.put_meta('unreachable_count', str(len(unreachable)))
 
-    # --- SUPPRESSIONS ---
     registry = SuppressionRegistry(script_dir / cfg.get('suppressions_file', 'output/suppressions.json'))
     findings, registry_suppressed = registry.filter(promoted)
     state.put_meta('registry_suppressed', str(len(registry_suppressed)))
 
-    # --- CHAINS ---
     chains = synthesize_exploit_chains(findings, snippets)
+    pocs = _run_poc_stage(findings, snippet_db, output_dir, run_poc_enabled, poc_finding_id)
+    _run_trace_stage(findings, state)
 
-    # --- POC (auto-generate & optionally compile/run) ---
-    pocs: list[dict] = []
-    if run_poc_enabled:
-        target_findings = findings
-        if poc_finding_id and poc_finding_id != 'all':
-            target_findings = [f for f in findings if f.get('id') == poc_finding_id or f.get('finding_id') == poc_finding_id]
-        if target_findings:
-            logger.info('running PoC on %d finding(s)', len(target_findings))
-            pocs = run_poc(target_findings, snippet_db)
-            logger.info('poc completed: %d result(s)', len(pocs))
-        _persist_jsonl(output_dir / 'pocs.jsonl', pocs)
-
-    # --- TRACE (determine input reachability from consumer entry points) ---
-    for f in findings:
-        f.setdefault('trace_status', 'not_required')
-    state.put_meta('trace_results', json.dumps(
-        {'not_required': len([f for f in findings if f.get('trace_status') == 'not_required'])}
-    ))
-
-    # --- EXPOSURE ---
     findings, exposure_metrics = annotate_exposure_windows(findings, repo)
 
-    # --- FEEDBACK ---
     traced = [f for f in findings if f.get('trace_status') == 'confirmed']
-    already_covered = {f for t in all_tasks for f in t.get('target_files', [])}
-    feedback_tasks = build_feedback_tasks(
-        traced, snippets,
-        already_covered=already_covered,
-        max_tasks=10,
-        scope_notes=scope_notes,
-    )
+    covered = {f for t in all_tasks for f in t.get('target_files', [])}
+    feedback_tasks = build_feedback_tasks(traced, snippets, already_covered=covered, max_tasks=10, scope_notes=scope_notes)
     state.put_meta('feedback_task_count', str(len(feedback_tasks)))
 
-    # --- REPORT ---
-    report = build_report(
-        repo=str(repo),
-        findings=findings,
-        chains=chains,
-        gaps=[{'domain': t['domain'], 'files': t['target_files']} for t in gapfill_tasks],
-        trace_required=cfg['is_library_target'],
-        exposure_metrics=exposure_metrics,
-    )
+    report = build_report(repo=str(repo), findings=findings, chains=chains,
+                          gaps=[{'domain': t['domain'], 'files': t['target_files']} for t in gapfill_tasks],
+                          trace_required=cfg['is_library_target'], exposure_metrics=exposure_metrics)
     if pocs:
         report['pocs'] = pocs
 
     state.put_meta('last_mode', mode)
     state.finish_run(run_id)
     cache.put('last_report', report)
-
     return report
 
 
@@ -875,80 +862,53 @@ def _check_deps():
         pass
 
 
-def main() -> None:
-    _check_deps()
+def _setup_proxy(proxy: str | None) -> None:
+    if not proxy:
+        return
+    for var in ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY'):
+        os.environ.setdefault(var, proxy)
 
-    parser = argparse.ArgumentParser(description='AI vuln harness v1 scaffold')
-    parser.add_argument('--mode', choices=['full', 'max-run', 'validate-only', 'resume', 'diff', 'all', 'poc-only'], default='full')
-    parser.add_argument('--repo', required=True)
-    parser.add_argument('--allow-full-db-fallback', action='store_true')
-    parser.add_argument('--auth-json', type=Path, default=None,
-                        help='Path to auth.json. Overrides script-relative and global fallback paths.')
-    parser.add_argument('--kl-threshold', type=float, default=5.0,
-                        help='KL-divergence threshold for hallucination detection (default: 5.0)')
-    parser.add_argument('--cosine-threshold', type=float, default=0.85,
-                        help='Cosine similarity threshold for semantic dedup (default: 0.85)')
-    parser.add_argument('--base-commit', type=str, default=None,
-                        help='Base commit/ref for diff-driven scanning (required with --mode diff)')
-    parser.add_argument('--head-commit', type=str, default='HEAD',
-                        help='Head commit/ref for diff-driven scanning (default: HEAD)')
-    parser.add_argument('--max-cost-usd', type=float, default=None,
-                        help='Abort the run if cumulative cost exceeds this amount in USD')
-    parser.add_argument('--max-concurrency', type=int, default=None,
-                        help='Global cap on concurrent model workers across all stages')
-    parser.add_argument('--max-run', type=int, default=None,
-                        help='Process only the first N packs (invaluable for debugging a single domain)')
-    parser.add_argument('--skip-health', action='store_true',
-                        help='Skip model health checks for cached re-runs')
-    parser.add_argument('--scope-notes', type=Path, default=None,
-                        help='Path to a text file whose contents are appended to every '
-                             "stage's user_input to scope or exclude surfaces")
-    parser.add_argument('--reingest', action='store_true',
-                        help='Skip re-extraction if cached outputs exist (load from output/snippet_db.json)')
-    parser.add_argument('--proxy', type=str, default=None,
-                        help='Set HTTP_PROXY/HTTPS_PROXY env vars for all outbound requests')
-    parser.add_argument('--model-health-check', action='store_true',
-                        help='Run model health check only (no pipeline). Probes all models and reports alive/dead.')
-    parser.add_argument('--model', type=str, action='append', dest='model_override',
-                        help='Override the hunt model chain (may be specified multiple times). '
-                             'Overrides the default model chain entirely.')
-    parser.add_argument('--validate-model', type=str, action='append', dest='validate_model_override',
-                        help='Override the validate model chain (may be specified multiple times). '
-                             'Overrides the validate model pool entirely.')
-    parser.add_argument('--budget-ratio', type=float, default=0.85,
-                        help='Fraction of min_context to use as token budget (default: 0.85)')
-    parser.add_argument('--refresh-models', action='store_true',
-                        help='Invalidate model limits cache before this run')
-    parser.add_argument('--load-packs-cache', action='store_true',
-                         help='Load context packs from cached pickle instead of rebuilding')
-    parser.add_argument('--pooled', action='store_true',
-                        help='Use pooled model mode: all alive models go into a shared pool ranked by '
-                             'capability. call_llm picks the best model; on failure marks it dead and '
-                             'retries with the next best. Applies to both Hunt and Validate stages.')
-    parser.add_argument('--poc', type=str, nargs='?', const='all', default=None, dest='poc_finding',
-                        help='Run PoC confirmation on findings. Without argument: all findings. '
-                             'With ID: that specific finding. Combine with --poc-only to skip API stages.')
-    parser.add_argument('--poc-only', action='store_true', dest='poc_only',
-                         help='Skip API stages; load cached findings and gaps, run PoC only.')
-    parser.add_argument('--log-file', type=Path, default=None,
-                         help='Write detailed debug logs to this file instead of <repo>/../run.log')
-    args = parser.parse_args()
 
-    if args.proxy:
-        os.environ.setdefault('http_proxy', args.proxy)
-        os.environ.setdefault('https_proxy', args.proxy)
-        os.environ.setdefault('HTTP_PROXY', args.proxy)
-        os.environ.setdefault('HTTPS_PROXY', args.proxy)
+def _warn_if_no_auth(mode: str, auth_json: Path | None) -> None:
+    if mode not in ('full', 'max-run', 'all'):
+        return
+    if auth_json:
+        return
+    sd = Path(__file__).parent
+    if (sd / 'auth.json').exists():
+        return
+    if (Path.home() / '.local/share/opencode/auth.json').exists():
+        return
+    logger.warning('No auth.json found; running with empty model pools (will produce 0 findings)')
 
-    scope_notes_text: str | None = None
-    if args.scope_notes is not None:
-        scope_notes_text = Path(args.scope_notes).read_text()
 
-    mode = args.mode
-    if args.poc_only:
-        mode = 'poc-only'
+def _run_health_check(model_override: list[str] | None, auth_json: Path | None) -> None:
+    from stages.runtime import JsonCache, fetch_model_limits, health_check_models, load_auth_config
+    sd = Path(__file__).parent
+    auth = load_auth_config(explicit_path=auth_json, script_dir=sd)
+    cache = JsonCache(sd / 'output/cache.json')
+    model_chain = model_override or []
+    model_limits = fetch_model_limits(model_chain, sd)
+    all_models = list(model_limits.keys()) if model_limits else model_chain
+    if not all_models:
+        print(json.dumps({'error': 'no models to check'}, indent=2))
+        return
+    alive, dead = health_check_models(all_models, auth=auth, cache=cache, max_workers=8)
+    cache.put('model_health_alive', alive)
+    cache.put('model_health_dead', dead)
+    cache.put('model_health_timestamp', time.time())
+    def _sort_key(m):
+        v = model_limits.get(m[0] if isinstance(m, tuple) else m, 0)
+        return -(v if isinstance(v, int) else 0)
+    result = {
+        'alive': {m: model_limits.get(m, '?') for m in sorted(alive, key=_sort_key)},
+        'dead': {m: str(e[:100]) for m, e in sorted(dead, key=_sort_key)},
+    }
+    print(json.dumps(result, indent=2))
 
-    kwargs = dict(
+
+def _build_run_kwargs(args) -> dict:
+    return dict(
         auth_path=args.auth_json,
         kl_threshold=args.kl_threshold,
         cosine_threshold=args.cosine_threshold,
@@ -959,7 +919,7 @@ def main() -> None:
         max_concurrency=args.max_concurrency,
         skip_health=args.skip_health,
         max_run=args.max_run,
-        scope_notes=scope_notes_text,
+        scope_notes=Path(args.scope_notes).read_text() if args.scope_notes else None,
         reingest=args.reingest,
         model_chain_override=args.model_override,
         validate_model_chain_override=args.validate_model_override,
@@ -971,9 +931,43 @@ def main() -> None:
         load_packs_cache=args.load_packs_cache,
     )
 
-    # Validate that auth exists for non-cached modes
-    if mode in ('full', 'max-run', 'all') and not args.auth_json and not Path(Path(__file__).parent / 'auth.json').exists() and not Path(Path.home() / '.local/share/opencode/auth.json').exists():
-        logger.warning('No auth.json found; running with empty model pools (will produce 0 findings)')
+
+def main() -> None:
+    _check_deps()
+
+    parser = argparse.ArgumentParser(description='AI vuln harness v1 scaffold')
+    parser.add_argument('--mode', choices=['full', 'max-run', 'validate-only', 'resume', 'diff', 'all', 'poc-only'], default='full')
+    parser.add_argument('--repo', required=True)
+    parser.add_argument('--allow-full-db-fallback', action='store_true')
+    parser.add_argument('--auth-json', type=Path, default=None)
+    parser.add_argument('--kl-threshold', type=float, default=5.0)
+    parser.add_argument('--cosine-threshold', type=float, default=0.85)
+    parser.add_argument('--base-commit', type=str, default=None)
+    parser.add_argument('--head-commit', type=str, default='HEAD')
+    parser.add_argument('--max-cost-usd', type=float, default=None)
+    parser.add_argument('--max-concurrency', type=int, default=None)
+    parser.add_argument('--max-run', type=int, default=None)
+    parser.add_argument('--skip-health', action='store_true')
+    parser.add_argument('--scope-notes', type=Path, default=None)
+    parser.add_argument('--reingest', action='store_true')
+    parser.add_argument('--proxy', type=str, default=None)
+    parser.add_argument('--model-health-check', action='store_true')
+    parser.add_argument('--model', type=str, action='append', dest='model_override')
+    parser.add_argument('--validate-model', type=str, action='append', dest='validate_model_override')
+    parser.add_argument('--budget-ratio', type=float, default=0.85)
+    parser.add_argument('--refresh-models', action='store_true')
+    parser.add_argument('--load-packs-cache', action='store_true')
+    parser.add_argument('--pooled', action='store_true')
+    parser.add_argument('--poc', type=str, nargs='?', const='all', default=None, dest='poc_finding')
+    parser.add_argument('--poc-only', action='store_true', dest='poc_only')
+    parser.add_argument('--log-file', type=Path, default=None)
+    args = parser.parse_args()
+
+    _setup_proxy(args.proxy)
+
+    mode = 'poc-only' if args.poc_only else args.mode
+
+    _warn_if_no_auth(mode, args.auth_json)
 
     _setup_logging(
         log_file=args.log_file,
@@ -981,27 +975,10 @@ def main() -> None:
     )
 
     if args.model_health_check:
-        from stages.runtime import fetch_model_limits, health_check_models
-        sd = Path(__file__).parent
-        auth = load_auth_config(explicit_path=args.auth_json, script_dir=sd)
-        cache = JsonCache(sd / 'output/cache.json')
-        model_chain = args.model_override or []
-        model_limits = fetch_model_limits(model_chain, sd)
-        all_models = list(model_limits.keys()) if model_limits else model_chain
-        if not all_models:
-            print(json.dumps({'error': 'no models to check'}, indent=2))
-            return
-        alive, dead = health_check_models(all_models, auth=auth, cache=cache, max_workers=8)
-        cache.put('model_health_alive', alive)
-        cache.put('model_health_dead', dead)
-        cache.put('model_health_timestamp', time.time())
-        result = {
-            'alive': {m: model_limits.get(m, '?') for m in sorted(alive, key=lambda x: -(model_limits.get(x, 0) if isinstance(model_limits.get(x), int) else 0))},
-            'dead': {m: str(e[:100]) for m, e in sorted(dead, key=lambda x: -(model_limits.get(x[0], 0) if isinstance(model_limits.get(x[0]), int) else 0))},
-        }
-        print(json.dumps(result, indent=2))
+        _run_health_check(args.model_override, args.auth_json)
         return
 
+    kwargs = _build_run_kwargs(args)
     if mode == 'all':
         report = run_all(Path(args.repo), **kwargs)
     else:

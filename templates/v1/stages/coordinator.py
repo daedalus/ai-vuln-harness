@@ -54,6 +54,92 @@ DOMAINS = [
 ]
 
 
+def _group_snippets_by_file(snippets: list[dict]) -> dict[str, list[dict]]:
+    by_file: dict[str, list[dict]] = defaultdict(list)
+    for snippet in snippets:
+        file = snippet.get('file')
+        if file:
+            by_file[file].append(snippet)
+    return by_file
+
+
+def _build_domain_snippets(
+    by_file: dict[str, list[dict]],
+    recon_tasks: list[dict] | None,
+) -> tuple[dict[str, list[dict]], dict[str, dict]]:
+    domain_snippets: dict[str, list[dict]] = defaultdict(list)
+    domain_context: dict[str, dict] = defaultdict(dict)
+    for task in recon_tasks or []:
+        for f in task.get('target_files', []):
+            domain_snippets[task['domain']].extend(by_file.get(f, []))
+        if task.get('dependency_graph'):
+            domain_context[task['domain']]['dependency_graph'] = task['dependency_graph']
+        if task.get('cross_repo_targets'):
+            domain_context[task['domain']]['cross_repo_targets'] = task['cross_repo_targets']
+    return domain_snippets, domain_context
+
+
+def _domain_order(domain_snippets: dict[str, list[dict]]) -> list[str]:
+    order = []
+    if 'all' in domain_snippets:
+        order.append('all')
+    for d in DOMAINS:
+        name = d['name'] if isinstance(d, dict) else d
+        if name in domain_snippets:
+            order.append(name)
+    for domain in domain_snippets:
+        if domain not in order and domain != 'all':
+            order.append(domain)
+    return order
+
+
+def _chunk_domain(
+    domain: str,
+    items: list[dict],
+    domain_context: dict[str, dict],
+    budget_tokens: int,
+    system_prompt: str,
+) -> list[dict]:
+    import tiktoken
+    token_enc = tiktoken.get_encoding('cl100k_base')
+
+    def _pack_overhead_tokens(domain: str, ctx: dict | None = None) -> int:
+        dummy = _make_pack(domain, [], security_context=ctx)
+        return len(token_enc.encode(json.dumps(dummy, indent=2)))
+
+    def _snippet_tokens(s: dict) -> int:
+        return len(token_enc.encode(json.dumps(s, indent=2)))
+
+    packs: list[dict] = []
+    pack_snips: list[dict] = []
+    security_ctx = domain_context.get(domain)
+    overhead = _pack_overhead_tokens(domain, security_ctx)
+    running_tokens = overhead
+    if system_prompt:
+        running_tokens += len(token_enc.encode(system_prompt)) + 30
+
+    for s in items:
+        s_tok = _snippet_tokens(s)
+        pack_snips.append(s)
+        running_tokens += s_tok
+        print(
+            f'[coordinator] domain={domain} snippets={len(pack_snips)} prompt_tokens={running_tokens} budget={budget_tokens}',
+            file=__import__('sys').stderr,
+        )
+        if running_tokens > budget_tokens:
+            pack_snips.pop()
+            running_tokens -= s_tok
+            if pack_snips:
+                packs.append(_make_pack(domain, pack_snips, security_context=security_ctx))
+            pack_snips = [s]
+            running_tokens = overhead + s_tok
+            if system_prompt:
+                running_tokens += len(token_enc.encode(system_prompt)) + 30
+    if pack_snips:
+        packs.append(_make_pack(domain, pack_snips, security_context=security_ctx))
+    return packs
+
+
 def build_context_packs(
     snippets: list[dict],
     recon_tasks: list[dict] | None,
@@ -64,11 +150,7 @@ def build_context_packs(
     if (not recon_tasks) and (not allow_full_db_fallback):
         raise ValueError('Recon output is required. Set allow_full_db_fallback=True to bypass explicitly.')
 
-    by_file: dict[str, list[dict]] = defaultdict(list)
-    for snippet in snippets:
-        file = snippet.get('file')
-        if file:
-            by_file[file].append(snippet)
+    by_file = _group_snippets_by_file(snippets)
 
     if not recon_tasks and allow_full_db_fallback:
         recon_tasks = [
@@ -82,62 +164,16 @@ def build_context_packs(
             }
         ]
 
-    domain_snippets: dict[str, list[dict]] = defaultdict(list)
-    domain_context: dict[str, dict] = defaultdict(dict)
-    for task in recon_tasks or []:
-        for f in task.get('target_files', []):
-            domain_snippets[task['domain']].extend(by_file.get(f, []))
-        if task.get('dependency_graph'):
-            domain_context[task['domain']]['dependency_graph'] = task['dependency_graph']
-        if task.get('cross_repo_targets'):
-            domain_context[task['domain']]['cross_repo_targets'] = task['cross_repo_targets']
+    domain_snippets, domain_context = _build_domain_snippets(by_file, recon_tasks)
+    domain_iter_order = _domain_order(domain_snippets)
 
     packs = []
-    domain_iter_order = []
-    if 'all' in domain_snippets:
-        domain_iter_order.append('all')
-    for d in DOMAINS:
-        name = d['name'] if isinstance(d, dict) else d
-        if name in domain_snippets:
-            domain_iter_order.append(name)
-    for domain in domain_snippets:
-        if domain not in domain_iter_order and domain != 'all':
-            domain_iter_order.append(domain)
-    import tiktoken  # type: ignore
-    _token_enc = tiktoken.get_encoding('cl100k_base')
-
-    def _pack_overhead_tokens(domain: str, ctx: dict | None = None) -> int:
-        dummy = _make_pack(domain, [], security_context=ctx)
-        return len(_token_enc.encode(json.dumps(dummy, indent=2)))
-
-    def _snippet_tokens(s: dict) -> int:
-        return len(_token_enc.encode(json.dumps(s, indent=2)))
-
     for domain in domain_iter_order:
-        items = domain_snippets[domain]
-        pack_snips: list[dict] = []
-        security_ctx = domain_context.get(domain)
-        overhead = _pack_overhead_tokens(domain, security_ctx)
-        running_tokens = overhead
-        if system_prompt:
-            running_tokens += len(_token_enc.encode(system_prompt)) + 30
-        for s in items:
-            s_tok = _snippet_tokens(s)
-            pack_snips.append(s)
-            running_tokens += s_tok
-            print(f'[coordinator] domain={domain} snippets={len(pack_snips)} prompt_tokens={running_tokens} budget={budget_tokens}', file=__import__('sys').stderr)
-            if running_tokens > budget_tokens:
-                pack_snips.pop()
-                running_tokens -= s_tok
-                if pack_snips:
-                    packs.append(_make_pack(domain, pack_snips, security_context=security_ctx))
-                pack_snips = [s]
-                running_tokens = overhead + s_tok
-                if system_prompt:
-                    running_tokens += len(_token_enc.encode(system_prompt)) + 30
-        if pack_snips:
-            packs.append(_make_pack(domain, pack_snips, security_context=security_ctx))
-
+        domain_packs = _chunk_domain(
+            domain, domain_snippets[domain], domain_context,
+            budget_tokens, system_prompt,
+        )
+        packs.extend(domain_packs)
     return packs
 
 
