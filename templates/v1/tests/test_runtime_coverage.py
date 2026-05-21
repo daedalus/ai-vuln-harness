@@ -14,8 +14,14 @@ from stages.runtime import (
     JsonCache,
     StateDB,
     cache_key,
+    call_llm,
     fetch_model_limits,
     load_auth_config,
+    repair_json_output,
+    run_hunt_all,
+    run_hunt_pack,
+    run_validate_all,
+    run_validate_finding,
     split_model_pools,
 )
 
@@ -296,6 +302,197 @@ class FetchModelLimitsTests(unittest.TestCase):
                 Path(tmp),
             )
             self.assertEqual(result.get('stale-model:free'), 999)
+
+
+class CallLlmTests(unittest.TestCase):
+    def test_call_llm_returns_content(self):
+        mock_response = {
+            'choices': [{'message': {'content': 'Hello, world!'}}],
+        }
+
+        class FakeResponse:
+            def read(self):
+                return json.dumps(mock_response).encode()
+            def __init__(self):
+                self.status = 200
+
+        with patch('stages.runtime.urllib.request.urlopen', return_value=FakeResponse()):
+            result = call_llm('openrouter:test-model:free', 'Hello', auth={'openrouter': 'sk-test'})
+            self.assertEqual(result, 'Hello, world!')
+
+    def test_call_llm_uses_reasoning_fallback(self):
+        mock_response = {
+            'choices': [{'message': {'content': '', 'reasoning': 'step by step...'}}],
+        }
+
+        class FakeResponse:
+            def read(self):
+                return json.dumps(mock_response).encode()
+            def __init__(self):
+                self.status = 200
+
+        with patch('stages.runtime.urllib.request.urlopen', return_value=FakeResponse()):
+            result = call_llm('openrouter:reasoning-model:free', 'Think', auth={'openrouter': 'sk-test'})
+            self.assertEqual(result, 'step by step...')
+
+    def test_call_llm_raises_without_auth(self):
+        with self.assertRaises(ValueError):
+            call_llm('openrouter:test:free', 'test', auth={})
+
+
+class RunHuntPackTests(unittest.TestCase):
+    def test_run_hunt_pack_parses_findings(self):
+        hunt_output = (
+            '{"snippet_id": "s1", "class": "buffer-overflow", "severity": "HIGH", '
+            '"desc": "buffer overflow", "call_path": ["a", "b"], "status": "raw", "poc_confirmed": false}\n'
+            '{"done": true}'
+        )
+
+        mock_response = {
+            'choices': [{'message': {'content': hunt_output}}],
+        }
+
+        class FakeResponse:
+            def read(self):
+                return json.dumps(mock_response).encode()
+            def __init__(self):
+                self.status = 200
+
+        pack = {
+            'agent': 'mem-safety',
+            'snippets': [{'id': 's1', 'content': 'void main() { char buf[10]; gets(buf); }'}],
+        }
+
+        with patch('stages.runtime.urllib.request.urlopen', return_value=FakeResponse()):
+            findings = run_hunt_pack(pack, 'openrouter:test:free', auth={'openrouter': 'sk-test'})
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]['class'], 'buffer-overflow')
+
+    def test_run_hunt_pack_raises_without_auth(self):
+        pack = {'agent': 'test', 'snippets': []}
+        with self.assertRaises(ValueError):
+            run_hunt_pack(pack, 'openrouter:test:free')
+
+
+class RunHuntAllTests(unittest.TestCase):
+    def test_run_hunt_all_empty_packs(self):
+        result = run_hunt_all([], ['test:free'])
+        self.assertEqual(result, [])
+
+    def test_run_hunt_all_empty_models(self):
+        result = run_hunt_all([{'agent': 'test', 'snippets': []}], [])
+        self.assertEqual(result, [])
+
+
+class RunValidateFindingTests(unittest.TestCase):
+    def test_run_validate_finding_extracts_status(self):
+        validate_output = '{"status": "confirmed", "reason": "reachable via user input"}'
+
+        mock_response = {
+            'choices': [{'message': {'content': validate_output}}],
+        }
+
+        class FakeResponse:
+            def read(self):
+                return json.dumps(mock_response).encode()
+            def __init__(self):
+                self.status = 200
+
+        finding = {'snippet_id': 's1', 'class': 'buffer-overflow'}
+        snippet = {'content': 'void main() { gets(buf); }', 'file': 'test.c', 'name': 'test'}
+
+        with patch('stages.runtime.urllib.request.urlopen', return_value=FakeResponse()):
+            result = run_validate_finding(
+                finding, snippet, 'openrouter:test:free',
+                auth={'openrouter': 'sk-test'},
+            )
+
+        self.assertEqual(result['validate_status'], 'confirmed')
+        self.assertEqual(result['validate_reason'], 'reachable via user input')
+
+    def test_run_validate_finding_unparseable(self):
+        mock_response = {
+            'choices': [{'message': {'content': 'not json at all'}}],
+        }
+
+        class FakeResponse:
+            def read(self):
+                return json.dumps(mock_response).encode()
+            def __init__(self):
+                self.status = 200
+
+        finding = {'snippet_id': 's1', 'class': 'buffer-overflow'}
+        snippet = {'content': 'int x = 1;', 'file': 'test.c', 'name': 'test'}
+
+        with patch('stages.runtime.urllib.request.urlopen', return_value=FakeResponse()):
+            result = run_validate_finding(
+                finding, snippet, 'openrouter:test:free',
+                auth={'openrouter': 'sk-test'},
+            )
+
+        self.assertEqual(result['validate_status'], 'needs-more-info')
+        self.assertEqual(result['validate_reason'], 'unparseable validate response')
+
+
+class RunValidateAllTests(unittest.TestCase):
+    def test_run_validate_all_empty(self):
+        result = run_validate_all([], {}, ['test:free'])
+        self.assertEqual(result, [])
+
+    def test_run_validate_all_no_models(self):
+        result = run_validate_all([{'snippet_id': 's1'}], {}, [])
+        self.assertEqual(result, [{'snippet_id': 's1'}])
+
+    def test_run_validate_all_no_findings(self):
+        result = run_validate_all([], {'s1': {}}, ['test:free'])
+        self.assertEqual(result, [])
+
+
+class RunHuntPackCacheTests(unittest.TestCase):
+    def test_run_hunt_pack_uses_cache(self):
+        cache = JsonCache.__new__(JsonCache)
+        cache.data = {}
+        cache.path = None
+
+        pack = {'agent': 'test', 'snippets': [{'id': 's1', 'content': 'int x = 1;'}]}
+        prompt = json.dumps(pack)
+        import hashlib
+        ck = f"hunt:openrouter:test:free:{hashlib.sha256(prompt.encode()).hexdigest()[:12]}"
+        cache.data[ck] = '{"snippet_id": "s1", "class": "uaf"}\n{"done": true}'
+
+        findings = run_hunt_pack(pack, 'openrouter:test:free', cache=cache)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]['class'], 'uaf')
+
+
+class RepairJsonOutputTests(unittest.TestCase):
+    def test_direct_json(self):
+        parsed, repaired = repair_json_output('{"a": 1}')
+        self.assertEqual(parsed, {'a': 1})
+        self.assertFalse(repaired)
+
+    def test_fenced_code_block(self):
+        raw = '```json\n{"a": 1}\n```'
+        parsed, repaired = repair_json_output(raw)
+        self.assertEqual(parsed, {'a': 1})
+        self.assertTrue(repaired)
+
+    def test_extract_balanced_brace(self):
+        raw = 'some text {"a": 1} trailing'
+        parsed, repaired = repair_json_output(raw)
+        self.assertEqual(parsed, {'a': 1})
+        self.assertTrue(repaired)
+
+    def test_invalid_input(self):
+        parsed, repaired = repair_json_output('not json at all')
+        self.assertIsNone(parsed)
+        self.assertFalse(repaired)
+
+    def test_empty_string(self):
+        parsed, repaired = repair_json_output('')
+        self.assertIsNone(parsed)
+        self.assertFalse(repaired)
 
 
 if __name__ == '__main__':

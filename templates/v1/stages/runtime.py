@@ -495,6 +495,8 @@ class CrossRunRegression:
 # ---------------------------------------------------------------------------
 
 import re as _re
+import time as _time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def repair_json_output(raw: str) -> tuple[dict | list | None, bool]:
@@ -546,3 +548,201 @@ def repair_json_output(raw: str) -> tuple[dict | list | None, bool]:
                     break
 
     return None, False
+
+
+# ---------------------------------------------------------------------------
+# LLM calling — hunt / validate orchestration
+# ---------------------------------------------------------------------------
+
+_MAX_TOKENS = 8192
+
+
+def _get_auth_key(provider: str, auth: dict[str, str] | None = None) -> str | None:
+    if auth and provider in auth:
+        return auth[provider]
+    env_var = _PROVIDER_ENV_MAP.get(provider)
+    if env_var:
+        return os.environ.get(env_var)
+    return None
+
+
+def call_llm(model_id: str, prompt: str, *,
+             system: str = "",
+             max_tokens: int = _MAX_TOKENS,
+             timeout: int = 60,
+             auth: dict[str, str] | None = None) -> str:
+    provider, _, model_name = model_id.partition(':')
+    api_key = _get_auth_key(provider, auth=auth)
+    if not api_key:
+        raise ValueError(f'no auth key for {provider}')
+
+    base = _BASE_URLS.get(provider)
+    if not base:
+        raise ValueError(f'unknown provider: {provider}')
+
+    messages: list[dict] = []
+    if system:
+        messages.append({'role': 'system', 'content': system})
+    messages.append({'role': 'user', 'content': prompt})
+
+    payload = {
+        'model': model_name,
+        'max_tokens': max_tokens,
+        'messages': messages,
+    }
+    req = urllib.request.Request(
+        url=f'{base}/chat/completions',
+        data=json.dumps(payload).encode(),
+        headers={
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json',
+        },
+    )
+    ctx = ssl.create_default_context()
+    resp = urllib.request.urlopen(req, context=ctx, timeout=timeout)
+    result = json.loads(resp.read().decode())
+
+    msg = result['choices'][0]['message']
+    content = (msg.get('content') or '')
+    reasoning = (msg.get('reasoning') or '')
+    if not content.strip() and reasoning:
+        content = reasoning
+    return content
+
+
+# ---------------------------------------------------------------------------
+# Hunt — per-pack and parallel
+# ---------------------------------------------------------------------------
+
+_HUNT_SYSTEM_PROMPT = (
+    'You are a single-domain vulnerability hunter.\n\n'
+    'Stay in one attack class scope: {domain}.\n'
+    'Output JSONL findings and coverage gaps only.\n'
+    'Every finding must include: snippet_id, severity, class, desc, call_path, status, poc_confirmed.\n'
+    'End with {{"done": true}}.'
+)
+
+
+def run_hunt_pack(pack: dict, model_id: str, *,
+                  auth: dict[str, str] | None = None,
+                  cache: JsonCache | None = None) -> list[dict]:
+    from stages.parser import parse_findings
+
+    domain = pack.get('agent', 'unknown')
+    prompt = json.dumps(pack)
+    system = _HUNT_SYSTEM_PROMPT.format(domain=domain)
+
+    if cache:
+        ck = f"hunt:{model_id}:{hashlib.sha256(prompt.encode()).hexdigest()[:12]}"
+        cached = cache.get(ck)
+        if cached is not None:
+            findings, _ = parse_findings(cached, domain=domain)
+            return findings
+
+    text = call_llm(model_id, prompt, system=system, auth=auth)
+    if cache:
+        cache.put(ck, text)
+
+    findings, _ = parse_findings(text, domain=domain)
+    return findings
+
+
+def run_hunt_all(packs: list[dict], model_chain: list[str], *,
+                 auth: dict[str, str] | None = None,
+                 max_workers: int = 3,
+                 cache: JsonCache | None = None) -> list[dict]:
+    if not packs or not model_chain:
+        return []
+
+    all_findings: list[dict] = []
+
+    def _hunt(pack: dict) -> list[dict]:
+        return run_hunt_pack(pack, model_chain[0], auth=auth, cache=cache)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_hunt, p): p.get('agent', '?') for p in packs}
+        for f in as_completed(futures):
+            try:
+                all_findings.extend(f.result())
+            except Exception:
+                pass
+
+    return all_findings
+
+
+# ---------------------------------------------------------------------------
+# Validate — per-finding and parallel
+# ---------------------------------------------------------------------------
+
+_VALIDATE_SYSTEM_PROMPT = (
+    'You are adversarial validation.\n\n'
+    'Disprove findings where possible.\n'
+    'You MUST inspect the actual source snippet supplied in the prompt context.\n'
+    'Reject API-by-design patterns when exploitability depends on consumer misuse.\n'
+    'Output ONE JSON object: {{"status": "confirmed|rejected|needs-more-info", "reason": "..."}}'
+)
+
+
+def run_validate_finding(finding: dict, snippet: dict,
+                         model_id: str, *,
+                         auth: dict[str, str] | None = None,
+                         cache: JsonCache | None = None) -> dict:
+    from stages.validate import build_validate_prompt
+
+    prompt = build_validate_prompt(finding, snippet)
+
+    if cache:
+        ck = f"validate:{model_id}:{finding.get('snippet_id', '?')}:{finding.get('class', '?')}"
+        cached = cache.get(ck)
+        if cached is not None:
+            try:
+                parsed = json.loads(cached)
+                return {
+                    **finding,
+                    'validate_status': parsed.get('status', 'needs-more-info'),
+                    'validate_reason': parsed.get('reason', ''),
+                }
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    text = call_llm(model_id, prompt, system=_VALIDATE_SYSTEM_PROMPT, auth=auth)
+    if cache:
+        cache.put(ck, text)
+
+    parsed, _ = repair_json_output(text)
+    if isinstance(parsed, dict):
+        return {
+            **finding,
+            'validate_status': parsed.get('status', 'needs-more-info'),
+            'validate_reason': parsed.get('reason', ''),
+        }
+    return {
+        **finding,
+        'validate_status': 'needs-more-info',
+        'validate_reason': 'unparseable validate response',
+    }
+
+
+def run_validate_all(findings: list[dict], snippet_db: dict[str, dict],
+                     model_chain: list[str], *,
+                     auth: dict[str, str] | None = None,
+                     max_workers: int = 3,
+                     cache: JsonCache | None = None) -> list[dict]:
+    if not findings or not model_chain:
+        return findings
+
+    validated: list[dict] = []
+
+    def _validate(f: dict) -> dict:
+        snippet = snippet_db.get(f.get('snippet_id', ''), {})
+        return run_validate_finding(f, snippet, model_chain[0], auth=auth, cache=cache)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_validate, f): f.get('snippet_id', '?') for f in findings}
+        for f in as_completed(futures):
+            try:
+                validated.append(f.result())
+            except Exception:
+                pass
+
+    return validated

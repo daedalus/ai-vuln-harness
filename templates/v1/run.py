@@ -12,9 +12,16 @@ from stages.recon import build_recon_tasks
 from stages.coordinator import build_context_packs
 from stages.chains import synthesize_exploit_chains
 from stages.exposure import annotate_exposure_windows
-from stages.parser import parse_findings
 from stages.report import build_report, deduplicate
-from stages.runtime import JsonCache, StateDB, fetch_model_limits, load_auth_config, split_model_pools
+from stages.runtime import (
+    JsonCache,
+    StateDB,
+    fetch_model_limits,
+    load_auth_config,
+    run_hunt_all,
+    run_validate_all,
+    split_model_pools,
+)
 from stages.shield import (
     annotate_call_path_verification,
     annotate_hallucination,
@@ -111,18 +118,24 @@ def run(mode: str, repo: Path, *,
     budget_tokens = int(min_context * 0.85)
 
     recon_tasks = build_recon_tasks(snippets, repo_path=str(repo), scope_notes=scope_notes)
-    _ = build_context_packs(
+    packs = build_context_packs(
         snippets,
         recon_tasks=recon_tasks,
         allow_full_db_fallback=allow_full_db_fallback,
         budget_tokens=budget_tokens,
     )
     hunt_models, validate_models = split_model_pools(model_chain)
+    snippet_db = {s['id']: s for s in snippets}
 
-    # --- Simulated multi-hunter output (two runs) for voting demonstration ---
-    raw_run1, _ = parse_findings('{"done": true}', domain='mem-safety')
-    raw_run2: list[dict] = []
-    promoted, _suppressed_by_vote = merge_hunter_outputs([raw_run1, raw_run2], min_votes=2)
+    # --- Hunt: run all context packs through LLM models ---
+    raw_findings = run_hunt_all(packs, hunt_models, auth=auth,
+                                max_workers=hunt_workers, cache=cache)
+
+    # --- Validate: each finding independently reviewed by validate models ---
+    findings = run_validate_all(raw_findings, snippet_db, validate_models,
+                                auth=auth, max_workers=validate_workers, cache=cache)
+
+    promoted, _suppressed_by_vote = merge_hunter_outputs([findings, []], min_votes=2)
 
     # --- Gapfill: identify domains with zero confirmed findings and re-queue ---
     gapfill_tasks = build_gapfill_tasks(
@@ -130,9 +143,6 @@ def run(mode: str, repo: Path, *,
     )
     state.put_meta('gapfill_task_count', str(len(gapfill_tasks)))
     all_tasks = recon_tasks + gapfill_tasks
-
-    # --- Build snippet DB for shield lookups ---
-    snippet_db = {s['id']: s for s in snippets}
 
     # --- Call-graph annotation (improvement ①) ---
     call_graph = build_call_graph(snippets)
