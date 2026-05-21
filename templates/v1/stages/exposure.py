@@ -1,3 +1,12 @@
+"""Exposure window annotation — compute how long each vulnerability existed.
+
+Uses ``git log --follow`` to find the first and last commit dates for each
+vulnerable file. Computes an exposure window in days: from first commit to
+either the fix commit (resolved findings) or the present (open findings).
+
+Output KPIs: avg/median exposure window, oldest open exposure, resolved count.
+"""
+
 from __future__ import annotations
 
 import statistics

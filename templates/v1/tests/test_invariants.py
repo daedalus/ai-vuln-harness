@@ -153,8 +153,11 @@ class ChainInvariantTests(unittest.TestCase):
 class PipelineInvariantTests(unittest.TestCase):
     def test_stage_order_constant(self):
         from stages.contracts import PIPELINE_STAGES
-        expected = ['ingestor', 'recon', 'coordinator', 'hunt', 'validate',
-                    'voting', 'shield', 'chainer', 'poc', 'trace', 'report']
+        expected = [
+            'ingestor', 'recon', 'coordinator', 'hunt', 'validate',
+            'gapfill', 'voting', 'shield', 'suppressions', 'chainer',
+            'poc', 'trace', 'exposure', 'feedback', 'report',
+        ]
         self.assertEqual(PIPELINE_STAGES, expected)
 
     def test_config_has_model_pool(self):

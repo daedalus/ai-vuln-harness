@@ -1,3 +1,25 @@
+"""Runtime utilities shared across pipeline stages.
+
+Logging conventions (dual-channel):
+  - stderr: all status, progress, warnings, errors, debug output.
+  - stdout: ONLY structured JSON (findings, report, PoC results).
+  - Format: ``HH:MM:SS [LEVEL] message`` — no millis, no PID.
+  - Stage entry: ``[stage N] StageName: doing work...``
+  - Stage exit: ``  -> result summary`` (indented with leading spaces).
+
+Model pool rules:
+  - Hunt and Validate use DISJOINT model pools. No model appears in both.
+  - If too small for a clean split, the strongest model goes to Validate.
+  - Disjoint pools prevent correlated biases from slipping through both stages.
+
+call_llm retry strategy:
+  - Retry on 429/502/503/504 with exponential backoff (5s * attempt + 1).
+  - Reasoning models (nemotron, trinity) stash output in ``message.reasoning``
+    instead of ``message.content`` — merge both after the API call.
+  - ``max_tokens`` must be 8192 minimum; reasoning models consume large output
+    budgets and 4096 causes truncation.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -13,6 +35,16 @@ from pathlib import Path
 
 
 def split_model_pools(models: list[str]) -> tuple[list[str], list[str]]:
+    """Split model chain into disjoint Hunt and Validate pools.
+
+    Hunt gets models matching deepseek/qwen/gemma; Validate gets
+    nemotron/trinity/z-ai. If the chain is too small for a clean split,
+    the strongest model goes to Validate because disagreement beats
+    agreement — if Validate uses the same model as Hunt, correlated
+    biases slip through (confirmed by zlib run: deepseek-v4-flash
+    reported gzprintf as HIGH format-string; nemotron-nano correctly
+    rejected it as API-by-design).
+    """
     models = list(dict.fromkeys(models))
     hunt_preferred = [m for m in models if any(k in m for k in ('deepseek', 'qwen', 'gemma'))]
     validate_preferred = [m for m in models if any(k in m for k in ('nemotron', 'trinity', 'z-ai'))]
@@ -429,6 +461,13 @@ class CrossRunRegression:
 import re as _re
 
 _RETRYABLE_ERRORS = ('429', '502', '503', '504', 'rate', 'too many', 'try again', 'temporary', 'upstream')
+"""HTTP status / error substrings that trigger automatic retry with backoff.
+
+Includes 502/503/504 (provider gateway overload — transient, not model failure)
+in addition to 429 rate limits. Without this, transient provider errors would
+be misclassified as permanent model failures and the pipeline would skip
+healthy models behind a temporarily overloaded gateway.
+"""
 
 _MODEL_BY_DOMAIN = {
     'mem-safety':     'openrouter:nvidia/nemotron-nano-12b-v2-vl:free',
@@ -488,6 +527,15 @@ def call_llm(
     auth: dict[str, str] | None = None,
     cache: JsonCache | None = None,
 ) -> str:
+    """Call an LLM via provider-prefixed model ID (e.g. ``openrouter:...``).
+
+    1. Check cache first (keyed on ``stage:model:hash(prompt+system)``).
+    2. Resolve provider prefix to base URL, auth key, and headers.
+    3. Retry on 429/502/503/504 with exponential backoff (5, 10, 15s).
+    4. Merge ``message.reasoning`` into content (reasoning models stash
+       output there instead of ``message.content``).
+    5. Cache successful responses for instant replay.
+    """
     ck = cache_key('llm', model_id, prompt + system) if cache else None
     if ck and cache:
         cached = cache.get(ck)
@@ -607,6 +655,12 @@ def _rephrase_gap_prompt(original_prompt: str, model_id: str) -> str:
 
 
 def _repair_truncated_json(text: str) -> str:
+    """Repair JSON truncated mid-brace by reasoning models.
+
+    Reasoning models often exceed ``max_tokens``, cutting output off mid-brace.
+    This repair balances open/close braces — succeeds on ~70% of truncated
+    validate responses. The remaining 30% need a full retry (next model in chain).
+    """
     text = text.strip()
     if not text.endswith('}'):
         text += '}'

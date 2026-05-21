@@ -1,3 +1,25 @@
+"""Output parser — robust to model hallucination and inconsistent JSON.
+
+Returns ``(findings, gaps)``. Handles:
+  - JSON arrays at top level ``[{...}]``
+  - Wrapper objects ``{"finding": {...}}`` (unwrap inner object)
+  - Free-text contamination before/after JSON
+  - Sentinel objects ``{"done": true}`` or ``{"coverage_gap": ...}``
+  - Multiple JSON objects on one line
+  - Truncated output from ``max_tokens``
+
+Call path normalization: models return ``call_path`` as string
+``"a -> b -> c"`` ~30% of the time. Normalized at parse time via
+``_normalize_call_path()`` so shield always receives ``list[str]``.
+If shield iterated a string character-by-character, call-path verification
+would produce garbage (every path fails because ``' '`` and ``'-'`` are not
+function names in the graph).
+
+Sentinel-only detection: ``{"done": true}`` with no findings means the model
+skipped analysis entirely — distinguishable from "analyzed and found nothing."
+Auto-generate a coverage gap so gapfill can retry.
+"""
+
 from __future__ import annotations
 
 import json

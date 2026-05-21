@@ -4,6 +4,28 @@ deduplication (cosine similarity).
 
 These run as post-hunt, pre-Validate filters to catch the most common sources
 of false positives before spending Validate API calls on them.
+
+Three quality gates:
+  1. Call-path verification — every consecutive hop (A→B) must exist as an
+     edge in the call graph. ``call_path`` must already be ``list[str]``
+     (normalized at parse time in parser.py).
+  2. Hallucination detection — function name + identifier overlap. If the
+     finding description cites identifiers absent from the snippet content,
+     it is likely hallucinated. KL-divergence adds a statistical layer:
+     desc vocabulary absent from code tokens pushes KL toward infinity.
+  3. Static reachability — BFS from entry points through the call graph.
+     Findings in unreachable paths are deprioritized (or dropped for library
+     targets unless CRITICAL).
+
+Semantic dedup groups findings by cosine similarity of their descriptions,
+catching semantically identical bugs reported across different functions by
+different hunters. Use alongside the composite-key dedup in report.py.
+
+Observation: the token-overlap hallucination filter caught 7/7 findings from
+one run — all were generic security prose ("buffer overflow possible in memory
+copy operation") mentioning none of the actual function names or variables.
+This is a cheap signal (regex + set intersection, no LLM call) that catches
+vague/generic findings before they reach the chainer.
 """
 
 from __future__ import annotations
@@ -11,6 +33,12 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter, deque
+
+# Default thresholds (config-driven from defaults.json at runtime)
+_HALLUCINATION_DESC_TOKEN_THRESHOLD = 0.60  # max 60% desc tokens absent from snippet
+_HALLUCINATION_PATH_TOKEN_THRESHOLD = 0.70  # max 70% call_path names absent from snippet
+_SEMANTIC_DEDUP_COSINE_THRESHOLD = 0.85  # cosine similarity cutoff
+_KL_THRESHOLD_DEFAULT = 5.0  # KL-divergence cutoff for hallucination detection
 
 
 # ---------------------------------------------------------------------------

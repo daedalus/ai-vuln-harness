@@ -1,3 +1,27 @@
+"""Triage and reporting stage — bucket findings, generate report.
+
+Triage buckets:
+  - fix_now: CRITICAL/HIGH + confirmed + non-empty graph-verified call path.
+    For library targets, Trace confirmation is required before fix_now
+    (library findings have no intrinsic entry point).
+  - backlog: needs trace confirmation, lower severity, API-by-design context,
+    empty/unverified call path, or unconfirmed PoC (severity downgraded).
+  - false_positive: Rejected by Validate or no plausible call path.
+
+Every finding includes a ``bucket_rationale`` field explaining the triage
+decision. The report root includes ``bucket_definitions`` documenting each
+bucket's criteria.
+
+Composite dedup key ``(file, class, start_line)`` collapses split-continuation
+snippets (same function split across multiple snippets by the ingestor).
+
+Library-target special cases:
+  - API-by-design: ``gzprintf(format, ...)`` looks dangerous but caller provides
+    format string by design — consumer misuse, not library bug.
+  - ``fix_now`` blocked until Trace confirms reachability from a consumer's
+    external attack surface.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

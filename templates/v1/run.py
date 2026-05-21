@@ -1,3 +1,26 @@
+"""AI Vulnerability Research Harness — multi-agent pipeline runner.
+
+Canonical pipeline (15 stages):
+  INGESTOR → RECON → COORDINATOR → HUNT → VALIDATE → GAPFILL → VOTING →
+  SHIELD → SUPPRESSIONS → CHAINS → POC → TRACE → EXPOSURE → FEEDBACK → REPORT
+
+Never edit the template in place. Copy it first:
+  cp -a /home/dclavijo/.opencode/skills/ai-vuln-harness/templates/v1/ ./my-harness/
+
+Never survey the target yourself. The harness pipeline's INGESTOR and RECON
+stages are the ONLY authorized surveyors — they parse the repo through
+tree-sitter, build snippet databases, and construct context packs. Do not
+read, explore, grep, or analyze the target repository directly. Pre-reading
+the target contaminates the eval by leaking context that should only flow
+through the pipeline.
+
+Run modes: full | max-run | validate-only | resume | diff | all | poc-only
+
+Track KPIs: precision@top-N, reject rate, duplicate rate, gap-closure rate,
+time/cost per stage. Maintain a benchmark corpus + regression gate for
+prompt/model updates.
+"""
+
 from __future__ import annotations
 
 import argparse

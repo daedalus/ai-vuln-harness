@@ -1,3 +1,29 @@
+"""PoC confirmation stage — compile and run targeted tests under AddressSanitizer.
+
+Goal: disprove or confirm each finding by compiling and running a targeted
+C program under ASan. This is the strongest evidence level — a compiler+ASan
+verdict beats any LLM opinion.
+
+Why it matters: AI hunters produce ~60-80% false positive rates on audited
+codebases. Validate catches some via adversarial prompting, but the gold
+standard is concrete execution: if the alleged buffer overflow does not crash
+under ASan, it does not exist as described.
+
+Verdict logic:
+  - ``confirmed``: ASan errors detected — finding reproduces under sanitized
+    conditions.
+  - ``rejected``: exit code 0, no ASan errors — the alleged bug does not exist
+    as described.
+  - ``needs-more-info``: build failed or crashed without ASan — manual review
+    required.
+
+Isolation: PoC runners must have no production access. Use a sandboxed
+container with no network egress and scoped API keys.
+
+PoC does NOT test: multi-step exploits (handled by Chainer), consumer
+reachability (handled by Trace), other architectures, or timing/side channels.
+"""
+
 from __future__ import annotations
 
 import json

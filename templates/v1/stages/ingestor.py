@@ -1,3 +1,33 @@
+"""Ingestor stage — convert repository into a flat, typed snippet database.
+
+Uses tree-sitter ≥ 0.25 for AST-level function extraction (required).
+Regex fallback is forbidden — it misses type-anchored re-exports like
+``int ZEXPORT inflate(...)`` and nested-scope functions. Every such miss is
+a silent coverage gap that cannot be detected from output counts.
+
+Snippet IDs are deterministic: ``sha256:{file}:{name}:{line}``. Never use
+the built-in ``hash`` or ``id`` functions — PYTHONHASHSEED breaks
+determinism across runs, which breaks cache, state DB, and finding
+traceability.
+
+``_get_function_name()`` handles multi-line declarations where
+``child_by_field_name("name")`` silently returns ``None`` (~60% of C/C++
+functions). Discovered during libopenssh analysis.
+
+Token counting: ``tiktoken`` with ``cl100k_base`` is required. The character
+estimate ``len//4`` overestimates C code by 30-40%, silently inflating pack
+sizes beyond the 85% context budget.
+
+Directory filtering for library targets: excludes ``contrib/``, ``examples/``,
+``test/``, ``tests/``, and ``.hidden`` directories. On zlib, ~200 of 608
+snippets came from these non-production directories.
+
+Tag inflation warning: ``external-input`` keyword-match on ``buf``, ``arg``,
+``len``, ``src`` matches ~99.9% of C library functions. Use smarter heuristics
+for library targets: detect actual I/O syscall wrappers (``read()``, ``recv()``,
+``fgets()``, ``fread()``) rather than parameter names.
+"""
+
 from __future__ import annotations
 
 import hashlib

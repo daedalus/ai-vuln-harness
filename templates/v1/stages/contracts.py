@@ -1,8 +1,24 @@
+"""Canonical stage contracts, required field schemas, and data flow contracts.
+
+Canonical pipeline order (15 stages):
+  INGESTOR → RECON → COORDINATOR → HUNT → VALIDATE → GAPFILL → VOTING →
+  SHIELD → SUPPRESSIONS → CHAINS → POC → TRACE → EXPOSURE → FEEDBACK → REPORT
+
+Every stage is a standalone module under ``stages/`` with a clean import path.
+``run.py`` is the only entry point — it imports stages, it does not implement
+them. Every stage validates its output against the corresponding schema.
+
+Stage contracts are mandatory: validate outputs against schemas before stage
+handoff. Apply bounded repair turns for malformed outputs (limited retries
+before escalation).
+"""
+
 from __future__ import annotations
 
 PIPELINE_STAGES = [
     'ingestor', 'recon', 'coordinator', 'hunt', 'validate',
-    'voting', 'shield', 'chainer', 'poc', 'trace', 'report',
+    'gapfill', 'voting', 'shield', 'suppressions', 'chainer',
+    'poc', 'trace', 'exposure', 'feedback', 'report',
 ]
 
 REQUIRED_FINDING_FIELDS = {

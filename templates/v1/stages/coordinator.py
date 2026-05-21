@@ -1,3 +1,34 @@
+"""Coordinator stage — build per-agent context packs.
+
+Each domain (security attack class) gets a curated subset of snippets scoped
+to its focus area. Hunt agents receive these packs and never see the full DB.
+
+Exclusive domains (mem-safety, crypto, format-str, secrets) receive only
+tag-matching snippets. Non-exclusive domains also receive untagged snippets
+to ensure coverage of code that doesn't match any tag.
+
+Budget enforcement: each pack must not exceed 85% of the model's context
+window (the remaining 15% is reserved for output). If a domain exceeds
+budget, it is split into sub-packs by file ordering.
+
+11-domain set:
+  mem-safety    | memory, integer-arith, unsafe          | Exclusive | Buffer overflow, OOB, UAF, integer wrap
+  auth          | auth                                   | No        | Bypass, priv esc, session fixation
+  crypto        | crypto                                 | Yes       | Weak primitives, IV reuse, padding oracle
+  ipc           | ipc                                    | No        | TOCTOU, injection via pipes/sockets
+  data-flow     | external-input                         | No        | Untrusted data reaching sinks
+  format-str    | format-string                          | Yes       | Format string exploits
+  injection     | external-input                         | Yes       | Command injection through untrusted data
+  path-traversal| memory                                 | Yes       | File path traversal, symlink attacks
+  concurrency   | memory                                 | No        | Race conditions, TOCTOU, signal safety
+  resource      | memory, integer-arith                  | No        | Resource exhaustion, mem leak, fd leak
+  secrets       | crypto                                 | Yes       | Hardcoded secrets, credential exposure
+
+Tag inflation warning: ``external-input`` keyword-match on ``buf``, ``arg``,
+``len``, ``src`` in a C library matches ~99.9% of functions. Strip it from
+all domain filters EXCEPT ``data-flow`` when targeting compiled libraries.
+"""
+
 from __future__ import annotations
 
 from collections import defaultdict

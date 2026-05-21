@@ -1,3 +1,21 @@
+"""Chain synthesis — identify exploit chains across findings.
+
+Goal: detect clusters where multiple low/medium findings compose into a
+higher-severity exploit chain. A chain of findings is an exploit.
+
+Scoring:
+  - +2 if chain crosses a trust boundary (external-input → sink)
+  - +1 per MEDIUM / +2 per HIGH / +3 per CRITICAL finding in chain
+  - +1 if chain involves recently modified files
+  - -1 if chain involves well-tested or hardened areas
+
+Critical: the call graph is keyed on lowercase function names, but findings
+reference snippet IDs (``sha256:...``). The chainer MUST resolve ``snippet_id
+→ function name`` before BFS traversal — without this, BFS searches for
+``sha256:...`` keys that don't exist in the graph, producing zero chains.
+This is the single most common chainer bug.
+"""
+
 from __future__ import annotations
 
 from pathlib import PurePosixPath

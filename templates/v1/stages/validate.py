@@ -1,3 +1,20 @@
+"""Validate stage — adversarial re-read of findings by an independent agent.
+
+Goal: DISPROVE each finding, not confirm it. Uses a different model than Hunt
+to avoid correlated biases. The agent receives the actual source code (looked
+up by ``snippet_id`` from the snippet DB) so it can verify the model's claims
+against what the code actually does.
+
+API-by-design detection: functions like ``*printf*(format, ...)`` and
+``*write*(buf, len)`` intentionally accept caller-controlled parameters — that
+is a consumer misuse, not a library bug. These are rejected or downgraded.
+
+From the zlib run: DeepSeek V4 Flash (Hunt) reported ``gzprintf`` as a HIGH
+format-string finding; Nemotron Nano (Validate) correctly rejected it as
+API-by-design. This confirms the critical requirement: Validate must use a
+**disjoint model pool** from Hunt (no model in common across both stages).
+"""
+
 from __future__ import annotations
 
 import re
