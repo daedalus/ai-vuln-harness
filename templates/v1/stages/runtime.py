@@ -246,6 +246,28 @@ class StateDB:
             )
             '''
         )
+        cur.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS runs (
+              run_id TEXT PRIMARY KEY,
+              status TEXT NOT NULL DEFAULT 'running',
+              started_at REAL NOT NULL,
+              finished_at REAL,
+              repo_path TEXT
+            )
+            '''
+        )
+        cur.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS costs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              run_id TEXT NOT NULL,
+              stage TEXT NOT NULL,
+              amount_usd REAL NOT NULL,
+              recorded_at REAL NOT NULL
+            )
+            '''
+        )
         self.conn.commit()
 
     def put_meta(self, key: str, value: str):
@@ -257,6 +279,63 @@ class StateDB:
         cur = self.conn.cursor()
         row = cur.execute('SELECT v FROM meta WHERE k=?', (key,)).fetchone()
         return row[0] if row else None
+
+    def create_run(self, repo_path: str, run_id: str) -> None:
+        """Register a new pipeline run.  Idempotent (INSERT OR IGNORE)."""
+        cur = self.conn.cursor()
+        cur.execute(
+            'INSERT OR IGNORE INTO runs(run_id, status, started_at, repo_path) VALUES(?,?,?,?)',
+            (run_id, 'running', time.time(), repo_path),
+        )
+        self.conn.commit()
+
+    def finish_run(self, run_id: str, status: str = 'completed') -> None:
+        """Mark a run as finished with the given *status* (e.g. 'completed', 'aborted', 'failed')."""
+        cur = self.conn.cursor()
+        cur.execute(
+            'UPDATE runs SET status=?, finished_at=? WHERE run_id=?',
+            (status, time.time(), run_id),
+        )
+        self.conn.commit()
+
+    def get_run(self, run_id: str) -> dict | None:
+        """Return run metadata or ``None`` if the run_id is unknown."""
+        cur = self.conn.cursor()
+        row = cur.execute(
+            'SELECT run_id, status, started_at, finished_at, repo_path FROM runs WHERE run_id=?',
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            'run_id': row[0],
+            'status': row[1],
+            'started_at': row[2],
+            'finished_at': row[3],
+            'repo_path': row[4],
+        }
+
+    def record_cost(self, run_id: str, stage: str, amount_usd: float) -> None:
+        """Append a cost entry for *run_id* / *stage*.
+
+        Multiple calls per stage are allowed (e.g. one per Hunt task) — they
+        accumulate so that ``total_cost`` reflects the full spend.
+        """
+        cur = self.conn.cursor()
+        cur.execute(
+            'INSERT INTO costs(run_id, stage, amount_usd, recorded_at) VALUES(?,?,?,?)',
+            (run_id, stage, float(amount_usd), time.time()),
+        )
+        self.conn.commit()
+
+    def total_cost(self, run_id: str) -> float:
+        """Return the sum of all recorded cost entries for *run_id* in USD."""
+        cur = self.conn.cursor()
+        row = cur.execute(
+            'SELECT COALESCE(SUM(amount_usd), 0.0) FROM costs WHERE run_id=?',
+            (run_id,),
+        ).fetchone()
+        return float(row[0]) if row else 0.0
 
     def close(self) -> None:
         self.conn.close()
@@ -409,3 +488,61 @@ class CrossRunRegression:
                 })
 
         return signals
+
+
+# ---------------------------------------------------------------------------
+# Schema repair utility
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+
+def repair_json_output(raw: str) -> tuple[dict | list | None, bool]:
+    """Attempt to parse JSON from a raw model output string.
+
+    Returns ``(parsed, was_repaired)`` where *was_repaired* is ``True`` when
+    the raw string needed extraction (e.g., the model wrapped its JSON in a
+    markdown code fence or prefixed it with explanatory prose).
+
+    Repair strategy (first successful pass wins):
+
+    1. Direct ``json.loads`` — fast path for well-formed output.
+    2. Strip ````json … ```` or ```` ``` … ```` markdown fences.
+    3. Extract the first balanced ``{ … }`` or ``[ … ]`` block.
+
+    Returns ``(None, False)`` when all three passes fail.
+    """
+    raw = raw.strip()
+
+    # Pass 1: direct parse
+    try:
+        return json.loads(raw), False
+    except json.JSONDecodeError:
+        pass
+
+    # Pass 2: strip code fences
+    fence_match = _re.search(r'```(?:json)?\s*\n?(.*?)```', raw, _re.DOTALL)
+    if fence_match:
+        try:
+            return json.loads(fence_match.group(1).strip()), True
+        except json.JSONDecodeError:
+            pass
+
+    # Pass 3: extract first balanced JSON object or array
+    for opener, closer in [('{', '}'), ('[', ']')]:
+        idx = raw.find(opener)
+        if idx == -1:
+            continue
+        depth = 0
+        for i in range(idx, len(raw)):
+            if raw[i] == opener:
+                depth += 1
+            elif raw[i] == closer:
+                depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(raw[idx:i + 1]), True
+                except json.JSONDecodeError:
+                    break
+
+    return None, False

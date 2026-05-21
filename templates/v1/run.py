@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 
 from stages.diff import get_changed_snippets
+from stages.feedback import build_feedback_tasks
+from stages.gapfill import build_gapfill_tasks
 from stages.ingestor import filter_snippets, load_repo_snippets, tag_snippet
 from stages.recon import build_recon_tasks
 from stages.coordinator import build_context_packs
@@ -23,19 +25,63 @@ from stages.voting import merge_hunter_outputs
 from stages.suppressions import SuppressionRegistry
 
 
+def _load_stages_config(script_dir: Path) -> dict:
+    """Load per-stage model-pool and concurrency config from config/stages.json.
+
+    Returns an empty dict if the file is absent or malformed so callers can
+    safely fall back to defaults.
+    """
+    path = script_dir / 'config' / 'stages.json'
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _stage_workers(stages_cfg: dict, stage: str, global_max: int) -> int:
+    """Resolve the effective max_workers for *stage* honouring global cap."""
+    stage_cfg = stages_cfg.get('stages', {}).get(stage, {})
+    per_stage = stage_cfg.get('max_workers', global_max)
+    return min(per_stage, global_max)
+
+
 def run(mode: str, repo: Path, *,
         auth_path: Path | None = None,
         kl_threshold: float = 5.0,
         cosine_threshold: float = 0.85,
         allow_full_db_fallback: bool = False,
         base_commit: str | None = None,
-        head_commit: str = 'HEAD') -> dict:
+        head_commit: str = 'HEAD',
+        max_cost_usd: float | None = None,
+        max_concurrency: int | None = None,
+        scope_notes: str | None = None) -> dict:
     cfg = json.loads((Path(__file__).parent / 'config/defaults.json').read_text())
+    stages_cfg = _load_stages_config(Path(__file__).parent)
     state = StateDB(Path(__file__).parent / cfg['state_db'])
     cache = JsonCache(Path(__file__).parent / cfg['cache_file'])
 
+    # --- Cost guardrail: abort early if budget already exceeded ---
+    run_id = f'{mode}:{str(repo)}'
+    if max_cost_usd is not None:
+        spent = state.total_cost(run_id)
+        if spent >= max_cost_usd:
+            raise RuntimeError(
+                f'Cost limit ${max_cost_usd:.2f} reached '
+                f'(${spent:.2f} already spent on run {run_id!r})'
+            )
+
     auth = load_auth_config(explicit_path=auth_path, script_dir=Path(__file__).parent)
     state.put_meta('auth_providers', json.dumps(sorted(auth.keys())))
+
+    # --- Effective concurrency cap ---
+    global_max = max_concurrency or cfg.get('max_workers', 3)
+    hunt_workers = _stage_workers(stages_cfg, 'hunt', global_max)
+    validate_workers = _stage_workers(stages_cfg, 'validate', global_max)
+    state.put_meta('hunt_workers', str(hunt_workers))
+    state.put_meta('validate_workers', str(validate_workers))
 
     raw_snippets = load_repo_snippets(repo, is_library_target=cfg['is_library_target'])
     snippets = filter_snippets(raw_snippets, is_library_target=cfg['is_library_target'])
@@ -62,7 +108,7 @@ def run(mode: str, repo: Path, *,
     min_context = min(model_limits.values())
     budget_tokens = int(min_context * 0.85)
 
-    recon_tasks = build_recon_tasks(snippets, repo_path=str(repo))
+    recon_tasks = build_recon_tasks(snippets, repo_path=str(repo), scope_notes=scope_notes)
     _ = build_context_packs(
         snippets,
         recon_tasks=recon_tasks,
@@ -75,6 +121,13 @@ def run(mode: str, repo: Path, *,
     raw_run1, _ = parse_findings('{"done": true}', domain='mem-safety')
     raw_run2: list[dict] = []
     promoted, _suppressed_by_vote = merge_hunter_outputs([raw_run1, raw_run2], min_votes=2)
+
+    # --- Gapfill: identify domains with zero confirmed findings and re-queue ---
+    gapfill_tasks = build_gapfill_tasks(
+        recon_tasks, promoted, max_tasks=5, scope_notes=scope_notes,
+    )
+    state.put_meta('gapfill_task_count', str(len(gapfill_tasks)))
+    all_tasks = recon_tasks + gapfill_tasks
 
     # --- Build snippet DB for shield lookups ---
     snippet_db = {s['id']: s for s in snippets}
@@ -100,17 +153,30 @@ def run(mode: str, repo: Path, *,
     registry = SuppressionRegistry(Path(__file__).parent / cfg.get('suppressions_file', 'output/suppressions.json'))
     findings, _registry_suppressed = registry.filter(promoted)
 
+    # --- Feedback: seed new Hunt tasks from confirmed/traced findings ---
+    traced = [f for f in findings if f.get('trace_status') == 'confirmed']
+    already_covered = {f for t in all_tasks for f in t.get('target_files', [])}
+    feedback_tasks = build_feedback_tasks(
+        traced, snippets,
+        already_covered=already_covered,
+        max_tasks=10,
+        scope_notes=scope_notes,
+    )
+    state.put_meta('feedback_task_count', str(len(feedback_tasks)))
+
     report = build_report(
         repo=str(repo),
         findings=findings,
         chains=[],
-        gaps=[],
+        gaps=[{'domain': t['domain'], 'files': t['target_files']} for t in gapfill_tasks],
         trace_required=cfg['is_library_target'],
     )
 
     state.put_meta('last_mode', mode)
     state.put_meta('hunt_models', json.dumps(hunt_models))
     state.put_meta('validate_models', json.dumps(validate_models))
+    if scope_notes:
+        state.put_meta('scope_notes_hash', str(hash(scope_notes)))
     cache.put('last_report', report)
 
     return report
@@ -167,7 +233,10 @@ def run_all(repo: Path, *,
             cosine_threshold: float = 0.85,
             allow_full_db_fallback: bool = False,
             base_commit: str | None = None,
-            head_commit: str = 'HEAD') -> dict:
+            head_commit: str = 'HEAD',
+            max_cost_usd: float | None = None,
+            max_concurrency: int | None = None,
+            scope_notes: str | None = None) -> dict:
     """Run every single scanning mode in sequence and return a merged report.
 
     The ``diff`` mode is included only when *base_commit* is provided; it is
@@ -186,6 +255,9 @@ def run_all(repo: Path, *,
             allow_full_db_fallback=allow_full_db_fallback,
             base_commit=base_commit,
             head_commit=head_commit,
+            max_cost_usd=max_cost_usd,
+            max_concurrency=max_concurrency,
+            scope_notes=scope_notes,
         )
         report['mode_run'] = mode
         reports.append(report)
@@ -210,7 +282,18 @@ def main() -> None:
                         help='Base commit/ref for diff-driven scanning (required with --mode diff)')
     parser.add_argument('--head-commit', type=str, default='HEAD',
                         help='Head commit/ref for diff-driven scanning (default: HEAD)')
+    parser.add_argument('--max-cost-usd', type=float, default=None,
+                        help='Abort the run if cumulative cost exceeds this amount in USD')
+    parser.add_argument('--max-concurrency', type=int, default=None,
+                        help='Global cap on concurrent model workers across all stages')
+    parser.add_argument('--scope-notes', type=Path, default=None,
+                        help='Path to a text file whose contents are appended to every '
+                             "stage's user_input to scope or exclude surfaces")
     args = parser.parse_args()
+
+    scope_notes_text: str | None = None
+    if args.scope_notes is not None:
+        scope_notes_text = Path(args.scope_notes).read_text()
 
     kwargs = dict(
         auth_path=args.auth_json,
@@ -219,6 +302,9 @@ def main() -> None:
         allow_full_db_fallback=args.allow_full_db_fallback,
         base_commit=args.base_commit,
         head_commit=args.head_commit,
+        max_cost_usd=args.max_cost_usd,
+        max_concurrency=args.max_concurrency,
+        scope_notes=scope_notes_text,
     )
     if args.mode == 'all':
         report = run_all(Path(args.repo), **kwargs)

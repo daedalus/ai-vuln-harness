@@ -50,7 +50,11 @@ class BuildReconTasksTests(unittest.TestCase):
     def test_single_snippet_multiple_tags(self):
         snippets = [{'file': 'src/all.c', 'tags': ['memory', 'auth', 'crypto', 'ipc']}]
         tasks = build_recon_tasks(snippets)
-        self.assertEqual(len(tasks), 4)
+        domains = {t['domain'] for t in tasks}
+        # memory→mem-safety, auth→auth, crypto→crypto, ipc→ipc
+        # memory+auth also triggers logic-chain
+        for expected in ('mem-safety', 'auth', 'crypto', 'ipc', 'logic-chain'):
+            self.assertIn(expected, domains)
 
     def task_has_correct_structure(self):
         snippets = [{'file': 'src/buffer.c', 'tags': ['memory']}]

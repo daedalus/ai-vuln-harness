@@ -4,6 +4,15 @@ import re
 import subprocess
 from pathlib import Path
 
+_LOGIC_CHAIN_TAG_PAIRS: list[frozenset[str]] = [
+    frozenset({'auth', 'external-input'}),
+    frozenset({'auth', 'ipc'}),
+    frozenset({'memory', 'ipc'}),
+    frozenset({'memory', 'external-input'}),
+    frozenset({'crypto', 'external-input'}),
+    frozenset({'auth', 'memory'}),
+]
+
 _SECURITY_PATTERNS: list[re.Pattern] = [
     re.compile(r'CVE-\d{4}-\d{4,}', re.I),
     re.compile(r'\bsec(?:urity)?[:\s]', re.I),
@@ -75,6 +84,30 @@ def _scan_git_security_patches(repo_path: str | Path) -> set[str]:
     return patched
 
 
+def _detect_logic_chains(snippets: list[dict]) -> dict[str, set[str]]:
+    """Find files containing tag combinations that suggest multi-component attack chains.
+
+    A logic-chain file has two or more high-value tags that can compose into a
+    complex attack path (e.g., ``auth`` + ``external-input`` can compose into
+    an authentication-bypass triggered by attacker-controlled data).  These
+    files merit a single Hunt task scoped to the full chain rather than
+    individual attack classes.
+    """
+    chain_files: set[str] = set()
+    for s in snippets:
+        tags = set(s.get('tags') or [])
+        file = s.get('file', '')
+        if not file:
+            continue
+        for pair in _LOGIC_CHAIN_TAG_PAIRS:
+            if pair.issubset(tags):
+                chain_files.add(file)
+                break
+    if chain_files:
+        return {'logic-chain': chain_files}
+    return {}
+
+
 def _find_sibling_files(
     patched_files: set[str],
     all_files: set[str],
@@ -96,6 +129,7 @@ def _find_sibling_files(
 def build_recon_tasks(
     snippets: list[dict],
     repo_path: str | Path | None = None,
+    scope_notes: str | None = None,
 ) -> list[dict]:
     domain_to_files: dict[str, set[str]] = {}
 
@@ -123,21 +157,35 @@ def build_recon_tasks(
             if siblings:
                 domain_to_files.setdefault('patch-gap', set()).update(siblings)
 
+    # --- Logic-chain detection: emit tasks for multi-component attack paths ---
+    for domain, files in _detect_logic_chains(snippets).items():
+        domain_to_files.setdefault(domain, set()).update(files)
+
+    _HIGH_PRIORITY = {'mem-safety', 'data-flow', 'crypto', 'patch-gap', 'logic-chain'}
+
     tasks = []
     for idx, (domain, files) in enumerate(sorted(domain_to_files.items()), start=1):
-        priority = (
-            'high' if domain in {'mem-safety', 'data-flow', 'crypto', 'patch-gap'} else 'medium'
-        )
-        tasks.append({
+        priority = 'high' if domain in _HIGH_PRIORITY else 'medium'
+        if domain == 'patch-gap':
+            rationale = 'sibling files of security-patched files (git history grep)'
+        elif domain == 'logic-chain':
+            rationale = (
+                'multi-component attack chain: file contains tag combinations '
+                'that can compose into complex exploit paths'
+            )
+        else:
+            rationale = f'{domain} targets derived from tags'
+        task: dict = {
             'task_id': f't_{domain}_{idx}',
             'domain': domain,
             'attack_class': domain,
             'target_files': sorted(files),
-            'rationale': (
-                f'sibling files of security-patched files (git history grep)'
-                if domain == 'patch-gap' else
-                f'{domain} targets derived from tags'
-            ),
+            'rationale': rationale,
             'priority': priority,
-        })
+        }
+        if domain == 'logic-chain':
+            task['task_type'] = 'logic_chain'
+        if scope_notes:
+            task['scope_notes'] = scope_notes
+        tasks.append(task)
     return tasks
