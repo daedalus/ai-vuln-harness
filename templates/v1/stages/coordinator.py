@@ -59,6 +59,7 @@ def build_context_packs(
     recon_tasks: list[dict] | None,
     allow_full_db_fallback: bool = False,
     budget_tokens: int = 128_000,
+    system_prompt: str = '',
 ) -> list[dict]:
     if (not recon_tasks) and (not allow_full_db_fallback):
         raise ValueError('Recon output is required. Set allow_full_db_fallback=True to bypass explicitly.')
@@ -110,7 +111,11 @@ def build_context_packs(
         if _token_enc is None:
             import tiktoken  # type: ignore
             _token_enc = tiktoken.get_encoding('cl100k_base')
-        return max(1, len(_token_enc.encode(text)))
+        total = len(_token_enc.encode(text))
+        if system_prompt:
+            total += len(_token_enc.encode(system_prompt))
+            total += 30  # message framing overhead
+        return max(1, total)
 
     for domain in domain_iter_order:
         items = domain_snippets[domain]

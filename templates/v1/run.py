@@ -553,6 +553,7 @@ def run(mode: str, repo: Path, *,
         recon_tasks=recon_tasks,
         allow_full_db_fallback=allow_full_db_fallback,
         budget_tokens=budget_tokens,
+        system_prompt=HUNT_SYSTEM_PROMPT,
     )
     state.put_meta('pack_count', str(len(packs)))
     domain_map: dict[str, list[dict]] = {}
