@@ -590,6 +590,8 @@ def call_llm(
             reasoning = (msg.get('reasoning') or '')
             if not content.strip() and reasoning:
                 content = reasoning
+            completion_tokens = result.get('usage', {}).get('completion_tokens', 0)
+            logging.getLogger('vuln-harness').info('Got %d completion tokens from %s %s', completion_tokens, provider, model_name)
             if ck and cache:
                 cache.put(ck, content)
             return content
