@@ -538,15 +538,19 @@ def call_llm(
        output there instead of ``message.content``).
     5. Cache successful responses for instant replay.
     """
+    log = logging.getLogger('vuln-harness')
+
     ck = cache_key('llm', model_id, prompt + system) if cache else None
     if ck and cache:
         cached = cache.get(ck)
         if cached is not None:
+            log.debug('cache hit for %s', ck)
             return cached if isinstance(cached, str) else json.dumps(cached)
+        log.debug('cache miss for %s', ck)
 
     provider = _resolve_provider(model_id)
     model_name = _strip_provider(model_id)
-    print(f"[call_llm] model_id={model_id!r} provider={provider!r} model_name={model_name!r}", flush=True)
+    log.debug('call_llm provider=%s model=%s', provider, model_name)
 
     api_key = _get_auth_key(provider, auth)
     if not api_key:
@@ -589,9 +593,10 @@ def call_llm(
             content = (msg.get('content') or '')
             reasoning = (msg.get('reasoning') or '')
             if not content.strip() and reasoning:
+                log.debug('reasoning model: using message.reasoning as content')
                 content = reasoning
             completion_tokens = result.get('usage', {}).get('completion_tokens', 0)
-            logging.getLogger('vuln-harness').info('Got %d completion tokens from %s %s', completion_tokens, provider, model_name)
+            log.info('Got %d completion tokens from %s %s', completion_tokens, provider, model_name)
             if ck and cache:
                 cache.put(ck, content)
             return content
@@ -599,6 +604,7 @@ def call_llm(
             code = e.code
             estr = str(code)
             if any(x in estr for x in _RETRYABLE_ERRORS):
+                log.debug('retry attempt %d/3 for %s due to HTTP %s (backoff %ds)', attempt + 1, model_name, estr, 5 * (attempt + 1))
                 last_exception = e
                 time.sleep(5 * (attempt + 1))
                 continue
@@ -606,6 +612,7 @@ def call_llm(
         except (urllib.error.URLError, OSError, json.JSONDecodeError, ValueError) as e:
             estr = str(e)
             if any(x in estr for x in _RETRYABLE_ERRORS):
+                log.debug('retry attempt %d/3 for %s due to %s (backoff %ds)', attempt + 1, model_name, estr[:60], 5 * (attempt + 1))
                 last_exception = e
                 time.sleep(5 * (attempt + 1))
                 continue
@@ -627,19 +634,23 @@ class ModelPool:
         self._models = sorted(models, key=lambda m: -limits.get(m, 0))
         self._dead: set[str] = set()
         self._lock = threading.Lock()
+        logging.getLogger('vuln-harness').debug('ModelPool created with %d models: %s', len(self._models), self._models)
 
     def pick(self) -> str | None:
         """Return the best alive model, or None if the pool is empty."""
         with self._lock:
             for m in self._models:
                 if m not in self._dead:
+                    logging.getLogger('vuln-harness').debug('pool pick -> %s (dead=%d)', m, len(self._dead))
                     return m
+            logging.getLogger('vuln-harness').debug('pool pick -> None (all %d models dead)', len(self._models))
             return None
 
     def mark_dead(self, model: str) -> None:
         """Remove *model* from the pool permanently."""
         with self._lock:
             self._dead.add(model)
+            logging.getLogger('vuln-harness').debug('pool mark_dead %s (dead=%d/%d)', model, len(self._dead), len(self._models))
 
     @property
     def alive(self) -> list[str]:
@@ -669,26 +680,30 @@ def call_llm_from_pool(
     and retries with the next best model.  Continues until a model succeeds
     or the pool is exhausted.
     """
+    log = logging.getLogger('vuln-harness')
     last_exception: Exception | None = None
     while not pool.is_empty:
         model = pool.pick()
         if model is None:
             break
+        log.debug('[pool] trying model=%s (alive=%d)', model, len(pool.alive))
         try:
-            return call_llm(
+            result = call_llm(
                 model, prompt,
                 system=system, max_tokens=max_tokens,
                 timeout=timeout, auth=auth, cache=cache,
             )
+            log.debug('[pool] model=%s succeeded', model)
+            return result
         except Exception as e:
             estr = str(e)
             if any(x in estr for x in _RETRYABLE_ERRORS):
-                logger = logging.getLogger('vuln-harness')
-                logger.warning('[pool] model %s failed: %s — marking dead, retrying next', model, estr[:100])
+                log.warning('[pool] model %s failed: %s — marking dead, retrying next', model, estr[:100])
                 pool.mark_dead(model)
                 last_exception = e
                 continue
             raise
+    log.warning('[pool] exhausted — no more models, last_error: %s', last_exception)
     raise RuntimeError(f'model pool exhausted; last error: {last_exception}')
 
 
@@ -704,11 +719,16 @@ def health_check_models(
     alive: list[str] = []
     dead: list[tuple[str, str]] = []
 
+    log = logging.getLogger('vuln-harness')
+
     def probe(mid: str) -> tuple[str, bool, str]:
         try:
+            log.debug('health probe %s...', mid)
             call_llm(mid, 'Reply with one word: ok', max_tokens=8, auth=auth, cache=cache)
+            log.debug('health probe %s -> alive', mid)
             return mid, True, ''
         except Exception as e:
+            log.debug('health probe %s -> dead: %s', mid, str(e)[:80])
             return mid, False, str(e)[:120]
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -719,12 +739,15 @@ def health_check_models(
                 alive.append(mid)
             else:
                 dead.append((mid, err))
+    log.debug('health check done: %d alive, %d dead', len(alive), len(dead))
 
     alive.sort(key=lambda m: models.index(m) if m in models else 999)
     return alive, dead
 
 
 def _rephrase_gap_prompt(original_prompt: str, model_id: str) -> str:
+    logger = logging.getLogger('vuln-harness')
+    logger.debug('_rephrase_gap_prompt model=%s original_chars=%d', model_id, len(original_prompt))
     return (
         original_prompt.rstrip('\n')
         + '\n\n--\n'

@@ -134,8 +134,10 @@ def _run_one_hunt_pack(
             auth=auth,
             cache=cache,
         )
+        logger.debug('hunt pack %s raw=%d chars', pack.get('agent', '?'), len(raw))
         domain = pack.get('agent', 'unknown')
         findings, gaps = parse_findings(raw, domain=domain)
+        logger.debug('hunt pack %s parsed: %d findings, %d gaps', pack.get('agent', '?'), len(findings), len(gaps))
         for f in findings:
             f.setdefault('hunt_model', model)
         return findings, gaps
@@ -162,8 +164,10 @@ def _run_one_hunt_pack_from_pool(
             auth=auth,
             cache=cache,
         )
+        logger.debug('hunt pack %s pooled raw=%d chars', pack.get('agent', '?'), len(raw))
         domain = pack.get('agent', 'unknown')
         findings, gaps = parse_findings(raw, domain=domain)
+        logger.debug('hunt pack %s pooled parsed: %d findings, %d gaps', pack.get('agent', '?'), len(findings), len(gaps))
         return findings, gaps
     except Exception as e:
         logger.warning('hunt pack %s pooled failed: %s', pack.get('agent', '?'), e)
@@ -242,10 +246,12 @@ def _run_validate_finding(
     cache: JsonCache,
 ) -> dict:
     if is_api_by_design(finding, snippet):
+        logger.debug('validate skip %s: api_by_design', finding.get('title', finding.get('name', '?')))
         return {**finding, 'validate_status': 'rejected', 'validate_reason': 'api_by_design'}
     finding = standardize_finding(finding)
     snippet_code = snippet.get('content', '')
     prompt = build_validate_prompt(finding, snippet)
+    logger.debug('validate finding=%s model=%s prompt_chars=%d', finding.get('title', '?'), model, len(prompt))
     try:
         raw = call_llm(
             model, prompt,
@@ -260,8 +266,10 @@ def _run_validate_finding(
         reason = parsed.get('reason', '') or ''
         if not parsed:
             reason = f'unparseable LLM response: {raw[:200]}'
+        logger.debug('validate result: status=%s reason=%s', status, reason[:80])
         return {**finding, 'validate_status': status, 'validate_reason': reason}
     except Exception as e:
+        logger.warning('validate exception for %s: %s', finding.get('title', '?'), e)
         return {**finding, 'validate_status': 'needs-more-info', 'validate_reason': f'validate exception: {e}'}
 
 
@@ -380,12 +388,17 @@ def _gapfill_rerun(
     logger.info('gapfill iteration %d/2: retrying %d gap(s) with model %s%s',
                 gapfill_iter + 1, len(rerun_packs), fallback_model,
                 ' (pooled)' if model_pool else '')
+    for g in rerun_packs:
+        logger.debug('gapfill pack domain=%s prompt_chars=%d', g.get('agent', '?'), len(g.get('prompt', '')))
 
     fresh_findings, fresh_gaps = _run_hunt_packs(
         rerun_packs, [fallback_model],
         auth=auth, cache=cache, parallel=parallel,
         model_pool=model_pool,
     )
+
+    logger.debug('gapfill iteration %d: %d fresh findings, %d remaining gaps',
+                 gapfill_iter + 1, len(fresh_findings), len(fresh_gaps))
 
     for g in gaps:
         g['gapfill_retried'] = True
@@ -494,7 +507,8 @@ def run(mode: str, repo: Path, *,
     ]
 
     if not skip_health and auth and mode not in ('validate-only', 'resume', 'poc-only'):
-        logger.info('probing model chain...')
+        logger.info('probing model chain (%d models)...', len(model_chain))
+        logger.debug('health check models: %s', model_chain)
         alive, dead = health_check_models(model_chain, auth=auth, cache=cache)
         cache.put('model_health_alive', alive)
         cache.put('model_health_dead', dead)
@@ -552,11 +566,14 @@ def run(mode: str, repo: Path, *,
 
     if pooled:
         from stages.runtime import _resolve_provider, _strip_provider
+        logger.debug('building ModelPool from %d models: %s', len(model_chain), model_chain)
         model_pool = ModelPool(model_chain, model_limits)
         for m in model_chain:
             logger.info('[health] %s %s alive', _resolve_provider(m), _strip_provider(m))
         hunt_models = model_pool.alive
         validate_models = model_pool.alive
+        logger.debug('pooled mode: %d alive models (hunt=%d, validate=%d)',
+                     len(model_chain), len(hunt_models), len(validate_models))
         state.put_meta('pooled', 'true')
     else:
         model_pool = None
