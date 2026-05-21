@@ -23,6 +23,21 @@ High-level guide for building a production-style AI vulnerability harness.
 ## Canonical pipeline stages:
 - INGESTOR → RECON → COORDINATOR → HUNT → VALIDATE → GAPFILL → VOTING → SHIELD → SUPPRESSIONS → CHAINS → POC → TRACE → EXPOSURE → FEEDBACK → REPORT
 
+## Critical: never survey the target yourself
+
+The harness is the **only** authorized surveyor of the target codebase.
+**Do not** read, explore, grep, or analyze the target repository yourself.
+The harness's INGESTOR and RECON stages handle this — they parse the repo
+through tree-sitter, build snippet databases, and construct context packs.
+
+If you pre-read the target, you contaminate the eval: you leak context to
+yourself that should only flow through the harness pipeline. It also means
+you're forming opinions before the pipeline runs, which defeats the purpose
+of a blind, reproducible multi-agent pipeline.
+
+**Rule**: If you need to understand the target, run the harness. Never read
+it directly, even to "help" or "verify" something.
+
 ## Runnable scaffold (v1)
 
 The executable reference scaffold lives at:
