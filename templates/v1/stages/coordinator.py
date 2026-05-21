@@ -103,35 +103,40 @@ def build_context_packs(
     for domain in domain_snippets:
         if domain not in domain_iter_order and domain != 'all':
             domain_iter_order.append(domain)
-    _token_enc = None
+    import tiktoken  # type: ignore
+    _token_enc = tiktoken.get_encoding('cl100k_base')
 
-    def _prompt_tokens(pack: dict) -> int:
-        nonlocal _token_enc
-        text = json.dumps(pack, indent=2)
-        if _token_enc is None:
-            import tiktoken  # type: ignore
-            _token_enc = tiktoken.get_encoding('cl100k_base')
-        total = len(_token_enc.encode(text))
-        if system_prompt:
-            total += len(_token_enc.encode(system_prompt))
-            total += 30  # message framing overhead
-        return max(1, total)
+    def _pack_overhead_tokens(domain: str, ctx: dict | None = None) -> int:
+        dummy = _make_pack(domain, [], security_context=ctx)
+        return len(_token_enc.encode(json.dumps(dummy, indent=2)))
+
+    def _snippet_tokens(s: dict) -> int:
+        return len(_token_enc.encode(json.dumps(s, indent=2)))
 
     for domain in domain_iter_order:
         items = domain_snippets[domain]
-        pack_snips = []
+        pack_snips: list[dict] = []
+        security_ctx = domain_context.get(domain)
+        overhead = _pack_overhead_tokens(domain, security_ctx)
+        running_tokens = overhead
+        if system_prompt:
+            running_tokens += len(_token_enc.encode(system_prompt)) + 30
         for s in items:
+            s_tok = _snippet_tokens(s)
             pack_snips.append(s)
-            pack = _make_pack(domain, pack_snips, security_context=domain_context.get(domain))
-            prompt_tokens = _prompt_tokens(pack)
-            print(f'[coordinator] domain={domain} snippets={len(pack_snips)} prompt_tokens={prompt_tokens} budget={budget_tokens}', file=__import__('sys').stderr)
-            if prompt_tokens > budget_tokens:
+            running_tokens += s_tok
+            print(f'[coordinator] domain={domain} snippets={len(pack_snips)} prompt_tokens={running_tokens} budget={budget_tokens}', file=__import__('sys').stderr)
+            if running_tokens > budget_tokens:
                 pack_snips.pop()
+                running_tokens -= s_tok
                 if pack_snips:
-                    packs.append(_make_pack(domain, pack_snips, security_context=domain_context.get(domain)))
+                    packs.append(_make_pack(domain, pack_snips, security_context=security_ctx))
                 pack_snips = [s]
+                running_tokens = overhead + s_tok
+                if system_prompt:
+                    running_tokens += len(_token_enc.encode(system_prompt)) + 30
         if pack_snips:
-            packs.append(_make_pack(domain, pack_snips, security_context=domain_context.get(domain)))
+            packs.append(_make_pack(domain, pack_snips, security_context=security_ctx))
 
     return packs
 

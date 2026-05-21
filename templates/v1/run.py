@@ -486,8 +486,9 @@ def run(mode: str, repo: Path, *,
     snippet_db_path = output_dir / 'snippet_db.json'
     if reingest and snippet_db_path.exists():
         logger.info('reingest enabled: loading snippet_db from %s', snippet_db_path)
-        snippets = json.loads(snippet_db_path.read_text())
-        snippet_db = {s['id']: s for s in snippets} if isinstance(snippets, dict) else snippets
+        snippet_db = json.loads(snippet_db_path.read_text())
+        if isinstance(snippet_db, list):
+            snippet_db = {s['id']: s for s in snippet_db}
         snippets = list(snippet_db.values())
     else:
         raw_snippets = load_repo_snippets(repo, is_library_target=cfg['is_library_target'])
@@ -553,7 +554,6 @@ def run(mode: str, repo: Path, *,
         recon_tasks=recon_tasks,
         allow_full_db_fallback=allow_full_db_fallback,
         budget_tokens=budget_tokens,
-        system_prompt=HUNT_SYSTEM_PROMPT,
     )
     state.put_meta('pack_count', str(len(packs)))
     domain_map: dict[str, list[dict]] = {}
