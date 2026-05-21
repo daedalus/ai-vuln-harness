@@ -551,7 +551,10 @@ def run(mode: str, repo: Path, *,
     _persist_jsonl(output_dir / 'context_packs.json', packs)
 
     if pooled:
+        from stages.runtime import _resolve_provider, _strip_provider
         model_pool = ModelPool(model_chain, model_limits)
+        for m in model_chain:
+            logger.info('[health] %s %s alive', _resolve_provider(m), _strip_provider(m))
         hunt_models = model_pool.alive
         validate_models = model_pool.alive
         state.put_meta('pooled', 'true')
