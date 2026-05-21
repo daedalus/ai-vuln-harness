@@ -9,7 +9,7 @@ from stages.ingestor import filter_snippets, load_repo_snippets, tag_snippet
 from stages.recon import build_recon_tasks
 from stages.coordinator import build_context_packs
 from stages.parser import parse_findings
-from stages.report import build_report
+from stages.report import build_report, deduplicate
 from stages.runtime import JsonCache, StateDB, fetch_model_limits, load_auth_config, split_model_pools
 from stages.shield import (
     annotate_call_path_verification,
@@ -116,9 +116,88 @@ def run(mode: str, repo: Path, *,
     return report
 
 
+# Ordered list of every mode that performs an actual scan (excludes 'all').
+_SINGLE_MODES: list[str] = ['full', 'max-run', 'validate-only', 'resume', 'diff']
+
+
+def _merge_reports(reports: list[dict]) -> dict:
+    """Merge multiple per-mode reports into a single combined report.
+
+    Findings are deduplicated across reports using the same composite key
+    used inside ``build_report`` (file × class × start-line).  The
+    highest-severity variant is kept.  Summary counters, chains, and gaps
+    are aggregated across all reports.
+    """
+    if not reports:
+        return build_report(repo='', findings=[], chains=[], gaps=[])
+
+    repo = reports[0].get('repo', '')
+    all_findings: list[dict] = []
+    all_chains: list[dict] = []
+    all_gaps: list[dict] = []
+    combined_summary: dict[str, int] = {}
+
+    for report in reports:
+        all_findings.extend(report.get('findings') or [])
+        all_chains.extend(report.get('chains') or [])
+        all_gaps.extend(report.get('gaps') or [])
+        for key, val in (report.get('summary') or {}).items():
+            if isinstance(val, int):
+                combined_summary[key] = combined_summary.get(key, 0) + val
+
+    deduped = deduplicate(all_findings)
+
+    merged = build_report(
+        repo=repo,
+        findings=deduped,
+        chains=all_chains,
+        gaps=all_gaps,
+        trace_required=True,
+    )
+    # Replace the freshly-computed summary with the aggregated one so per-mode
+    # counts are preserved and not recomputed from the merged finding set alone.
+    merged['summary'] = combined_summary
+    merged['modes_run'] = [r.get('mode_run', 'unknown') for r in reports]
+    return merged
+
+
+def run_all(repo: Path, *,
+            auth_path: Path | None = None,
+            kl_threshold: float = 5.0,
+            cosine_threshold: float = 0.85,
+            allow_full_db_fallback: bool = False,
+            base_commit: str | None = None,
+            head_commit: str = 'HEAD') -> dict:
+    """Run every single scanning mode in sequence and return a merged report.
+
+    The ``diff`` mode is included only when *base_commit* is provided; it is
+    silently skipped otherwise so that ``--mode all`` never fails due to a
+    missing ``--base-commit``.
+    """
+    reports: list[dict] = []
+    for mode in _SINGLE_MODES:
+        if mode == 'diff' and base_commit is None:
+            continue
+        report = run(
+            mode, repo,
+            auth_path=auth_path,
+            kl_threshold=kl_threshold,
+            cosine_threshold=cosine_threshold,
+            allow_full_db_fallback=allow_full_db_fallback,
+            base_commit=base_commit,
+            head_commit=head_commit,
+        )
+        report['mode_run'] = mode
+        reports.append(report)
+
+    merged = _merge_reports(reports)
+    merged['mode_run'] = 'all'
+    return merged
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='AI vuln harness v1 scaffold')
-    parser.add_argument('--mode', choices=['full', 'max-run', 'validate-only', 'resume', 'diff'], default='full')
+    parser.add_argument('--mode', choices=['full', 'max-run', 'validate-only', 'resume', 'diff', 'all'], default='full')
     parser.add_argument('--repo', required=True)
     parser.add_argument('--allow-full-db-fallback', action='store_true')
     parser.add_argument('--auth-json', type=Path, default=None,
@@ -133,13 +212,18 @@ def main() -> None:
                         help='Head commit/ref for diff-driven scanning (default: HEAD)')
     args = parser.parse_args()
 
-    report = run(args.mode, Path(args.repo),
-                 auth_path=args.auth_json,
-                 kl_threshold=args.kl_threshold,
-                 cosine_threshold=args.cosine_threshold,
-                 allow_full_db_fallback=args.allow_full_db_fallback,
-                 base_commit=args.base_commit,
-                 head_commit=args.head_commit)
+    kwargs = dict(
+        auth_path=args.auth_json,
+        kl_threshold=args.kl_threshold,
+        cosine_threshold=args.cosine_threshold,
+        allow_full_db_fallback=args.allow_full_db_fallback,
+        base_commit=args.base_commit,
+        head_commit=args.head_commit,
+    )
+    if args.mode == 'all':
+        report = run_all(Path(args.repo), **kwargs)
+    else:
+        report = run(args.mode, Path(args.repo), **kwargs)
     print(json.dumps(report, indent=2))
 
 
