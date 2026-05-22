@@ -14,7 +14,7 @@ read, explore, grep, or analyze the target repository directly. Pre-reading
 the target contaminates the eval by leaking context that should only flow
 through the pipeline.
 
-Run modes: full | max-run | validate-only | resume | diff | all | poc-only
+Run modes: full | max-run | validate-only | resume | diff | all | poc-only | benchmark
 
 Track KPIs: precision@top-N, reject rate, duplicate rate, gap-closure rate,
 time/cost per stage. Maintain a benchmark corpus + regression gate for
@@ -33,6 +33,7 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .stages.chains import synthesize_exploit_chains
@@ -862,6 +863,369 @@ def _persist_jsonl(path: Path, items: list[dict]) -> None:
         f.writelines(json.dumps(item) + "\n" for item in items)
 
 
+_BENCHMARK_METRICS = [
+    "precision_at_top_n",
+    "reject_rate",
+    "duplicate_rate",
+    "gap_closure_rate",
+    "runtime_per_confirmed_finding_seconds",
+    "cost_per_confirmed_finding_usd",
+]
+
+_BENCHMARK_HIGHER_IS_BETTER = {"precision_at_top_n", "gap_closure_rate"}
+
+_BENCHMARK_DEFAULT_THRESHOLDS = {
+    "precision_at_top_n": 0.03,
+    "reject_rate": 0.03,
+    "duplicate_rate": 0.02,
+    "gap_closure_rate": 0.05,
+    "runtime_per_confirmed_finding_seconds": 20.0,
+    "cost_per_confirmed_finding_usd": 0.2,
+}
+
+_SEVERITY_RANK = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "INFORMATIONAL": 0}
+
+
+def _safe_ratio(numerator: float, denominator: float) -> float:
+    if denominator <= 0:
+        return 0.0
+    return float(numerator) / float(denominator)
+
+
+def _average(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return sum(values) / len(values)
+
+
+def _extract_report_kpis(report: dict, top_n: int, elapsed_seconds: float, cost_usd: float) -> dict:
+    findings = report.get("findings") or []
+    summary = report.get("summary") or {}
+    total_findings = len(findings)
+    total_bucketed = (
+        int(summary.get("fix_now", 0))
+        + int(summary.get("backlog", 0))
+        + int(summary.get("false_positive", 0))
+    )
+    rejected = int(summary.get("false_positive", 0))
+
+    ranked = sorted(
+        findings,
+        key=lambda item: _SEVERITY_RANK.get(
+            str(item.get("severity", "LOW")).upper(),
+            0,
+        ),
+        reverse=True,
+    )
+    top = ranked[: max(top_n, 1)]
+    top_confirmed = sum(
+        1
+        for finding in top
+        if str(
+            finding.get("status", finding.get("validate_status", "")),
+        ).lower()
+        == "confirmed"
+    )
+    precision_at_top_n = _safe_ratio(top_confirmed, len(top))
+
+    dedup_keys = set()
+    for finding in findings:
+        lines = finding.get("lines") or []
+        line_start = int(lines[0]) if lines else 0
+        dedup_keys.add(
+            (
+                str(finding.get("file") or finding.get("snippet_id") or ""),
+                str(finding.get("class") or ""),
+                line_start,
+            ),
+        )
+    duplicate_rate = 1.0 - _safe_ratio(len(dedup_keys), total_findings)
+
+    gaps = report.get("gaps") or []
+    closed_gaps = 0
+    for gap in gaps:
+        if gap.get("closed") is True:
+            closed_gaps += 1
+            continue
+        status = str(gap.get("status", "")).lower()
+        if status in {"closed", "resolved", "covered", "fixed"}:
+            closed_gaps += 1
+    gap_closure_rate = 1.0 if not gaps else _safe_ratio(closed_gaps, len(gaps))
+
+    confirmed_findings = sum(
+        1
+        for finding in findings
+        if str(
+            finding.get("status", finding.get("validate_status", "")),
+        ).lower()
+        == "confirmed"
+    )
+
+    return {
+        "precision_at_top_n": precision_at_top_n,
+        "reject_rate": _safe_ratio(rejected, total_bucketed),
+        "duplicate_rate": duplicate_rate,
+        "gap_closure_rate": gap_closure_rate,
+        "runtime_per_confirmed_finding_seconds": (
+            elapsed_seconds if confirmed_findings == 0 else elapsed_seconds / confirmed_findings
+        ),
+        "cost_per_confirmed_finding_usd": (
+            cost_usd if confirmed_findings == 0 else cost_usd / confirmed_findings
+        ),
+        "confirmed_findings": confirmed_findings,
+        "total_findings": total_findings,
+        "runtime_seconds": elapsed_seconds,
+        "cost_usd": cost_usd,
+    }
+
+
+def _load_json_dict(path: Path, fallback: dict) -> dict:
+    if not path.exists():
+        return fallback
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return fallback
+    return data if isinstance(data, dict) else fallback
+
+
+def _resolve_benchmark_targets(corpus_path: Path, repo: Path, profile: str) -> list[dict]:
+    corpus = _load_json_dict(corpus_path, {"targets": []})
+    targets = corpus.get("targets")
+    if not isinstance(targets, list) or not targets:
+        return [{"name": "default", "repo": str(repo), "profile": profile}]
+
+    resolved: list[dict] = []
+    for idx, target in enumerate(targets):
+        if not isinstance(target, dict):
+            continue
+        raw_repo = str(target.get("repo", "")).strip()
+        if not raw_repo:
+            continue
+        repo_path = Path(raw_repo)
+        if not repo_path.is_absolute():
+            repo_path = (corpus_path.parent / repo_path).resolve()
+        resolved.append(
+            {
+                "name": str(target.get("name", f"target-{idx+1}")),
+                "repo": str(repo_path),
+                "profile": str(target.get("profile", profile)),
+            },
+        )
+    return resolved or [{"name": "default", "repo": str(repo), "profile": profile}]
+
+
+def _load_thresholds(path: Path, profile: str) -> dict:
+    thresholds_doc = _load_json_dict(path, {"defaults": {}, "profiles": {}})
+    defaults = thresholds_doc.get("defaults")
+    if not isinstance(defaults, dict):
+        defaults = {}
+    profiles = thresholds_doc.get("profiles")
+    if not isinstance(profiles, dict):
+        profiles = {}
+    profile_overrides = profiles.get(profile)
+    if not isinstance(profile_overrides, dict):
+        profile_overrides = {}
+
+    out: dict[str, float] = {}
+    for metric in _BENCHMARK_METRICS:
+        value = profile_overrides.get(metric, defaults.get(metric))
+        if value is None:
+            value = _BENCHMARK_DEFAULT_THRESHOLDS[metric]
+        with contextlib.suppress(TypeError, ValueError):
+            out[metric] = float(value)
+    for metric in _BENCHMARK_METRICS:
+        out.setdefault(metric, _BENCHMARK_DEFAULT_THRESHOLDS[metric])
+    return out
+
+
+def _build_benchmark_summary(
+    profile_comparisons: list[dict],
+    missing_baselines: list[str],
+    gate_passed: bool,
+    baseline_updated: bool,
+) -> str:
+    lines = [
+        "# Benchmark Regression Gate",
+        "",
+        f"- Gate result: {'PASS' if gate_passed else 'FAIL'}",
+        f"- Baseline updated: {'yes' if baseline_updated else 'no'}",
+    ]
+    if missing_baselines:
+        lines.append(f"- Missing baselines: {', '.join(sorted(missing_baselines))}")
+    lines.append("")
+    for profile_result in profile_comparisons:
+        profile = profile_result.get("profile", "unknown")
+        lines.append(f"## Profile: {profile}")
+        for metric in profile_result.get("metrics", []):
+            status = metric.get("status", "within-threshold")
+            lines.append(
+                (
+                    f"- {metric.get('name')}: current={metric.get('current'):.6f}, "
+                    f"baseline={metric.get('baseline'):.6f}, "
+                    f"delta={metric.get('delta'):+.6f}, "
+                    f"allowed={metric.get('allowed_regression'):.6f} [{status}]"
+                ),
+            )
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+
+def run_benchmark_gate(
+    repo: Path,
+    *,
+    benchmark_corpus: Path | None = None,
+    benchmark_baseline: Path | None = None,
+    benchmark_thresholds: Path | None = None,
+    benchmark_output: Path | None = None,
+    benchmark_profile: str = "library",
+    benchmark_top_n: int = 10,
+    update_benchmark_baseline: bool = False,
+    **run_kwargs: dict,
+) -> dict:
+    pkg_dir = Path(__file__).parent
+    corpus_path = benchmark_corpus or (pkg_dir / "config/benchmark_corpus.json")
+    baseline_path = benchmark_baseline or (pkg_dir / "config/benchmark_baselines.json")
+    thresholds_path = benchmark_thresholds or (pkg_dir / "config/benchmark_thresholds.json")
+    output_path = benchmark_output or (Path.cwd() / "output/benchmark_regression_report.json")
+
+    targets = _resolve_benchmark_targets(corpus_path, repo, benchmark_profile)
+    baseline_doc = _load_json_dict(baseline_path, {"profiles": {}})
+    baseline_profiles = baseline_doc.get("profiles")
+    if not isinstance(baseline_profiles, dict):
+        baseline_profiles = {}
+
+    profile_runs: dict[str, list[dict]] = {}
+    for target in targets:
+        target_repo = Path(target["repo"])
+        target_profile = str(target.get("profile", benchmark_profile))
+        started = time.time()
+        report = run("full", target_repo, **run_kwargs)
+        elapsed_seconds = time.time() - started
+        cfg = json.loads((pkg_dir / "config/defaults.json").read_text())
+        run_id = f"full:{target_repo!s}"
+        run_cost = 0.0
+        state = StateDB(Path.cwd() / cfg["state_db"])
+        try:
+            run_cost = state.total_cost(run_id)
+        finally:
+            state.close()
+
+        kpis = _extract_report_kpis(
+            report,
+            top_n=benchmark_top_n,
+            elapsed_seconds=elapsed_seconds,
+            cost_usd=run_cost,
+        )
+        profile_runs.setdefault(target_profile, []).append(
+            {
+                "target": target["name"],
+                "repo": str(target_repo),
+                "kpis": kpis,
+            },
+        )
+
+    profile_current: dict[str, dict] = {}
+    for profile_name, runs in profile_runs.items():
+        profile_current[profile_name] = {
+            metric: _average([float(r["kpis"][metric]) for r in runs])
+            for metric in _BENCHMARK_METRICS
+        }
+
+    missing_baselines: list[str] = []
+    profile_comparisons: list[dict] = []
+    regressed_profiles: list[str] = []
+    thresholds_used: dict[str, dict] = {}
+
+    for profile_name, current_kpis in profile_current.items():
+        baseline_kpis = baseline_profiles.get(profile_name)
+        if not isinstance(baseline_kpis, dict):
+            missing_baselines.append(profile_name)
+            continue
+        thresholds = _load_thresholds(thresholds_path, profile_name)
+        thresholds_used[profile_name] = thresholds
+        metric_results: list[dict] = []
+        profile_regressed = False
+        for metric in _BENCHMARK_METRICS:
+            current_value = float(current_kpis.get(metric, 0.0))
+            baseline_value = float(baseline_kpis.get(metric, 0.0))
+            delta = current_value - baseline_value
+            allowed = float(thresholds.get(metric, _BENCHMARK_DEFAULT_THRESHOLDS[metric]))
+            higher_is_better = metric in _BENCHMARK_HIGHER_IS_BETTER
+            if higher_is_better:
+                regressed = delta < (-allowed)
+            else:
+                regressed = delta > allowed
+            if regressed:
+                status = "regressed"
+                profile_regressed = True
+            elif abs(delta) <= allowed:
+                status = "within-threshold"
+            else:
+                status = "improved"
+            metric_results.append(
+                {
+                    "name": metric,
+                    "current": current_value,
+                    "baseline": baseline_value,
+                    "delta": delta,
+                    "allowed_regression": allowed,
+                    "status": status,
+                    "direction": "higher_is_better" if higher_is_better else "lower_is_better",
+                },
+            )
+        if profile_regressed:
+            regressed_profiles.append(profile_name)
+        profile_comparisons.append({"profile": profile_name, "metrics": metric_results})
+
+    baseline_updated = False
+    if update_benchmark_baseline:
+        baseline_profiles.update(profile_current)
+        baseline_doc["profiles"] = baseline_profiles
+        baseline_doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        baseline_path.write_text(json.dumps(baseline_doc, indent=2))
+        baseline_updated = True
+
+    gate_passed = bool(not missing_baselines and not regressed_profiles) or baseline_updated
+    summary_text = _build_benchmark_summary(
+        profile_comparisons=profile_comparisons,
+        missing_baselines=missing_baselines,
+        gate_passed=gate_passed,
+        baseline_updated=baseline_updated,
+    )
+
+    artifact = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "gate_passed": gate_passed,
+        "baseline_updated": baseline_updated,
+        "missing_baselines": missing_baselines,
+        "regressed_profiles": regressed_profiles,
+        "corpus_path": str(corpus_path),
+        "baseline_path": str(baseline_path),
+        "thresholds_path": str(thresholds_path),
+        "top_n": benchmark_top_n,
+        "targets": targets,
+        "profile_runs": profile_runs,
+        "profile_current": profile_current,
+        "profile_comparisons": profile_comparisons,
+        "thresholds_used": thresholds_used,
+        "summary_markdown": summary_text,
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(artifact, indent=2))
+    logger.info("benchmark regression artifact written to %s", output_path)
+
+    if not gate_passed:
+        msg = (
+            "Benchmark regression gate failed. "
+            f"Missing baselines={missing_baselines}, regressed_profiles={regressed_profiles}. "
+            "Use --update-benchmark-baseline to intentionally refresh baselines."
+        )
+        raise RuntimeError(msg)
+    return artifact
+
+
 def run(
     mode: str,
     repo: Path,
@@ -1229,7 +1593,7 @@ def _setup_proxy(proxy: str | None) -> None:
 
 
 def _warn_if_no_auth(mode: str, auth_json: Path | None) -> None:
-    if mode not in ("full", "max-run", "all"):
+    if mode not in ("full", "max-run", "all", "benchmark"):
         return
     if auth_json:
         return
@@ -1313,6 +1677,7 @@ def main() -> None:
             "diff",
             "all",
             "poc-only",
+            "benchmark",
         ],
         default="full",
     )
@@ -1352,6 +1717,13 @@ def main() -> None:
     )
     parser.add_argument("--poc-only", action="store_true", dest="poc_only")
     parser.add_argument("--log-file", type=Path, default=None)
+    parser.add_argument("--benchmark-corpus", type=Path, default=None)
+    parser.add_argument("--benchmark-baseline", type=Path, default=None)
+    parser.add_argument("--benchmark-thresholds", type=Path, default=None)
+    parser.add_argument("--benchmark-output", type=Path, default=None)
+    parser.add_argument("--benchmark-profile", type=str, default="library")
+    parser.add_argument("--benchmark-top-n", type=int, default=10)
+    parser.add_argument("--update-benchmark-baseline", action="store_true")
     args = parser.parse_args()
 
     _setup_proxy(args.proxy)
@@ -1374,6 +1746,18 @@ def main() -> None:
     kwargs = _build_run_kwargs(args)
     if mode == "all":
         run_all(Path(args.repo), **kwargs)
+    elif mode == "benchmark":
+        run_benchmark_gate(
+            Path(args.repo),
+            benchmark_corpus=args.benchmark_corpus,
+            benchmark_baseline=args.benchmark_baseline,
+            benchmark_thresholds=args.benchmark_thresholds,
+            benchmark_output=args.benchmark_output,
+            benchmark_profile=args.benchmark_profile,
+            benchmark_top_n=args.benchmark_top_n,
+            update_benchmark_baseline=args.update_benchmark_baseline,
+            **kwargs,
+        )
     else:
         run(mode, Path(args.repo), **kwargs)
 

@@ -61,3 +61,59 @@ jobs:
 
       - name: Run vulture
         run: vulture --min-confidence 90 src/ai_vuln_harness/ --exclude src/ai_vuln_harness/.vulture_whitelist.py
+
+  benchmark-regression-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect benchmark-relevant changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            benchmark:
+              - 'src/ai_vuln_harness/prompts/**'
+              - 'src/ai_vuln_harness/stages/**'
+              - 'src/ai_vuln_harness/run.py'
+              - 'src/ai_vuln_harness/config/defaults.json'
+              - 'src/ai_vuln_harness/config/stages.json'
+              - 'src/ai_vuln_harness/config/benchmark_*.json'
+
+      - name: Set up Python
+        if: steps.changes.outputs.benchmark == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        if: steps.changes.outputs.benchmark == 'true'
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install benchmark dependencies
+        if: steps.changes.outputs.benchmark == 'true'
+        run: uv pip install --system -e ".[test]"
+
+      - name: Run benchmark regression gate
+        if: steps.changes.outputs.benchmark == 'true'
+        run: |
+          python -m ai_vuln_harness.run \
+            --mode benchmark \
+            --repo "${{ github.workspace }}" \
+            --skip-health \
+            --benchmark-corpus src/ai_vuln_harness/config/benchmark_corpus.json \
+            --benchmark-baseline src/ai_vuln_harness/config/benchmark_baselines.json \
+            --benchmark-thresholds src/ai_vuln_harness/config/benchmark_thresholds.json \
+            --benchmark-output output/benchmark_regression_report.json
+
+      - name: Skip benchmark regression gate
+        if: steps.changes.outputs.benchmark != 'true'
+        run: echo "No prompts/stage/validation-policy changes detected; benchmark gate skipped."
+
+      - name: Upload benchmark regression artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-regression-report
+          path: output/benchmark_regression_report.json
+          if-no-files-found: ignore

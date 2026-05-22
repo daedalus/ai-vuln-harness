@@ -1,0 +1,20 @@
+{
+  "defaults": {
+    "precision_at_top_n": 0.03,
+    "reject_rate": 0.03,
+    "duplicate_rate": 0.02,
+    "gap_closure_rate": 0.05,
+    "runtime_per_confirmed_finding_seconds": 20.0,
+    "cost_per_confirmed_finding_usd": 0.2
+  },
+  "profiles": {
+    "library": {
+      "precision_at_top_n": 0.02,
+      "gap_closure_rate": 0.04
+    },
+    "application": {
+      "precision_at_top_n": 0.04,
+      "gap_closure_rate": 0.06
+    }
+  }
+}
