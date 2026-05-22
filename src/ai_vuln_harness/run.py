@@ -1090,7 +1090,7 @@ def _update_baseline_if_requested(
     baseline_doc["profiles"] = baseline_profiles
     baseline_doc["updated_at"] = datetime.now(UTC).isoformat()
     baseline_path.parent.mkdir(parents=True, exist_ok=True)
-    baseline_path.write_text(json.dumps(baseline_doc, indent=2))
+    baseline_path.write_text(json.dumps(baseline_doc, indent=2) + "\n")
     return True, []
 
 
