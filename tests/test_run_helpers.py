@@ -71,6 +71,14 @@ class TestWarnIfNoAuth:
             _warn_if_no_auth("full", None)
             mock_warn.assert_called_once()
 
+    def test_warns_for_benchmark_mode(self):
+        with (
+            patch("ai_vuln_harness.run.Path.exists", return_value=False),
+            patch("ai_vuln_harness.run.logger.warning") as mock_warn,
+        ):
+            _warn_if_no_auth("benchmark", None)
+            mock_warn.assert_called_once()
+
 
 class TestLoadStagesConfig:
     def test_missing_file_returns_empty_dict(self, tmp_path: Path):

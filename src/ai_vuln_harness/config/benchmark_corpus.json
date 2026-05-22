@@ -1,0 +1,9 @@
+{
+  "targets": [
+    {
+      "name": "self-repo-library",
+      "repo": "../../../",
+      "profile": "library"
+    }
+  ]
+}
