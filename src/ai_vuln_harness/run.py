@@ -969,12 +969,10 @@ def _extract_report_kpis(
         "duplicate_rate": duplicate_rate,
         "gap_closure_rate": gap_closure_rate,
         "runtime_per_confirmed_finding_seconds": (
-            elapsed_seconds
-            if confirmed_findings == 0
-            else elapsed_seconds / confirmed_findings
+            0.0 if confirmed_findings == 0 else elapsed_seconds / confirmed_findings
         ),
         "cost_per_confirmed_finding_usd": (
-            cost_usd if confirmed_findings == 0 else cost_usd / confirmed_findings
+            0.0 if confirmed_findings == 0 else cost_usd / confirmed_findings
         ),
         "confirmed_findings": confirmed_findings,
         "total_findings": total_findings,
@@ -1077,6 +1075,25 @@ def _build_benchmark_summary(
     return "\n".join(lines).strip() + "\n"
 
 
+def _update_baseline_if_requested(
+    *,
+    update_benchmark_baseline: bool,
+    baseline_profiles: dict,
+    profile_current: dict[str, dict],
+    baseline_doc: dict,
+    baseline_path: Path,
+    missing_baselines: list[str],
+) -> tuple[bool, list[str]]:
+    if not update_benchmark_baseline:
+        return False, missing_baselines
+    baseline_profiles.update(profile_current)
+    baseline_doc["profiles"] = baseline_profiles
+    baseline_doc["updated_at"] = datetime.now(UTC).isoformat()
+    baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    baseline_path.write_text(json.dumps(baseline_doc, indent=2))
+    return True, []
+
+
 def run_benchmark_gate(
     repo: Path,
     *,
@@ -1087,7 +1104,7 @@ def run_benchmark_gate(
     benchmark_profile: str = "library",
     benchmark_top_n: int = 10,
     update_benchmark_baseline: bool = False,
-    **run_kwargs: dict,
+    **run_kwargs: object,
 ) -> dict:
     pkg_dir = Path(__file__).parent
     corpus_path = benchmark_corpus or (pkg_dir / "config/benchmark_corpus.json")
@@ -1192,18 +1209,15 @@ def run_benchmark_gate(
             regressed_profiles.append(profile_name)
         profile_comparisons.append({"profile": profile_name, "metrics": metric_results})
 
-    baseline_updated = False
-    if update_benchmark_baseline:
-        baseline_profiles.update(profile_current)
-        baseline_doc["profiles"] = baseline_profiles
-        baseline_doc["updated_at"] = datetime.now(UTC).isoformat()
-        baseline_path.parent.mkdir(parents=True, exist_ok=True)
-        baseline_path.write_text(json.dumps(baseline_doc, indent=2))
-        baseline_updated = True
-
-    gate_passed = (
-        bool(not missing_baselines and not regressed_profiles) or baseline_updated
+    baseline_updated, missing_baselines = _update_baseline_if_requested(
+        update_benchmark_baseline=update_benchmark_baseline,
+        baseline_profiles=baseline_profiles,
+        profile_current=profile_current,
+        baseline_doc=baseline_doc,
+        baseline_path=baseline_path,
+        missing_baselines=missing_baselines,
     )
+    gate_passed = bool(not missing_baselines and not regressed_profiles)
     summary_text = _build_benchmark_summary(
         profile_comparisons=profile_comparisons,
         missing_baselines=missing_baselines,

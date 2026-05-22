@@ -15,7 +15,7 @@ from ai_vuln_harness.run import (
 )
 
 
-def _sample_report(status: str = "confirmed") -> dict:
+def _sample_report(finding_status: str = "confirmed") -> dict:
     return {
         "summary": {"fix_now": 1, "backlog": 0, "false_positive": 0},
         "findings": [
@@ -24,7 +24,7 @@ def _sample_report(status: str = "confirmed") -> dict:
                 "class": "buffer-overflow",
                 "lines": [10, 12],
                 "severity": "HIGH",
-                "status": status,
+                "status": finding_status,
             }
         ],
         "gaps": [{"status": "resolved"}],
@@ -158,7 +158,8 @@ def test_run_benchmark_gate_flags_regression(tmp_path: Path):
 
     with (
         patch(
-            "ai_vuln_harness.run.run", return_value=_sample_report(status="rejected")
+            "ai_vuln_harness.run.run",
+            return_value=_sample_report(finding_status="rejected"),
         ),
         patch("ai_vuln_harness.run.StateDB", return_value=mock_state),
         pytest.raises(RuntimeError),
