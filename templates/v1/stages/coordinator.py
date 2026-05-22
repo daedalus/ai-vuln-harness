@@ -35,29 +35,38 @@ import json
 from collections import defaultdict
 
 DOMAIN_ORDER = [
-    'mem-safety', 'auth', 'crypto', 'ipc', 'data-flow', 'format-str',
-    'injection', 'path-traversal', 'concurrency', 'resource', 'secrets',
+    "mem-safety",
+    "auth",
+    "crypto",
+    "ipc",
+    "data-flow",
+    "format-str",
+    "injection",
+    "path-traversal",
+    "concurrency",
+    "resource",
+    "secrets",
 ]
 
 DOMAINS = [
-    {'name': 'mem-safety', 'exclusive': True},
-    {'name': 'auth', 'exclusive': False},
-    {'name': 'crypto', 'exclusive': True},
-    {'name': 'ipc', 'exclusive': False},
-    {'name': 'data-flow', 'exclusive': False},
-    {'name': 'format-str', 'exclusive': True},
-    {'name': 'injection', 'exclusive': True},
-    {'name': 'path-traversal', 'exclusive': True},
-    {'name': 'concurrency', 'exclusive': False},
-    {'name': 'resource', 'exclusive': False},
-    {'name': 'secrets', 'exclusive': True},
+    {"name": "mem-safety", "exclusive": True},
+    {"name": "auth", "exclusive": False},
+    {"name": "crypto", "exclusive": True},
+    {"name": "ipc", "exclusive": False},
+    {"name": "data-flow", "exclusive": False},
+    {"name": "format-str", "exclusive": True},
+    {"name": "injection", "exclusive": True},
+    {"name": "path-traversal", "exclusive": True},
+    {"name": "concurrency", "exclusive": False},
+    {"name": "resource", "exclusive": False},
+    {"name": "secrets", "exclusive": True},
 ]
 
 
 def _group_snippets_by_file(snippets: list[dict]) -> dict[str, list[dict]]:
     by_file: dict[str, list[dict]] = defaultdict(list)
     for snippet in snippets:
-        file = snippet.get('file')
+        file = snippet.get("file")
         if file:
             by_file[file].append(snippet)
     return by_file
@@ -70,25 +79,29 @@ def _build_domain_snippets(
     domain_snippets: dict[str, list[dict]] = defaultdict(list)
     domain_context: dict[str, dict] = defaultdict(dict)
     for task in recon_tasks or []:
-        for f in task.get('target_files', []):
-            domain_snippets[task['domain']].extend(by_file.get(f, []))
-        if task.get('dependency_graph'):
-            domain_context[task['domain']]['dependency_graph'] = task['dependency_graph']
-        if task.get('cross_repo_targets'):
-            domain_context[task['domain']]['cross_repo_targets'] = task['cross_repo_targets']
+        for f in task.get("target_files", []):
+            domain_snippets[task["domain"]].extend(by_file.get(f, []))
+        if task.get("dependency_graph"):
+            domain_context[task["domain"]]["dependency_graph"] = task[
+                "dependency_graph"
+            ]
+        if task.get("cross_repo_targets"):
+            domain_context[task["domain"]]["cross_repo_targets"] = task[
+                "cross_repo_targets"
+            ]
     return domain_snippets, domain_context
 
 
 def _domain_order(domain_snippets: dict[str, list[dict]]) -> list[str]:
     order = []
-    if 'all' in domain_snippets:
-        order.append('all')
+    if "all" in domain_snippets:
+        order.append("all")
     for d in DOMAINS:
-        name = d['name'] if isinstance(d, dict) else d
+        name = d["name"] if isinstance(d, dict) else d
         if name in domain_snippets:
             order.append(name)
     for domain in domain_snippets:
-        if domain not in order and domain != 'all':
+        if domain not in order and domain != "all":
             order.append(domain)
     return order
 
@@ -101,7 +114,8 @@ def _chunk_domain(
     system_prompt: str,
 ) -> list[dict]:
     import tiktoken
-    token_enc = tiktoken.get_encoding('cl100k_base')
+
+    token_enc = tiktoken.get_encoding("cl100k_base")
 
     def _pack_overhead_tokens(domain: str, ctx: dict | None = None) -> int:
         dummy = _make_pack(domain, [], security_context=ctx)
@@ -123,14 +137,16 @@ def _chunk_domain(
         pack_snips.append(s)
         running_tokens += s_tok
         print(
-            f'[coordinator] domain={domain} snippets={len(pack_snips)} prompt_tokens={running_tokens} budget={budget_tokens}',
-            file=__import__('sys').stderr,
+            f"[coordinator] domain={domain} snippets={len(pack_snips)} prompt_tokens={running_tokens} budget={budget_tokens}",
+            file=__import__("sys").stderr,
         )
         if running_tokens > budget_tokens:
             pack_snips.pop()
             running_tokens -= s_tok
             if pack_snips:
-                packs.append(_make_pack(domain, pack_snips, security_context=security_ctx))
+                packs.append(
+                    _make_pack(domain, pack_snips, security_context=security_ctx),
+                )
             pack_snips = [s]
             running_tokens = overhead + s_tok
             if system_prompt:
@@ -145,23 +161,26 @@ def build_context_packs(
     recon_tasks: list[dict] | None,
     allow_full_db_fallback: bool = False,
     budget_tokens: int = 128_000,
-    system_prompt: str = '',
+    system_prompt: str = "",
 ) -> list[dict]:
     if (not recon_tasks) and (not allow_full_db_fallback):
-        raise ValueError('Recon output is required. Set allow_full_db_fallback=True to bypass explicitly.')
+        msg = "Recon output is required. Set allow_full_db_fallback=True to bypass explicitly."
+        raise ValueError(
+            msg,
+        )
 
     by_file = _group_snippets_by_file(snippets)
 
     if not recon_tasks and allow_full_db_fallback:
         recon_tasks = [
             {
-                'task_id': 'fallback-all',
-                'domain': 'all',
-                'attack_class': 'all',
-                'target_files': sorted(by_file.keys()),
-                'rationale': 'explicit full-db fallback',
-                'priority': 'low',
-            }
+                "task_id": "fallback-all",
+                "domain": "all",
+                "attack_class": "all",
+                "target_files": sorted(by_file.keys()),
+                "rationale": "explicit full-db fallback",
+                "priority": "low",
+            },
         ]
 
     domain_snippets, domain_context = _build_domain_snippets(by_file, recon_tasks)
@@ -170,19 +189,26 @@ def build_context_packs(
     packs = []
     for domain in domain_iter_order:
         domain_packs = _chunk_domain(
-            domain, domain_snippets[domain], domain_context,
-            budget_tokens, system_prompt,
+            domain,
+            domain_snippets[domain],
+            domain_context,
+            budget_tokens,
+            system_prompt,
         )
         packs.extend(domain_packs)
     return packs
 
 
-def _make_pack(domain: str, snippets: list[dict], security_context: dict | None = None) -> dict:
+def _make_pack(
+    domain: str,
+    snippets: list[dict],
+    security_context: dict | None = None,
+) -> dict:
     return {
-        'agent': domain,
-        'guidance': f'Focus only on {domain}.',
-        'snippets': snippets,
-        'cross_refs': {},
-        'security_context': security_context or {},
-        'known_entries': [],
+        "agent": domain,
+        "guidance": f"Focus only on {domain}.",
+        "snippets": snippets,
+        "cross_refs": {},
+        "security_context": security_context or {},
+        "known_entries": [],
     }

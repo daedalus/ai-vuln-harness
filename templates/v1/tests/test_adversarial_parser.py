@@ -18,16 +18,16 @@ class ParserDeepNestingTests(unittest.TestCase):
     """Extremely deep or wide JSON structures."""
 
     def test_deeply_nested_json(self):
-        inner = '{"a": ' * 500 + '"bottom"' + '}' * 500
-        text = f'Some preamble {inner} trailing text'
-        f, g = parse_findings(text, domain='mem-safety')
+        inner = '{"a": ' * 500 + '"bottom"' + "}" * 500
+        text = f"Some preamble {inner} trailing text"
+        f, g = parse_findings(text, domain="mem-safety")
         self.assertIsInstance(f, list)
         self.assertIsInstance(g, list)
 
     def test_wide_object_with_many_keys(self):
-        keys = ', '.join(f'"k{i}": "v{i}"' for i in range(5000))
-        text = '{{ {} }}'.format(keys)
-        f, g = parse_findings(text, domain='all')
+        keys = ", ".join(f'"k{i}": "v{i}"' for i in range(5000))
+        text = "{{ {} }}".format(keys)
+        f, g = parse_findings(text, domain="all")
         self.assertEqual(len(g), 0)
 
 
@@ -35,24 +35,24 @@ class ParserMarkdownFenceTests(unittest.TestCase):
     """JSON inside markdown fenced code blocks — a common LLM output pattern."""
 
     def test_json_in_triple_backtick_block(self):
-        text = '''Here is the analysis:
+        text = """Here is the analysis:
 
 ```json
 {"snippet_id": "s1", "class": "overflow", "severity": "HIGH"}
-```'''
+```"""
         f, g = parse_findings(text)
         self.assertEqual(len(f), 1)
-        self.assertEqual(f[0]['snippet_id'], 's1')
+        self.assertEqual(f[0]["snippet_id"], "s1")
 
     def test_json_in_triple_backtick_no_lang(self):
-        text = '''```
+        text = """```
 {"snippet_id": "s1", "desc": "test", "status": "raw", "poc_confirmed": false}
-```'''
+```"""
         f, g = parse_findings(text)
         self.assertEqual(len(f), 1)
 
     def test_multiple_json_blocks_in_markdown(self):
-        text = '''First finding:
+        text = """First finding:
 ```json
 {"snippet_id": "a", "class": "overflow", "severity": "HIGH", "desc": "a", "status": "raw", "poc_confirmed": false}
 ```
@@ -60,10 +60,10 @@ class ParserMarkdownFenceTests(unittest.TestCase):
 Second finding:
 ```json
 {"snippet_id": "b", "class": "uaf", "severity": "CRITICAL", "desc": "b", "status": "raw", "poc_confirmed": false}
-```'''
+```"""
         f, g = parse_findings(text)
-        ids = {x['snippet_id'] for x in f if 'snippet_id' in x}
-        self.assertEqual(ids, {'a', 'b'})
+        ids = {x["snippet_id"] for x in f if "snippet_id" in x}
+        self.assertEqual(ids, {"a", "b"})
 
 
 class ParserRepeatedKeyJsonTests(unittest.TestCase):
@@ -134,9 +134,9 @@ class ParserLineNoiseTests(unittest.TestCase):
     """Garbage text adjacent to valid JSON."""
 
     def test_garbage_before_and_after_json(self):
-        text = '''asdfghjkl;
+        text = """asdfghjkl;
 {"snippet_id": "s1", "class": "overflow", "severity": "HIGH", "desc": "d", "status": "raw", "poc_confirmed": false}
-zxcvbnm,./'''
+zxcvbnm,./"""
         f, g = parse_findings(text)
         self.assertEqual(len(f), 1)
 
@@ -155,7 +155,7 @@ class ParserExtractObjectsAdversarialTests(unittest.TestCase):
     """Direct tests on _extract_objects with adversarial inputs."""
 
     def test_list_of_empty_objects(self):
-        text = '[{},{},{},{},{}]'
+        text = "[{},{},{},{},{}]"
         objs = _extract_objects(text)
         self.assertEqual(len(objs), 5)
 
@@ -168,7 +168,7 @@ class ParserExtractObjectsAdversarialTests(unittest.TestCase):
         line = 'pre {"a": {"b": {"c": 1}}} post'
         result = _balanced_json_prefix(line)
         self.assertIsNotNone(result)
-        self.assertEqual(result['a']['b']['c'], 1)
+        self.assertEqual(result["a"]["b"]["c"], 1)
 
     def test_balanced_prefix_with_multiple_json_candidates(self):
         line = '{"a": 1} stuff {"b": 2}'
@@ -176,17 +176,17 @@ class ParserExtractObjectsAdversarialTests(unittest.TestCase):
         self.assertIsNotNone(result)
 
     def test_balanced_prefix_no_json(self):
-        line = 'just some regular text with {curly braces} but no json'
+        line = "just some regular text with {curly braces} but no json"
         result = _balanced_json_prefix(line)
         self.assertIsNone(result)
 
     def test_balanced_prefix_unmatched_braces(self):
         line = '{"a": 1} {{{'
         result = _balanced_json_prefix(line)
-        self.assertEqual(result, {'a': 1})
+        self.assertEqual(result, {"a": 1})
 
     def test_balanced_prefix_empty_object(self):
-        line = 'text {} more text'
+        line = "text {} more text"
         result = _balanced_json_prefix(line)
         self.assertEqual(result, {})
 
@@ -198,7 +198,7 @@ class ParserSpamDetectionTests(unittest.TestCase):
         items = [
             '{"snippet_id": "s1", "class": "overflow", "severity": "HIGH", "desc": "d", "status": "raw", "poc_confirmed": false}'
         ] * 1000
-        text = '[' + ','.join(items) + ']'
+        text = "[" + ",".join(items) + "]"
         f, g = parse_findings(text)
         self.assertEqual(len(f), 1000)
 
@@ -209,14 +209,17 @@ class ParserSpamDetectionTests(unittest.TestCase):
 
     def test_only_coverage_gaps(self):
         import json as _json
-        text = _json.dumps([
-            {"coverage_gap": "domain-a", "reason": "no files"},
-            {"coverage_gap": "domain-b", "reason": "all excluded"},
-        ])
+
+        text = _json.dumps(
+            [
+                {"coverage_gap": "domain-a", "reason": "no files"},
+                {"coverage_gap": "domain-b", "reason": "all excluded"},
+            ]
+        )
         f, g = parse_findings(text)
         self.assertEqual(len(f), 0)
         self.assertGreaterEqual(len(g), 2)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

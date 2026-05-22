@@ -36,7 +36,9 @@ from collections import Counter, deque
 
 # Default thresholds (config-driven from defaults.json at runtime)
 _HALLUCINATION_DESC_TOKEN_THRESHOLD = 0.60  # max 60% desc tokens absent from snippet
-_HALLUCINATION_PATH_TOKEN_THRESHOLD = 0.70  # max 70% call_path names absent from snippet
+_HALLUCINATION_PATH_TOKEN_THRESHOLD = (
+    0.70  # max 70% call_path names absent from snippet
+)
 _SEMANTIC_DEDUP_COSINE_THRESHOLD = 0.85  # cosine similarity cutoff
 _KL_THRESHOLD_DEFAULT = 5.0  # KL-divergence cutoff for hallucination detection
 
@@ -44,6 +46,7 @@ _KL_THRESHOLD_DEFAULT = 5.0  # KL-divergence cutoff for hallucination detection
 # ---------------------------------------------------------------------------
 # Call-path graph verification (improvement ①)
 # ---------------------------------------------------------------------------
+
 
 def build_call_graph(snippets: list[dict]) -> dict[str, set[str]]:
     """Build a caller→callees adjacency map from the snippet DB.
@@ -54,15 +57,15 @@ def build_call_graph(snippets: list[dict]) -> dict[str, set[str]]:
     """
     graph: dict[str, set[str]] = {}
     for s in snippets:
-        name = str(s.get('name') or s.get('id') or '').lower()
-        callees = [c.lower() for c in (s.get('callees') or [])]
+        name = str(s.get("name") or s.get("id") or "").lower()
+        callees = [c.lower() for c in (s.get("callees") or [])]
         if name:
             graph.setdefault(name, set()).update(callees)
     return graph
 
 
 def _call_path_names(finding: dict) -> list[str]:
-    return [str(n).lower() for n in (finding.get('call_path') or [])]
+    return [str(n).lower() for n in (finding.get("call_path") or [])]
 
 
 def verify_call_path(finding: dict, graph: dict[str, set[str]]) -> tuple[bool, str]:
@@ -76,26 +79,26 @@ def verify_call_path(finding: dict, graph: dict[str, set[str]]) -> tuple[bool, s
     return ``(True, 'no-graph-data')`` rather than penalising all findings.
     """
     if not graph:
-        return True, 'no-graph-data'
+        return True, "no-graph-data"
 
     path = _call_path_names(finding)
     if not path:
-        return False, 'empty-call-path'
+        return False, "empty-call-path"
     if len(path) == 1:
         # Single-hop: check the function exists in the graph at all
         if path[0] in graph:
-            return True, 'single-node-present'
-        return False, f'function {path[0]!r} not found in call graph'
+            return True, "single-node-present"
+        return False, f"function {path[0]!r} not found in call graph"
 
     missing = []
     for i in range(len(path) - 1):
         caller, callee = path[i], path[i + 1]
         if caller not in graph or callee not in graph.get(caller, set()):
-            missing.append(f'{path[i]}→{path[i+1]}')
+            missing.append(f"{path[i]}→{path[i + 1]}")
 
     if missing:
-        return False, f'unverified hops: {", ".join(missing)}'
-    return True, 'verified'
+        return False, f"unverified hops: {', '.join(missing)}"
+    return True, "verified"
 
 
 def annotate_call_path_verification(
@@ -103,11 +106,12 @@ def annotate_call_path_verification(
     graph: dict[str, set[str]],
 ) -> list[dict]:
     """Return findings with ``call_path_verified`` and ``call_path_reason``
-    fields added.  Does not drop findings — callers decide what to do."""
+    fields added.  Does not drop findings — callers decide what to do.
+    """
     out = []
     for f in findings:
         ok, reason = verify_call_path(f, graph)
-        out.append({**f, 'call_path_verified': ok, 'call_path_reason': reason})
+        out.append({**f, "call_path_verified": ok, "call_path_reason": reason})
     return out
 
 
@@ -115,7 +119,13 @@ def annotate_call_path_verification(
 # Static reachability pre-filter (improvement ⑦)
 # ---------------------------------------------------------------------------
 
-def _reachable_from(start: str, targets: set[str], graph: dict[str, set[str]], max_hops: int = 6) -> bool:
+
+def _reachable_from(
+    start: str,
+    targets: set[str],
+    graph: dict[str, set[str]],
+    max_hops: int = 6,
+) -> bool:
     """BFS: is any name in *targets* reachable from *start* within *max_hops*?"""
     visited: set[str] = set()
     queue: deque[tuple[str, int]] = deque([(start, 0)])
@@ -159,7 +169,7 @@ def filter_unreachable(
     for f in findings:
         # Collect candidate target names from snippet + call_path
         targets: set[str] = set()
-        sid = str(f.get('snippet_id') or '')
+        sid = str(f.get("snippet_id") or "")
         if sid:
             targets.add(sid.lower())
         for name in _call_path_names(f):
@@ -174,7 +184,7 @@ def filter_unreachable(
         if found:
             reachable.append(f)
         else:
-            unreachable.append({**f, 'static_reachability': 'unreachable'})
+            unreachable.append({**f, "static_reachability": "unreachable"})
 
     return reachable, unreachable
 
@@ -183,17 +193,18 @@ def filter_unreachable(
 # Hallucination detector (improvement ⑧)
 # ---------------------------------------------------------------------------
 
+
 def _tokenise(text: str) -> set[str]:
     """Extract identifier-like tokens (≥4 chars) from a string."""
-    return {t.lower() for t in re.findall(r'[A-Za-z_][A-Za-z0-9_]{3,}', text)}
+    return {t.lower() for t in re.findall(r"[A-Za-z_][A-Za-z0-9_]{3,}", text)}
 
 
 def _check_desc_tokens(desc: str, content_tokens: set[str]) -> tuple[bool, str]:
     desc_tokens = {t for t in _tokenise(desc) if len(t) > 3}
     missing_desc = desc_tokens - content_tokens
     if desc_tokens and len(missing_desc) / len(desc_tokens) > 0.60:
-        return True, f'desc tokens not in snippet: {sorted(missing_desc)[:5]}'
-    return False, 'ok'
+        return True, f"desc tokens not in snippet: {sorted(missing_desc)[:5]}"
+    return False, "ok"
 
 
 def _check_call_path(finding: dict, content_tokens: set[str]) -> tuple[bool, str]:
@@ -203,8 +214,8 @@ def _check_call_path(finding: dict, content_tokens: set[str]) -> tuple[bool, str
             missing_path.append(name)
     path_names = [n for n in _call_path_names(finding) if len(n) >= 3]
     if path_names and len(missing_path) / len(path_names) > 0.70:
-        return True, f'call_path names not in snippet: {missing_path[:5]}'
-    return False, 'ok'
+        return True, f"call_path names not in snippet: {missing_path[:5]}"
+    return False, "ok"
 
 
 def detect_hallucination(finding: dict, snippet: dict) -> tuple[bool, str]:
@@ -218,21 +229,21 @@ def detect_hallucination(finding: dict, snippet: dict) -> tuple[bool, str]:
     Strings shorter than 4 characters are skipped (too generic).
     If the snippet has no content, the check is skipped (fail-open).
     """
-    content = str(snippet.get('content') or '').lower()
+    content = str(snippet.get("content") or "").lower()
     if not content:
-        return False, 'no-snippet-content'
+        return False, "no-snippet-content"
 
     content_tokens = _tokenise(content)
-    for name in list(snippet.get('callers') or []) + list(snippet.get('callees') or []):
+    for name in list(snippet.get("callers") or []) + list(snippet.get("callees") or []):
         content_tokens.add(name.lower())
 
-    result = _check_desc_tokens(str(finding.get('desc') or ''), content_tokens)
+    result = _check_desc_tokens(str(finding.get("desc") or ""), content_tokens)
     if result[0]:
         return result
     result = _check_call_path(finding, content_tokens)
     if result[0]:
         return result
-    return False, 'ok'
+    return False, "ok"
 
 
 def annotate_hallucination(
@@ -242,9 +253,15 @@ def annotate_hallucination(
     """Add ``hallucination_detected`` and ``hallucination_reason`` to each finding."""
     out = []
     for f in findings:
-        snippet = snippet_db.get(f.get('snippet_id', ''), {})
+        snippet = snippet_db.get(f.get("snippet_id", ""), {})
         hallucinated, reason = detect_hallucination(f, snippet)
-        out.append({**f, 'hallucination_detected': hallucinated, 'hallucination_reason': reason})
+        out.append(
+            {
+                **f,
+                "hallucination_detected": hallucinated,
+                "hallucination_reason": reason,
+            },
+        )
     return out
 
 
@@ -252,9 +269,10 @@ def annotate_hallucination(
 # KL-divergence hallucination detection
 # ---------------------------------------------------------------------------
 
+
 def _token_freqs(text: str) -> Counter:
     """Tokenise and return a frequency counter over identifier-like tokens (>=4 chars)."""
-    return Counter(t.lower() for t in re.findall(r'[A-Za-z_][A-Za-z0-9_]{3,}', text))
+    return Counter(t.lower() for t in re.findall(r"[A-Za-z_][A-Za-z0-9_]{3,}", text))
 
 
 def _normalise(counter: Counter) -> dict[str, float]:
@@ -295,22 +313,22 @@ def detect_hallucination_kl(
 
     Fail-open when snippet content or desc is empty.
     """
-    content = str(snippet.get('content') or '')
+    content = str(snippet.get("content") or "")
     if not content:
-        return False, 'no-snippet-content'
+        return False, "no-snippet-content"
 
-    desc = str(finding.get('desc') or '')
+    desc = str(finding.get("desc") or "")
     if not desc.strip():
-        return False, 'no-desc'
+        return False, "no-desc"
 
     p_counts = _token_freqs(desc)
     q_counts = _token_freqs(content)
 
     if not p_counts:
-        return False, 'no-desc-tokens'
+        return False, "no-desc-tokens"
 
     if not q_counts:
-        return True, 'desc-tokens-absent-from-empty-code'
+        return True, "desc-tokens-absent-from-empty-code"
 
     p_probs = _normalise(p_counts)
     q_probs = _normalise(q_counts)
@@ -320,9 +338,12 @@ def detect_hallucination_kl(
     missing = sorted(p_counts.keys() - q_counts.keys())[:5]
 
     if kl >= threshold:
-        return True, f'KL={kl:.2f} (threshold={threshold}); desc tokens missing from code: {missing}'
+        return (
+            True,
+            f"KL={kl:.2f} (threshold={threshold}); desc tokens missing from code: {missing}",
+        )
 
-    return False, f'KL={kl:.2f} (ok)'
+    return False, f"KL={kl:.2f} (ok)"
 
 
 def annotate_hallucination_kl(
@@ -331,23 +352,27 @@ def annotate_hallucination_kl(
     threshold: float = 2.0,
 ) -> list[dict]:
     """Add ``hallucination_kl`` (float), ``hallucination_kl_detected`` (bool),
-    and ``hallucination_kl_reason`` (str) to each finding."""
+    and ``hallucination_kl_reason`` (str) to each finding.
+    """
     out = []
     for f in findings:
-        snippet = snippet_db.get(f.get('snippet_id', ''), {})
+        snippet = snippet_db.get(f.get("snippet_id", ""), {})
         detected, reason = detect_hallucination_kl(f, snippet, threshold)
-        out.append({
-            **f,
-            'hallucination_kl': float('nan') if reason.startswith('no-') else None,
-            'hallucination_kl_detected': detected,
-            'hallucination_kl_reason': reason,
-        })
+        out.append(
+            {
+                **f,
+                "hallucination_kl": float("nan") if reason.startswith("no-") else None,
+                "hallucination_kl_detected": detected,
+                "hallucination_kl_reason": reason,
+            },
+        )
     return out
 
 
 # ---------------------------------------------------------------------------
 # Cosine-similarity semantic deduplication
 # ---------------------------------------------------------------------------
+
 
 def _tf_vector(tokens: list[str], vocab: dict[str, int]) -> list[float]:
     """Build a unit-normalised TF vector for *tokens* against *vocab*."""
@@ -364,14 +389,15 @@ def _tf_vector(tokens: list[str], vocab: dict[str, int]) -> list[float]:
 
 
 def _desc_tokens(finding: dict) -> list[str]:
-    return re.findall(r'[A-Za-z_][A-Za-z0-9_]{3,}', (finding.get('desc') or '').lower())
+    return re.findall(r"[A-Za-z_][A-Za-z0-9_]{3,}", (finding.get("desc") or "").lower())
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two vectors of equal length."""
     if len(a) != len(b):
-        raise ValueError(f'vector length mismatch: {len(a)} vs {len(b)}')
-    dot = sum(ai * bi for ai, bi in zip(a, b))
+        msg = f"vector length mismatch: {len(a)} vs {len(b)}"
+        raise ValueError(msg)
+    dot = sum(ai * bi for ai, bi in zip(a, b, strict=False))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(x * x for x in b))
     if na == 0 or nb == 0:
@@ -397,7 +423,7 @@ def deduplicate_semantic(
     if not findings:
         return []
 
-    _SEV_RANK = {'CRITICAL': 4, 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1, 'INFORMATIONAL': 0}
+    _sev_rank = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "INFORMATIONAL": 0}
 
     token_lists = [_desc_tokens(f) for f in findings]
     all_tokens = sorted({t for tl in token_lists for t in tl})
@@ -441,7 +467,13 @@ def deduplicate_semantic(
 
     kept: list[dict] = []
     for indices in groups.values():
-        best = max(indices, key=lambda idx: _SEV_RANK.get(str(findings[idx].get('severity', '')).upper(), 0))
+        best = max(
+            indices,
+            key=lambda idx: _sev_rank.get(
+                str(findings[idx].get("severity", "")).upper(),
+                0,
+            ),
+        )
         kept.append(findings[best])
 
     return kept

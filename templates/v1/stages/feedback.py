@@ -26,10 +26,9 @@ def _sibling_files(
     parent = str(Path(source_file).parent)
     excluded = exclude or set()
     return sorted(
-        f for f in all_files
-        if str(Path(f).parent) == parent
-        and f != source_file
-        and f not in excluded
+        f
+        for f in all_files
+        if str(Path(f).parent) == parent and f != source_file and f not in excluded
     )
 
 
@@ -40,12 +39,12 @@ def _build_one_feedback_task(
     seen_keys: set[tuple[str, str]],
     scope_notes: str | None = None,
 ) -> dict | None:
-    source_file = str(finding.get('file') or finding.get('snippet_id') or '')
+    source_file = str(finding.get("file") or finding.get("snippet_id") or "")
     attack_class = str(
-        finding.get('class')
-        or finding.get('attack_class')
-        or finding.get('domain')
-        or ''
+        finding.get("class")
+        or finding.get("attack_class")
+        or finding.get("domain")
+        or "",
     )
     if not source_file or not attack_class:
         return None
@@ -60,20 +59,20 @@ def _build_one_feedback_task(
     seen_keys.add(key)
 
     task: dict = {
-        'task_id': f'feedback_{attack_class}_{len(seen_keys)}',
-        'domain': attack_class,
-        'attack_class': attack_class,
-        'target_files': siblings,
-        'rationale': (
-            f'Feedback: confirmed {attack_class!r} in {source_file} — '
-            f'scanning {len(siblings)} sibling file(s) for the same pattern.'
+        "task_id": f"feedback_{attack_class}_{len(seen_keys)}",
+        "domain": attack_class,
+        "attack_class": attack_class,
+        "target_files": siblings,
+        "rationale": (
+            f"Feedback: confirmed {attack_class!r} in {source_file} — "
+            f"scanning {len(siblings)} sibling file(s) for the same pattern."
         ),
-        'priority': 'high',
-        'source': 'feedback',
-        'seeded_by': source_file,
+        "priority": "high",
+        "source": "feedback",
+        "seeded_by": source_file,
     }
     if scope_notes:
-        task['scope_notes'] = scope_notes
+        task["scope_notes"] = scope_notes
     return task
 
 
@@ -86,14 +85,20 @@ def build_feedback_tasks(
     scope_notes: str | None = None,
 ) -> list[dict]:
     covered = already_covered or set()
-    all_files = {str(s.get('file') or '') for s in all_snippets if s.get('file')}
+    all_files = {str(s.get("file") or "") for s in all_snippets if s.get("file")}
     seen_keys: set[tuple[str, str]] = set()
     tasks: list[dict] = []
 
     for finding in traced_findings:
         if len(tasks) >= max_tasks:
             break
-        task = _build_one_feedback_task(finding, all_files, covered, seen_keys, scope_notes)
+        task = _build_one_feedback_task(
+            finding,
+            all_files,
+            covered,
+            seen_keys,
+            scope_notes,
+        )
         if task is not None:
             tasks.append(task)
 

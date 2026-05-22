@@ -14,7 +14,7 @@ Runnable scaffold for a 10-stage AI vulnerability harness.
 ## Quick start
 
 ```bash
-cd /home/runner/work/skills/skills/skills/ai-vuln-harness/templates/v1
+cd templates/v1
 python -m unittest discover -s tests -p 'test_*.py'
 python run.py --mode full --repo /path/to/repo
 ```

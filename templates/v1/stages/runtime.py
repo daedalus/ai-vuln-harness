@@ -29,6 +29,7 @@ import logging
 import math
 import os
 import pickle
+import re as _re
 import sqlite3
 import ssl
 import threading
@@ -42,13 +43,21 @@ def _preferred_by_keyword(models: list[str], keywords: tuple[str, ...]) -> list[
     return [m for m in models if any(k in m for k in keywords)]
 
 
-def _distribute_remaining(models: list[str], hunt: list[str], validate: list[str]) -> None:
+def _distribute_remaining(
+    models: list[str],
+    hunt: list[str],
+    validate: list[str],
+) -> None:
     for m in models:
         if m not in hunt and m not in validate:
             (hunt if len(hunt) <= len(validate) else validate).append(m)
 
 
-def _ensure_both_nonempty(models: list[str], hunt: list[str], validate: list[str]) -> None:
+def _ensure_both_nonempty(
+    models: list[str],
+    hunt: list[str],
+    validate: list[str],
+) -> None:
     if not validate:
         validate[:] = [m for m in models if m not in hunt]
     if not hunt:
@@ -57,8 +66,12 @@ def _ensure_both_nonempty(models: list[str], hunt: list[str], validate: list[str
 
 def split_model_pools(models: list[str]) -> tuple[list[str], list[str]]:
     models = list(dict.fromkeys(models))
-    hunt = _preferred_by_keyword(models, ('deepseek', 'qwen', 'gemma'))
-    validate = [m for m in _preferred_by_keyword(models, ('nemotron', 'trinity', 'z-ai')) if m not in hunt]
+    hunt = _preferred_by_keyword(models, ("deepseek", "qwen", "gemma"))
+    validate = [
+        m
+        for m in _preferred_by_keyword(models, ("nemotron", "trinity", "z-ai"))
+        if m not in hunt
+    ]
     _distribute_remaining(models, hunt, validate)
     validate[:] = [m for m in validate if m not in hunt]
     _ensure_both_nonempty(models, hunt, validate)
@@ -66,20 +79,24 @@ def split_model_pools(models: list[str]) -> tuple[list[str], list[str]]:
 
 
 _AUTH_DEFAULT_PATHS = [
-    lambda script_dir: script_dir / 'auth.json',
-    lambda _script_dir: Path.home() / '.local/share/opencode/auth.json',
+    lambda script_dir: script_dir / "auth.json",
+    lambda _script_dir: Path.home() / ".local/share/opencode/auth.json",
 ]
 
 _PROVIDER_ENV_MAP = {
-    'openrouter': 'OPENROUTER_API_KEY',
-    'groq': 'GROQ_API_KEY',
-    'cerebras': 'CEREBRAS_API_KEY',
-    'google': 'GOOGLE_API_KEY',
-    'zen': 'ZEN_API_KEY',
+    "openrouter": "OPENROUTER_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "cerebras": "CEREBRAS_API_KEY",
+    "google": "GOOGLE_API_KEY",
+    "zen": "ZEN_API_KEY",
 }
 
 
-def _load_auth_from_paths(candidates: list[Path], seen: set[Path], keys: dict[str, str]) -> None:
+def _load_auth_from_paths(
+    candidates: list[Path],
+    seen: set[Path],
+    keys: dict[str, str],
+) -> None:
     for path in candidates:
         resolved = path.resolve()
         if resolved in seen or not resolved.exists():
@@ -89,10 +106,10 @@ def _load_auth_from_paths(candidates: list[Path], seen: set[Path], keys: dict[st
             data = json.loads(resolved.read_text())
             if isinstance(data, dict):
                 for provider in _PROVIDER_ENV_MAP:
-                    val = data.get(provider) or data.get(f'{provider}_api_key')
+                    val = data.get(provider) or data.get(f"{provider}_api_key")
                     if val and provider not in keys:
                         if isinstance(val, dict):
-                            val = val.get('key') or val.get('api_key') or ''
+                            val = val.get("key") or val.get("api_key") or ""
                         if val:
                             keys[provider] = str(val)
         except (json.JSONDecodeError, OSError):
@@ -127,43 +144,47 @@ def load_auth_config(
     return keys
 
 
-_MODELS_DEV_PATH = 'config/models.dev'
+_MODELS_DEV_PATH = "config/models.dev"
 
 _BASE_URLS = {
-    'openrouter': 'https://openrouter.ai/api/v1',
-    'groq': 'https://api.groq.com/openai/v1',
-    'cerebras': 'https://api.cerebras.ai/v1',
-    'google': 'https://generativelanguage.googleapis.com/v1beta/openai',
-    'zen': 'https://opencode.ai/zen/v1',
+    "openrouter": "https://openrouter.ai/api/v1",
+    "groq": "https://api.groq.com/openai/v1",
+    "cerebras": "https://api.cerebras.ai/v1",
+    "google": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "zen": "https://opencode.ai/zen/v1",
 }
 
-_KNOWN_PROVIDERS = frozenset({'openrouter', 'groq', 'cerebras', 'google', 'zen'})
+_KNOWN_PROVIDERS = frozenset({"openrouter", "groq", "cerebras", "google", "zen"})
 
 
 def _resolve_provider(model_id: str) -> str:
-    prov, _, _ = model_id.partition(':')
-    return prov if prov in _KNOWN_PROVIDERS else 'openrouter'
+    prov, _, _ = model_id.partition(":")
+    return prov if prov in _KNOWN_PROVIDERS else "openrouter"
 
 
 def _strip_provider(model_id: str) -> str:
-    prov, sep, rest = model_id.partition(':')
+    prov, sep, rest = model_id.partition(":")
     return rest if prov in _KNOWN_PROVIDERS and sep else model_id
 
 
-def _fetch_provider_limits(provider: str, provider_models: list[str], ctx: ssl.SSLContext) -> dict[str, int]:
+def _fetch_provider_limits(
+    provider: str,
+    provider_models: list[str],
+    ctx: ssl.SSLContext,
+) -> dict[str, int]:
     base = _BASE_URLS.get(provider)
     if not base:
         return {}
     limits: dict[str, int] = {}
     try:
-        req = urllib.request.Request(f'{base}/models')
+        req = urllib.request.Request(f"{base}/models")
         resp = urllib.request.urlopen(req, context=ctx, timeout=15)
         data = json.loads(resp.read().decode())
-        for entry in data.get('data', []):
-            eid = entry.get('id', '')
-            if not eid.endswith(':free'):
+        for entry in data.get("data", []):
+            eid = entry.get("id", "")
+            if not eid.endswith(":free"):
                 continue
-            ctx_win = entry.get('context_length') or entry.get('context_window') or 0
+            ctx_win = entry.get("context_length") or entry.get("context_window") or 0
             if not ctx_win:
                 continue
             bare = _strip_provider(eid)
@@ -175,22 +196,34 @@ def _fetch_provider_limits(provider: str, provider_models: list[str], ctx: ssl.S
     return limits
 
 
-def _write_model_cache(limits: dict[str, int], updated: dict[str, float], models_dev: Path) -> None:
+def _write_model_cache(
+    limits: dict[str, int],
+    updated: dict[str, float],
+    models_dev: Path,
+) -> None:
     cache_data = {
-        m: {'context_window': cw, 'max_output_tokens': cw, 'last_updated': updated.get(m, time.time())}
+        m: {
+            "context_window": cw,
+            "max_output_tokens": cw,
+            "last_updated": updated.get(m, time.time()),
+        }
         for m, cw in limits.items()
     }
     models_dev.write_text(json.dumps(cache_data, indent=2))
 
 
-def _resolve_model_limits(limits: dict[str, int], models: list[str], models_dev: Path) -> dict[str, int]:
+def _resolve_model_limits(
+    limits: dict[str, int],
+    models: list[str],
+    models_dev: Path,
+) -> dict[str, int]:
     fallback = {m: limits[m] for m in models if m and m in limits}
     missing = [m for m in models if m and m not in fallback]
     if missing and models_dev.exists():
         cache_data = json.loads(models_dev.read_text())
         for m in missing:
             if m in cache_data:
-                fallback[m] = cache_data[m]['context_window']
+                fallback[m] = cache_data[m]["context_window"]
     if not fallback:
         fallback = {m: 128_000 for m in models if m}
     return fallback
@@ -209,7 +242,7 @@ def fetch_model_limits(models: list[str], script_dir: Path) -> dict[str, int]:
             if m:
                 per_provider.setdefault(_resolve_provider(m), []).append(m)
     else:
-        for prov in ('openrouter', 'groq', 'cerebras', 'google', 'zen'):
+        for prov in ("openrouter", "groq", "cerebras", "google", "zen"):
             per_provider.setdefault(prov, [])
 
     for provider, provider_models in per_provider.items():
@@ -229,38 +262,50 @@ def fetch_model_limits(models: list[str], script_dir: Path) -> dict[str, int]:
 
 def cache_key(stage: str, model: str, text: str) -> str:
     h = hashlib.sha256(text.encode()).hexdigest()[:12]
-    return f'{stage}:{model}:{h}'
+    return f"{stage}:{model}:{h}"
 
 
 class JsonCache:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self.path.exists():
-            raw = json.loads(self.path.read_text() or '{}')
+            raw = json.loads(self.path.read_text() or "{}")
             self.data = raw if isinstance(raw, dict) else {}
         else:
             self.data = {}
 
-    def get(self, key: str):
+    def get(self, key: str) -> object:
         return self.data.get(key)
 
-    def put(self, key: str, value):
+    def put(self, key: str, value: object) -> None:
         self.data[key] = value
         self.path.write_text(json.dumps(self.data, indent=2))
 
 
 class _SafeUnpickler(pickle.Unpickler):
-    _SAFE_TYPES = frozenset({
-        dict, list, tuple, set, str, int, float, bool, bytes, type(None),
-    })
+    _SAFE_TYPES = frozenset(
+        {
+            dict,
+            list,
+            tuple,
+            set,
+            str,
+            int,
+            float,
+            bool,
+            bytes,
+            type(None),
+        },
+    )
 
     def find_class(self, module: str, name: str) -> type:
-        if module == 'builtins':
+        if module == "builtins":
             for t in self._SAFE_TYPES:
                 if t.__name__ == name:
                     return t
-        raise pickle.UnpicklingError(f'sanitized pickle rejected {module}.{name}')
+        msg = f"sanitized pickle rejected {module}.{name}"
+        raise pickle.UnpicklingError(msg)
 
 
 def save_packs_pickle(packs: list[dict], path: Path) -> None:
@@ -273,36 +318,38 @@ def load_packs_pickle(path: Path) -> list[dict]:
 
 
 class StateDB:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(path)
         self._init_schema()
 
-    def _init_schema(self):
+    def _init_schema(self) -> None:
         cur = self.conn.cursor()
-        cur.execute('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)')
         cur.execute(
-            '''
+            "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+        )
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS tasks (
               task_id TEXT PRIMARY KEY,
               stage TEXT NOT NULL,
               status TEXT NOT NULL,
               payload TEXT NOT NULL
             )
-            '''
+            """,
         )
         cur.execute(
-            '''
+            """
             CREATE TABLE IF NOT EXISTS findings (
               finding_id TEXT PRIMARY KEY,
               status TEXT NOT NULL,
               payload TEXT NOT NULL
             )
-            '''
+            """,
         )
         cur.execute(
-            '''
+            """
             CREATE TABLE IF NOT EXISTS runs (
               run_id TEXT PRIMARY KEY,
               status TEXT NOT NULL DEFAULT 'running',
@@ -310,10 +357,10 @@ class StateDB:
               finished_at REAL,
               repo_path TEXT
             )
-            '''
+            """,
         )
         cur.execute(
-            '''
+            """
             CREATE TABLE IF NOT EXISTS costs (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               run_id TEXT NOT NULL,
@@ -321,32 +368,35 @@ class StateDB:
               amount_usd REAL NOT NULL,
               recorded_at REAL NOT NULL
             )
-            '''
+            """,
         )
         self.conn.commit()
 
-    def put_meta(self, key: str, value: str):
+    def put_meta(self, key: str, value: str) -> None:
         cur = self.conn.cursor()
-        cur.execute('INSERT INTO meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v', (key, value))
+        cur.execute(
+            "INSERT INTO meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+            (key, value),
+        )
         self.conn.commit()
 
     def get_meta(self, key: str) -> str | None:
         cur = self.conn.cursor()
-        row = cur.execute('SELECT v FROM meta WHERE k=?', (key,)).fetchone()
+        row = cur.execute("SELECT v FROM meta WHERE k=?", (key,)).fetchone()
         return row[0] if row else None
 
     def create_run(self, repo_path: str, run_id: str) -> None:
         cur = self.conn.cursor()
         cur.execute(
-            'INSERT OR IGNORE INTO runs(run_id, status, started_at, repo_path) VALUES(?,?,?,?)',
-            (run_id, 'running', time.time(), repo_path),
+            "INSERT OR IGNORE INTO runs(run_id, status, started_at, repo_path) VALUES(?,?,?,?)",
+            (run_id, "running", time.time(), repo_path),
         )
         self.conn.commit()
 
-    def finish_run(self, run_id: str, status: str = 'completed') -> None:
+    def finish_run(self, run_id: str, status: str = "completed") -> None:
         cur = self.conn.cursor()
         cur.execute(
-            'UPDATE runs SET status=?, finished_at=? WHERE run_id=?',
+            "UPDATE runs SET status=?, finished_at=? WHERE run_id=?",
             (status, time.time(), run_id),
         )
         self.conn.commit()
@@ -354,23 +404,23 @@ class StateDB:
     def get_run(self, run_id: str) -> dict | None:
         cur = self.conn.cursor()
         row = cur.execute(
-            'SELECT run_id, status, started_at, finished_at, repo_path FROM runs WHERE run_id=?',
+            "SELECT run_id, status, started_at, finished_at, repo_path FROM runs WHERE run_id=?",
             (run_id,),
         ).fetchone()
         if row is None:
             return None
         return {
-            'run_id': row[0],
-            'status': row[1],
-            'started_at': row[2],
-            'finished_at': row[3],
-            'repo_path': row[4],
+            "run_id": row[0],
+            "status": row[1],
+            "started_at": row[2],
+            "finished_at": row[3],
+            "repo_path": row[4],
         }
 
     def record_cost(self, run_id: str, stage: str, amount_usd: float) -> None:
         cur = self.conn.cursor()
         cur.execute(
-            'INSERT INTO costs(run_id, stage, amount_usd, recorded_at) VALUES(?,?,?,?)',
+            "INSERT INTO costs(run_id, stage, amount_usd, recorded_at) VALUES(?,?,?,?)",
             (run_id, stage, float(amount_usd), time.time()),
         )
         self.conn.commit()
@@ -378,7 +428,7 @@ class StateDB:
     def total_cost(self, run_id: str) -> float:
         cur = self.conn.cursor()
         row = cur.execute(
-            'SELECT COALESCE(SUM(amount_usd), 0.0) FROM costs WHERE run_id=?',
+            "SELECT COALESCE(SUM(amount_usd), 0.0) FROM costs WHERE run_id=?",
             (run_id,),
         ).fetchone()
         return float(row[0]) if row else 0.0
@@ -387,7 +437,11 @@ class StateDB:
         self.conn.close()
 
 
-def _smooth_counter(counter: Counter, vocab: set[str], alpha: float = 1.0) -> dict[str, float]:
+def _smooth_counter(
+    counter: Counter,
+    vocab: set[str],
+    alpha: float = 1.0,
+) -> dict[str, float]:
     total = sum(counter.values()) + alpha * len(vocab)
     return {t: (counter.get(t, 0) + alpha) / total for t in vocab}
 
@@ -412,13 +466,15 @@ def js_divergence(p: dict[str, float], q: dict[str, float]) -> float:
 def class_distribution(findings: list[dict]) -> Counter:
     counts: Counter = Counter()
     for f in findings:
-        cls = str(f.get('class') or f.get('attack_class') or f.get('cwe_id') or 'unknown').lower()
+        cls = str(
+            f.get("class") or f.get("attack_class") or f.get("cwe_id") or "unknown",
+        ).lower()
         counts[cls] += 1
     return counts
 
 
 class CrossRunRegression:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -437,16 +493,21 @@ class CrossRunRegression:
         return records
 
     def _append_record(self, record: dict) -> None:
-        with open(self.path, 'a') as f:
-            f.write(json.dumps(record) + '\n')
+        with open(self.path, "a") as f:
+            f.write(json.dumps(record) + "\n")
 
-    def record_run(self, timestamp: str, findings: list[dict], metadata: dict | None = None) -> dict:
+    def record_run(
+        self,
+        timestamp: str,
+        findings: list[dict],
+        metadata: dict | None = None,
+    ) -> dict:
         dist = class_distribution(findings)
         record = {
-            'timestamp': timestamp,
-            'total_findings': len(findings),
-            'class_counts': dict(dist),
-            'metadata': metadata or {},
+            "timestamp": timestamp,
+            "total_findings": len(findings),
+            "class_counts": dict(dist),
+            "metadata": metadata or {},
         }
         self._append_record(record)
         return record
@@ -458,19 +519,19 @@ class CrossRunRegression:
 
         current = history[-1]
         current_dist = _smooth_counter(
-            Counter(current.get('class_counts', {})),
-            set(current.get('class_counts', {}).keys()),
+            Counter(current.get("class_counts", {})),
+            set(current.get("class_counts", {}).keys()),
             alpha=1.0,
         )
 
         signals: list[dict] = []
-        comparators = history[-min(window, len(history) - 1) - 1:-1]
+        comparators = history[-min(window, len(history) - 1) - 1 : -1]
 
         for prev in comparators:
             prev_dist = _smooth_counter(
-                Counter(prev.get('class_counts', {})),
-                set(current.get('class_counts', {}).keys())
-                | set(prev.get('class_counts', {}).keys()),
+                Counter(prev.get("class_counts", {})),
+                set(current.get("class_counts", {}).keys())
+                | set(prev.get("class_counts", {}).keys()),
                 alpha=1.0,
             )
 
@@ -483,29 +544,41 @@ class CrossRunRegression:
                 prev_share = prev_dist.get(cls, 0.0)
                 diff = cur_share - prev_share
                 if abs(diff) > 0.05:
-                    changed.append({
-                        'class': cls,
-                        'shift_pp': round(diff * 100, 1),
-                        'current_share_pct': round(cur_share * 100, 1),
-                        'prev_share_pct': round(prev_share * 100, 1),
-                    })
+                    changed.append(
+                        {
+                            "class": cls,
+                            "shift_pp": round(diff * 100, 1),
+                            "current_share_pct": round(cur_share * 100, 1),
+                            "prev_share_pct": round(prev_share * 100, 1),
+                        },
+                    )
 
             if js > threshold:
-                signals.append({
-                    'js_divergence': round(js, 4),
-                    'vs_timestamp': prev.get('timestamp', 'unknown'),
-                    'vs_total_findings': prev.get('total_findings', 0),
-                    'current_total': current.get('total_findings', 0),
-                    'changed_classes': changed,
-                    'drifted': True,
-                })
+                signals.append(
+                    {
+                        "js_divergence": round(js, 4),
+                        "vs_timestamp": prev.get("timestamp", "unknown"),
+                        "vs_total_findings": prev.get("total_findings", 0),
+                        "current_total": current.get("total_findings", 0),
+                        "changed_classes": changed,
+                        "drifted": True,
+                    },
+                )
 
         return signals
 
 
-import re as _re
-
-_RETRYABLE_ERRORS = ('429', '502', '503', '504', 'rate', 'too many', 'try again', 'temporary', 'upstream')
+_RETRYABLE_ERRORS = (
+    "429",
+    "502",
+    "503",
+    "504",
+    "rate",
+    "too many",
+    "try again",
+    "temporary",
+    "upstream",
+)
 """HTTP status / error substrings that trigger automatic retry with backoff.
 
 Includes 502/503/504 (provider gateway overload — transient, not model failure)
@@ -515,68 +588,73 @@ healthy models behind a temporarily overloaded gateway.
 """
 
 _MODEL_BY_DOMAIN = {
-    'mem-safety':     'openrouter:nvidia/nemotron-nano-12b-v2-vl:free',
-    'data-flow':      'openrouter:deepseek/deepseek-v4-flash:free',
-    'crypto':         'openrouter:deepseek/deepseek-v4-flash:free',
-    'format-str':     'openrouter:deepseek/deepseek-v4-flash:free',
-    'ipc':            'openrouter:deepseek/deepseek-v4-flash:free',
-    'auth':           'openrouter:deepseek/deepseek-v4-flash:free',
-    'injection':      'openrouter:deepseek/deepseek-v4-flash:free',
-    'path-traversal': 'openrouter:qwen/qwen-2.5-coder-32b-instruct:free',
-    'concurrency':    'openrouter:google/gemma-4-26b-a4b-it:free',
-    'resource':       'openrouter:qwen/qwen-2.5-coder-32b-instruct:free',
-    'secrets':        'openrouter:deepseek/deepseek-v4-flash:free',
+    "mem-safety": "openrouter:nvidia/nemotron-nano-12b-v2-vl:free",
+    "data-flow": "openrouter:deepseek/deepseek-v4-flash:free",
+    "crypto": "openrouter:deepseek/deepseek-v4-flash:free",
+    "format-str": "openrouter:deepseek/deepseek-v4-flash:free",
+    "ipc": "openrouter:deepseek/deepseek-v4-flash:free",
+    "auth": "openrouter:deepseek/deepseek-v4-flash:free",
+    "injection": "openrouter:deepseek/deepseek-v4-flash:free",
+    "path-traversal": "openrouter:qwen/qwen-2.5-coder-32b-instruct:free",
+    "concurrency": "openrouter:google/gemma-4-26b-a4b-it:free",
+    "resource": "openrouter:qwen/qwen-2.5-coder-32b-instruct:free",
+    "secrets": "openrouter:deepseek/deepseek-v4-flash:free",
 }
 
 HUNT_SYSTEM_PROMPT = (
-    'You are a single-attack-class vulnerability hunter. You have one task, '
-    'one attack class, one scope. You go deep, not wide. Other hunters cover '
-    'other attack classes — you do not stray. Determine whether the given '
-    'attack class is present in the assigned scope. Emit zero or more findings, '
-    'each anchored to specific code lines with verbatim evidence. '
+    "You are a single-attack-class vulnerability hunter. You have one task, "
+    "one attack class, one scope. You go deep, not wide. Other hunters cover "
+    "other attack classes — you do not stray. Determine whether the given "
+    "attack class is present in the assigned scope. Emit zero or more findings, "
+    "each anchored to specific code lines with verbatim evidence. "
     'If you find no vulnerabilities, emit {"done": true}.'
 )
 
 VALIDATE_SYSTEM_PROMPT = (
-    'You are an adversarial code reviewer. Your job is to DISPROVE findings, '
+    "You are an adversarial code reviewer. Your job is to DISPROVE findings, "
     'not confirm them. Output ONLY a JSON object with "status" '
     '("confirmed" / "rejected" / "needs-more-info") and "reason".'
-)
-
-TRACE_SYSTEM_PROMPT = (
-    'You are a trace analyst. Determine whether attacker-controlled input can '
-    'reach the vulnerable sink from the consumer entry points. Output ONLY a '
-    'JSON object with "reachable" (true/false), "call_path" (list of function '
-    'names), and "reasoning".'
 )
 
 
 def _get_auth_key(provider: str, auth: dict | None = None) -> str | None:
     if auth:
-        val = auth.get(provider) or auth.get(f'{provider}_api_key')
+        val = auth.get(provider) or auth.get(f"{provider}_api_key")
         if val:
-            return val.get('key') if isinstance(val, dict) else str(val)
+            return val.get("key") if isinstance(val, dict) else str(val)
     env_var = _PROVIDER_ENV_MAP.get(provider)
     if env_var:
         return os.environ.get(env_var)
     return None
 
 
-def _call_llm_once(req: urllib.request.Request, ctx: ssl.SSLContext, timeout: int, model_name: str, provider: str) -> str:
-    log = logging.getLogger('vuln-harness')
+def _call_llm_once(
+    req: urllib.request.Request,
+    ctx: ssl.SSLContext,
+    timeout: int,
+    model_name: str,
+    provider: str,
+) -> str:
+    log = logging.getLogger("vuln-harness")
     resp = urllib.request.urlopen(req, context=ctx, timeout=timeout)
     result = json.loads(resp.read().decode())
-    choices = result.get('choices')
+    choices = result.get("choices")
     if not choices:
-        raise ValueError(f'no_choices: {json.dumps(result)[:200]}')
-    msg = choices[0].get('message', {})
-    content = (msg.get('content') or '')
-    reasoning = (msg.get('reasoning') or '')
+        msg = f"no_choices: {json.dumps(result)[:200]}"
+        raise ValueError(msg)
+    msg = choices[0].get("message", {})
+    content = msg.get("content") or ""
+    reasoning = msg.get("reasoning") or ""
     if not content.strip() and reasoning:
-        log.debug('reasoning model: using message.reasoning as content')
+        log.debug("reasoning model: using message.reasoning as content")
         content = reasoning
-    completion_tokens = result.get('usage', {}).get('completion_tokens', 0)
-    log.info('Got %d completion tokens from %s %s', completion_tokens, provider, model_name)
+    completion_tokens = result.get("usage", {}).get("completion_tokens", 0)
+    log.info(
+        "Got %d completion tokens from %s %s",
+        completion_tokens,
+        provider,
+        model_name,
+    )
     return content
 
 
@@ -590,7 +668,7 @@ def _call_llm_with_retry(
     cache: JsonCache | None,
     ck: str | None,
 ) -> str:
-    log = logging.getLogger('vuln-harness')
+    log = logging.getLogger("vuln-harness")
     last_exception: Exception | None = None
     for attempt in range(3):
         try:
@@ -602,27 +680,48 @@ def _call_llm_with_retry(
             code = e.code
             estr = str(code)
             if any(x in estr for x in _RETRYABLE_ERRORS):
-                log.debug('retry attempt %d/3 for %s due to HTTP %s (backoff %ds)', attempt + 1, model_name, estr, 5 * (attempt + 1))
+                log.debug(
+                    "retry attempt %d/3 for %s due to HTTP %s (backoff %ds)",
+                    attempt + 1,
+                    model_name,
+                    estr,
+                    5 * (attempt + 1),
+                )
                 last_exception = e
                 time.sleep(5 * (attempt + 1))
                 continue
-            raise RuntimeError(f'HTTP {code} from {base_url}/chat/completions (model={model_name})') from e
+            msg = f"HTTP {code} from {base_url}/chat/completions (model={model_name})"
+            raise RuntimeError(
+                msg,
+            ) from e
         except (urllib.error.URLError, OSError, json.JSONDecodeError, ValueError) as e:
             estr = str(e)
             if any(x in estr for x in _RETRYABLE_ERRORS):
-                log.debug('retry attempt %d/3 for %s due to %s (backoff %ds)', attempt + 1, model_name, estr[:60], 5 * (attempt + 1))
+                log.debug(
+                    "retry attempt %d/3 for %s due to %s (backoff %ds)",
+                    attempt + 1,
+                    model_name,
+                    estr[:60],
+                    5 * (attempt + 1),
+                )
                 last_exception = e
                 time.sleep(5 * (attempt + 1))
                 continue
-            raise RuntimeError(f'{type(e).__name__} from {base_url}/chat/completions (model={model_name}): {e}') from e
-    raise RuntimeError(f'llm call exhausted after 3 retries; last error: {last_exception}')
+            msg = f"{type(e).__name__} from {base_url}/chat/completions (model={model_name}): {e}"
+            raise RuntimeError(
+                msg,
+            ) from e
+    msg = f"llm call exhausted after 3 retries; last error: {last_exception}"
+    raise RuntimeError(
+        msg,
+    )
 
 
 def call_llm(
     model_id: str,
     prompt: str,
     *,
-    system: str = '',
+    system: str = "",
     max_tokens: int = 8192,
     timeout: int = 120,
     auth: dict[str, str] | None = None,
@@ -637,50 +736,61 @@ def call_llm(
        output there instead of ``message.content``).
     5. Cache successful responses for instant replay.
     """
-    log = logging.getLogger('vuln-harness')
+    log = logging.getLogger("vuln-harness")
 
-    ck = cache_key('llm', model_id, prompt + system) if cache else None
+    ck = cache_key("llm", model_id, prompt + system) if cache else None
     if ck and cache:
         cached = cache.get(ck)
         if cached is not None:
-            log.debug('cache hit for %s', ck)
+            log.debug("cache hit for %s", ck)
             return cached if isinstance(cached, str) else json.dumps(cached)
-        log.debug('cache miss for %s', ck)
+        log.debug("cache miss for %s", ck)
 
     provider = _resolve_provider(model_id)
     model_name = _strip_provider(model_id)
-    log.debug('call_llm provider=%s model=%s', provider, model_name)
+    log.debug("call_llm provider=%s model=%s", provider, model_name)
 
     api_key = _get_auth_key(provider, auth)
     if not api_key:
-        raise ValueError(f'no auth key for provider: {provider} (model: {model_id})')
+        msg = f"no auth key for provider: {provider} (model: {model_id})"
+        raise ValueError(msg)
 
     base_url = _BASE_URLS.get(provider)
     if not base_url:
-        raise ValueError(f'unknown provider: {provider}')
+        msg = f"unknown provider: {provider}"
+        raise ValueError(msg)
 
     messages = []
     if system:
-        messages.append({'role': 'system', 'content': system})
-    messages.append({'role': 'user', 'content': prompt})
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
 
     payload = {
-        'model': model_name,
-        'max_tokens': max_tokens,
-        'messages': messages,
+        "model": model_name,
+        "max_tokens": max_tokens,
+        "messages": messages,
     }
 
     ctx = ssl.create_default_context()
     req = urllib.request.Request(
-        url=f'{base_url}/chat/completions',
+        url=f"{base_url}/chat/completions",
         data=json.dumps(payload).encode(),
         headers={
-            'Authorization': f'Bearer {api_key}',
-            'Content-Type': 'application/json',
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
         },
     )
 
-    return _call_llm_with_retry(req, ctx, timeout, model_name, provider, base_url, cache, ck)
+    return _call_llm_with_retry(
+        req,
+        ctx,
+        timeout,
+        model_name,
+        provider,
+        base_url,
+        cache,
+        ck,
+    )
 
 
 class ModelPool:
@@ -692,27 +802,43 @@ class ModelPool:
     request without callers managing model chains.
     """
 
-    def __init__(self, models: list[str], limits: dict[str, int]):
+    def __init__(self, models: list[str], limits: dict[str, int]) -> None:
         self._models = sorted(models, key=lambda m: -limits.get(m, 0))
         self._dead: set[str] = set()
         self._lock = threading.Lock()
-        logging.getLogger('vuln-harness').debug('ModelPool created with %d models: %s', len(self._models), self._models)
+        logging.getLogger("vuln-harness").debug(
+            "ModelPool created with %d models: %s",
+            len(self._models),
+            self._models,
+        )
 
     def pick(self) -> str | None:
         """Return the best alive model, or None if the pool is empty."""
         with self._lock:
             for m in self._models:
                 if m not in self._dead:
-                    logging.getLogger('vuln-harness').debug('pool pick -> %s (dead=%d)', m, len(self._dead))
+                    logging.getLogger("vuln-harness").debug(
+                        "pool pick -> %s (dead=%d)",
+                        m,
+                        len(self._dead),
+                    )
                     return m
-            logging.getLogger('vuln-harness').debug('pool pick -> None (all %d models dead)', len(self._models))
+            logging.getLogger("vuln-harness").debug(
+                "pool pick -> None (all %d models dead)",
+                len(self._models),
+            )
             return None
 
     def mark_dead(self, model: str) -> None:
         """Remove *model* from the pool permanently."""
         with self._lock:
             self._dead.add(model)
-            logging.getLogger('vuln-harness').debug('pool mark_dead %s (dead=%d/%d)', model, len(self._dead), len(self._models))
+            logging.getLogger("vuln-harness").debug(
+                "pool mark_dead %s (dead=%d/%d)",
+                model,
+                len(self._dead),
+                len(self._models),
+            )
 
     @property
     def alive(self) -> list[str]:
@@ -729,7 +855,7 @@ def call_llm_from_pool(
     pool: ModelPool,
     prompt: str,
     *,
-    system: str = '',
+    system: str = "",
     max_tokens: int = 8192,
     timeout: int = 120,
     auth: dict[str, str] | None = None,
@@ -742,31 +868,40 @@ def call_llm_from_pool(
     and retries with the next best model.  Continues until a model succeeds
     or the pool is exhausted.
     """
-    log = logging.getLogger('vuln-harness')
+    log = logging.getLogger("vuln-harness")
     last_exception: Exception | None = None
     while not pool.is_empty:
         model = pool.pick()
         if model is None:
             break
-        log.debug('[pool] trying model=%s (alive=%d)', model, len(pool.alive))
+        log.debug("[pool] trying model=%s (alive=%d)", model, len(pool.alive))
         try:
             result = call_llm(
-                model, prompt,
-                system=system, max_tokens=max_tokens,
-                timeout=timeout, auth=auth, cache=cache,
+                model,
+                prompt,
+                system=system,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                auth=auth,
+                cache=cache,
             )
-            log.debug('[pool] model=%s succeeded', model)
+            log.debug("[pool] model=%s succeeded", model)
             return result
         except Exception as e:
             estr = str(e)
             if any(x in estr for x in _RETRYABLE_ERRORS):
-                log.warning('[pool] model %s failed: %s — marking dead, retrying next', model, estr[:100])
+                log.warning(
+                    "[pool] model %s failed: %s — marking dead, retrying next",
+                    model,
+                    estr[:100],
+                )
                 pool.mark_dead(model)
                 last_exception = e
                 continue
             raise
-    log.warning('[pool] exhausted — no more models, last_error: %s', last_exception)
-    raise RuntimeError(f'model pool exhausted; last error: {last_exception}')
+    log.warning("[pool] exhausted — no more models, last_error: %s", last_exception)
+    msg = f"model pool exhausted; last error: {last_exception}"
+    raise RuntimeError(msg)
 
 
 def health_check_models(
@@ -781,16 +916,22 @@ def health_check_models(
     alive: list[str] = []
     dead: list[tuple[str, str]] = []
 
-    log = logging.getLogger('vuln-harness')
+    log = logging.getLogger("vuln-harness")
 
     def probe(mid: str) -> tuple[str, bool, str]:
         try:
-            log.debug('health probe %s...', mid)
-            call_llm(mid, 'Reply with one word: ok', max_tokens=8, auth=auth, cache=cache)
-            log.debug('health probe %s -> alive', mid)
-            return mid, True, ''
+            log.debug("health probe %s...", mid)
+            call_llm(
+                mid,
+                "Reply with one word: ok",
+                max_tokens=8,
+                auth=auth,
+                cache=cache,
+            )
+            log.debug("health probe %s -> alive", mid)
+            return mid, True, ""
         except Exception as e:
-            log.debug('health probe %s -> dead: %s', mid, str(e)[:80])
+            log.debug("health probe %s -> dead: %s", mid, str(e)[:80])
             return mid, False, str(e)[:120]
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -801,60 +942,28 @@ def health_check_models(
                 alive.append(mid)
             else:
                 dead.append((mid, err))
-    log.debug('health check done: %d alive, %d dead', len(alive), len(dead))
+    log.debug("health check done: %d alive, %d dead", len(alive), len(dead))
 
     alive.sort(key=lambda m: models.index(m) if m in models else 999)
     return alive, dead
 
 
 def _rephrase_gap_prompt(original_prompt: str, model_id: str) -> str:
-    logger = logging.getLogger('vuln-harness')
-    logger.debug('_rephrase_gap_prompt model=%s original_chars=%d', model_id, len(original_prompt))
-    return (
-        original_prompt.rstrip('\n')
-        + '\n\n--\n'
-        + f'Note: The previous model ({model_id}) produced no findings for this '
-        + 'scope. Double-check each function carefully. Verify you are not '
-        + 'missing anything — re-examine every function in the provided context. '
-        + 'If you genuinely find no vulnerabilities, explain specifically which '
-        + 'functions you checked and why each is safe.'
+    logger = logging.getLogger("vuln-harness")
+    logger.debug(
+        "_rephrase_gap_prompt model=%s original_chars=%d",
+        model_id,
+        len(original_prompt),
     )
-
-
-def _repair_truncated_json(text: str) -> str:
-    """Repair JSON truncated mid-brace by reasoning models.
-
-    Reasoning models often exceed ``max_tokens``, cutting output off mid-brace.
-    This repair balances open/close braces — succeeds on ~70% of truncated
-    validate responses. The remaining 30% need a full retry (next model in chain).
-    """
-    text = text.strip()
-    if not text.endswith('}'):
-        text += '}'
-    depth = 0
-    for ch in text:
-        if ch == '{':
-            depth += 1
-        elif ch == '}':
-            depth -= 1
-    while depth > 0:
-        text += '}'
-        depth -= 1
-    while depth < 0 and text.rfind('}') > text.rfind('{'):
-        text = text.rstrip('}')
-        depth += 1
-    return text
-
-
-def parse_llm_json(text: str) -> dict:
-    parsed, repaired = repair_json_output(text)
-    if parsed is not None:
-        return parsed if isinstance(parsed, dict) else {}
-    repaired = _repair_truncated_json(text)
-    try:
-        return json.loads(repaired)
-    except json.JSONDecodeError:
-        return {}
+    return (
+        original_prompt.rstrip("\n")
+        + "\n\n--\n"
+        + f"Note: The previous model ({model_id}) produced no findings for this "
+        + "scope. Double-check each function carefully. Verify you are not "
+        + "missing anything — re-examine every function in the provided context. "
+        + "If you genuinely find no vulnerabilities, explain specifically which "
+        + "functions you checked and why each is safe."
+    )
 
 
 def repair_json_output(raw: str) -> tuple[dict | list | None, bool]:
@@ -865,14 +974,14 @@ def repair_json_output(raw: str) -> tuple[dict | list | None, bool]:
     except json.JSONDecodeError:
         pass
 
-    fence_match = _re.search(r'```(?:json)?\s*\n?(.*?)```', raw, _re.DOTALL)
+    fence_match = _re.search(r"```(?:json)?\s*\n?(.*?)```", raw, _re.DOTALL)
     if fence_match:
         try:
             return json.loads(fence_match.group(1).strip()), True
         except json.JSONDecodeError:
             pass
 
-    for opener, closer in [('{', '}'), ('[', ']')]:
+    for opener, closer in [("{", "}"), ("[", "]")]:
         idx = raw.find(opener)
         if idx == -1:
             continue
@@ -884,7 +993,7 @@ def repair_json_output(raw: str) -> tuple[dict | list | None, bool]:
                 depth -= 1
             if depth == 0:
                 try:
-                    return json.loads(raw[idx:i + 1]), True
+                    return json.loads(raw[idx : i + 1]), True
                 except json.JSONDecodeError:
                     break
 

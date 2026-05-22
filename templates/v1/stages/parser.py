@@ -25,15 +25,15 @@ from __future__ import annotations
 import json
 
 
-def _balanced_json_prefix(line: str):
+def _balanced_json_prefix(line: str) -> str | None:
     depth = 0
     start = -1
     for i, c in enumerate(line):
-        if c == '{':
+        if c == "{":
             if depth == 0:
                 start = i
             depth += 1
-        elif c == '}':
+        elif c == "}":
             depth -= 1
             if depth == 0 and start >= 0:
                 candidate = line[start : i + 1]
@@ -49,7 +49,7 @@ def _extract_objects(text: str) -> list[dict]:
     decoder = json.JSONDecoder()
     i = 0
     while i < len(text):
-        if text[i] not in '{[':
+        if text[i] not in "{[":
             i += 1
             continue
         try:
@@ -64,7 +64,12 @@ def _extract_objects(text: str) -> list[dict]:
     return objs
 
 
-def _parse_json_body(text: str, domain: str, findings: list[dict], gaps: list[dict]) -> bool | None:
+def _parse_json_body(
+    text: str,
+    domain: str,
+    findings: list[dict],
+    gaps: list[dict],
+) -> bool | None:
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
@@ -78,9 +83,9 @@ def _parse_json_body(text: str, domain: str, findings: list[dict], gaps: list[di
         if not isinstance(item, dict):
             continue
         _classify_item(item, findings, gaps)
-        saw_done = saw_done or item.get('done') is True
+        saw_done = saw_done or item.get("done") is True
     if saw_done and not findings and not gaps:
-        gaps.append(_sentinel_gap(domain, 'sentinel-only JSON body'))
+        gaps.append(_sentinel_gap(domain, "sentinel-only JSON body"))
     return saw_done
 
 
@@ -97,11 +102,11 @@ def _parse_line_by_line(text: str, findings: list[dict], gaps: list[dict]) -> bo
         if not isinstance(obj, dict):
             continue
         _classify_item(obj, findings, gaps)
-        saw_done = saw_done or obj.get('done') is True
+        saw_done = saw_done or obj.get("done") is True
     return saw_done
 
 
-def parse_findings(text: str, domain: str = '') -> tuple[list[dict], list[dict]]:
+def parse_findings(text: str, domain: str = "") -> tuple[list[dict], list[dict]]:
     findings: list[dict] = []
     gaps: list[dict] = []
 
@@ -115,33 +120,33 @@ def parse_findings(text: str, domain: str = '') -> tuple[list[dict], list[dict]]
     saw_done = False
     for obj in _extract_objects(text):
         _classify_item(obj, findings, gaps)
-        saw_done = saw_done or obj.get('done') is True
+        saw_done = saw_done or obj.get("done") is True
 
     if not findings and not gaps and not saw_done:
         saw_done = _parse_line_by_line(text, findings, gaps)
 
     if saw_done and not findings and not gaps:
-        gaps.append(_sentinel_gap(domain, 'sentinel-only output'))
+        gaps.append(_sentinel_gap(domain, "sentinel-only output"))
 
     return findings, gaps
 
 
 def _normalize_call_path(item: dict) -> None:
-    cp = item.get('call_path')
+    cp = item.get("call_path")
     if isinstance(cp, str):
-        item['call_path'] = [s.strip() for s in cp.split('->')] if '->' in cp else [cp]
+        item["call_path"] = [s.strip() for s in cp.split("->")] if "->" in cp else [cp]
 
 
 def _classify_item(item: dict, findings: list[dict], gaps: list[dict]) -> None:
     _normalize_call_path(item)
-    item.setdefault('status', 'raw')
-    item.setdefault('poc_confirmed', False)
-    if item.get('done') is True:
+    item.setdefault("status", "raw")
+    item.setdefault("poc_confirmed", False)
+    if item.get("done") is True:
         return
-    if 'coverage_gap' in item:
+    if "coverage_gap" in item:
         gaps.append(item)
         return
-    if 'snippet_id' in item:
+    if "snippet_id" in item:
         findings.append(item)
         return
     for v in item.values():
@@ -155,6 +160,6 @@ def _classify_item(item: dict, findings: list[dict], gaps: list[dict]) -> None:
 
 def _sentinel_gap(domain: str, reason: str) -> dict:
     return {
-        'coverage_gap': domain or 'unknown-domain',
-        'reason': reason,
+        "coverage_gap": domain or "unknown-domain",
+        "reason": reason,
     }

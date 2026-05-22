@@ -1,0 +1,66 @@
+repos:
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.9.0
+  hooks:
+  - id: ruff-format
+
+- repo: https://github.com/jendrikseipp/vulture
+  rev: v2.16
+  hooks:
+  - id: vulture
+    args: ["--min-confidence", "90", "templates/v1/stages", "templates/v1/run.py", "--exclude", "templates/v1/.vulture_whitelist.py"]
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v5.0.0
+  hooks:
+  - id: trailing-whitespace
+  - id: end-of-file-fixer
+  - id: check-yaml
+  - id: check-added-large-files
+- repo: local
+  hooks:
+  - id: prospector
+    name: prospector (ruff check + mypy)
+    entry: bash -c 'cd templates/v1 && prospector --with-tool ruff --with-tool mypy .'
+    language: system
+    pass_filenames: false
+    stages:
+      - pre-commit
+      - manual
+  - id: semgrep
+    name: semgrep
+    entry: bash -c 'cd templates/v1 && semgrep --config=auto --severity=ERROR stages/ run.py'
+    language: system
+    pass_filenames: false
+    stages:
+      - pre-commit
+      - manual
+  - id: lizard
+    name: lizard - Code Complexity Check
+    entry: bash -c 'cd templates/v1 && lizard stages/ run.py --languages python --CCN 15 -w'
+    language: system
+    pass_filenames: false
+    stages:
+      - pre-commit
+      - manual
+  - id: pytest
+    name: pytest
+    language: system
+    entry: bash -c 'cd templates/v1 && python -m pytest tests/ -q'
+    pass_filenames: false
+    stages:
+      - pre-commit
+      - manual
+  - id: impactguard-check
+    name: ImpactGuard - Full Pipeline Check
+    entry: impactguard-check-staged
+    language: system
+    files: \.py$
+    stages:
+      - pre-commit
+  - id: impactguard-post-commit
+    name: ImpactGuard - Post-Commit Analysis
+    entry: impactguard-post-commit-hook
+    language: system
+    always_run: true
+    stages:
+      - post-commit

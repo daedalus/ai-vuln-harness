@@ -8,7 +8,10 @@ relying on the API response cache.
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class SuppressionRegistry:
@@ -26,7 +29,7 @@ class SuppressionRegistry:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self.path.exists():
             try:
-                raw = json.loads(self.path.read_text() or '{}')
+                raw = json.loads(self.path.read_text() or "{}")
                 self._store: dict[str, dict] = raw if isinstance(raw, dict) else {}
             except (json.JSONDecodeError, OSError):
                 self._store = {}
@@ -35,19 +38,21 @@ class SuppressionRegistry:
 
     @staticmethod
     def _key(finding: dict) -> str:
-        return json.dumps([str(finding.get('snippet_id', '')), str(finding.get('class', ''))])
+        return json.dumps(
+            [str(finding.get("snippet_id", "")), str(finding.get("class", ""))],
+        )
 
-    def add(self, finding: dict, reason: str = '') -> None:
+    def add(self, finding: dict, reason: str = "") -> None:
         """Mark *finding* as a known false positive."""
         key = self._key(finding)
         self._store[key] = {
-            'snippet_id': finding.get('snippet_id', ''),
-            'class': finding.get('class', ''),
-            'reason': reason or finding.get('validate_reason', ''),
+            "snippet_id": finding.get("snippet_id", ""),
+            "class": finding.get("class", ""),
+            "reason": reason or finding.get("validate_reason", ""),
         }
         self._flush()
 
-    def suppress_many(self, findings: list[dict], reason: str = '') -> None:
+    def suppress_many(self, findings: list[dict], reason: str = "") -> None:
         """Mark all findings in the list as known false positives."""
         for f in findings:
             self.add(f, reason=reason)
@@ -65,7 +70,7 @@ class SuppressionRegistry:
         suppressed: list[dict] = []
         for f in findings:
             if self.is_suppressed(f):
-                suppressed.append({**f, 'suppressed_by_registry': True})
+                suppressed.append({**f, "suppressed_by_registry": True})
             else:
                 kept.append(f)
         return kept, suppressed

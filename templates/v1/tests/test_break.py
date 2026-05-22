@@ -5,9 +5,6 @@ Each test demonstrates a specific vulnerability, crash, or logic error.
 """
 
 import json
-import math
-import os
-import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,22 +12,31 @@ from unittest.mock import MagicMock, patch
 
 # ── Module imports under test ────────────────────────────────────────────────
 from stages.runtime import (
-    JsonCache, StateDB, load_auth_config, CrossRunRegression, split_model_pools,
+    JsonCache,
+    load_auth_config,
+    CrossRunRegression,
+    split_model_pools,
 )
 from stages.contracts import validate_subset_schema, standardize_finding
 from stages.suppressions import SuppressionRegistry
-from stages.parser import parse_findings, _extract_objects
+from stages.parser import parse_findings
 from stages.voting import merge_hunter_outputs
 from stages.shield import (
-    build_call_graph, verify_call_path, deduplicate_semantic,
-    detect_hallucination, detect_hallucination_kl, cosine_similarity,
-    _normalise, _token_freqs, kl_divergence,
+    build_call_graph,
+    verify_call_path,
+    deduplicate_semantic,
+    detect_hallucination,
+    detect_hallucination_kl,
+    cosine_similarity,
+    _normalise,
+    _token_freqs,
+    kl_divergence,
 )
 from stages.validate import is_api_by_design, _contains_vuln_signal
 from stages.report import bucket_finding, _downgrade_severity, deduplicate
 from stages.coordinator import build_context_packs
 from stages.recon import _scan_git_security_patches, _find_sibling_files
-from stages.ingestor import tag_snippet, should_exclude_path, detect_external_input
+from stages.ingestor import tag_snippet
 
 
 # ===================================================================
@@ -39,11 +45,13 @@ from stages.ingestor import tag_snippet, should_exclude_path, detect_external_in
 class JsonCacheArrayCrashFixed(unittest.TestCase):
     def test_cache_file_with_array_returns_none(self):
         d = tempfile.mkdtemp()
-        path = Path(d) / 'cache.json'
-        path.write_text('[]')
+        path = Path(d) / "cache.json"
+        path.write_text("[]")
         cache = JsonCache(path)
-        self.assertIsNone(cache.get('anything'),
-                          'FIXED: array cache file returns None instead of crashing')
+        self.assertIsNone(
+            cache.get("anything"),
+            "FIXED: array cache file returns None instead of crashing",
+        )
 
 
 # ===================================================================
@@ -51,40 +59,60 @@ class JsonCacheArrayCrashFixed(unittest.TestCase):
 # ===================================================================
 class IsApiByDesignFixedFalsePositives(unittest.TestCase):
     def test_write_secret_no_longer_api_by_design(self):
-        finding = {'class': 'overflow', 'desc': 'buffer overflow in write_secret'}
-        snippet = {'name': 'write_secret', 'content': 'int write_secret() { ... }'}
-        self.assertFalse(is_api_by_design(finding, snippet),
-                         'FIXED: write_secret is not a standard API name')
+        finding = {"class": "overflow", "desc": "buffer overflow in write_secret"}
+        snippet = {"name": "write_secret", "content": "int write_secret() { ... }"}
+        self.assertFalse(
+            is_api_by_design(finding, snippet),
+            "FIXED: write_secret is not a standard API name",
+        )
 
     def test_execute_payload_no_longer_api_by_design(self):
-        finding = {'class': 'overflow', 'desc': 'overflow in execute_payload'}
-        snippet = {'name': 'execute_payload', 'content': 'void execute_payload() { ... }'}
-        self.assertFalse(is_api_by_design(finding, snippet),
-                         'FIXED: execute_payload is not a standard API name')
+        finding = {"class": "overflow", "desc": "overflow in execute_payload"}
+        snippet = {
+            "name": "execute_payload",
+            "content": "void execute_payload() { ... }",
+        }
+        self.assertFalse(
+            is_api_by_design(finding, snippet),
+            "FIXED: execute_payload is not a standard API name",
+        )
 
     def test_read_etc_passwd_no_longer_api_by_design(self):
-        finding = {'class': 'overflow', 'desc': 'overflow in read_etc_passwd'}
-        snippet = {'name': 'read_etc_passwd', 'content': 'void read_etc_passwd() { ... }'}
-        self.assertFalse(is_api_by_design(finding, snippet),
-                         'FIXED: read_etc_passwd is not a standard API name')
+        finding = {"class": "overflow", "desc": "overflow in read_etc_passwd"}
+        snippet = {
+            "name": "read_etc_passwd",
+            "content": "void read_etc_passwd() { ... }",
+        }
+        self.assertFalse(
+            is_api_by_design(finding, snippet),
+            "FIXED: read_etc_passwd is not a standard API name",
+        )
 
     def test_read_config_no_longer_api(self):
-        finding = {'class': 'path-traversal', 'desc': 'read config file'}
-        snippet = {'name': 'read_config', 'content': 'int read_config() { ... }'}
-        self.assertFalse(is_api_by_design(finding, snippet),
-                         'FIXED: read_config is not a standard API name')
+        finding = {"class": "path-traversal", "desc": "read config file"}
+        snippet = {"name": "read_config", "content": "int read_config() { ... }"}
+        self.assertFalse(
+            is_api_by_design(finding, snippet),
+            "FIXED: read_config is not a standard API name",
+        )
 
     def test_exact_printf_still_api_by_design(self):
-        finding = {'class': 'format-string', 'desc': 'format string in printf'}
-        snippet = {'name': 'printf', 'content': 'int printf(const char *fmt, ...) { ... }'}
-        self.assertTrue(is_api_by_design(finding, snippet),
-                        'printf is still correctly API-by-design')
+        finding = {"class": "format-string", "desc": "format string in printf"}
+        snippet = {
+            "name": "printf",
+            "content": "int printf(const char *fmt, ...) { ... }",
+        }
+        self.assertTrue(
+            is_api_by_design(finding, snippet),
+            "printf is still correctly API-by-design",
+        )
 
     def test_exact_write_still_api_by_design(self):
-        finding = {'class': 'overflow', 'desc': 'buffer overflow in write'}
-        snippet = {'name': 'write', 'content': 'ssize_t write(int fd, ...) { ... }'}
-        self.assertTrue(is_api_by_design(finding, snippet),
-                        'write is still correctly API-by-design')
+        finding = {"class": "overflow", "desc": "buffer overflow in write"}
+        snippet = {"name": "write", "content": "ssize_t write(int fd, ...) { ... }"}
+        self.assertTrue(
+            is_api_by_design(finding, snippet), "write is still correctly API-by-design"
+        )
 
 
 # ===================================================================
@@ -93,14 +121,15 @@ class IsApiByDesignFixedFalsePositives(unittest.TestCase):
 class SuppressionKeyCollisionFixed(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        self.path = Path(self.tmp) / 'suppressions.json'
+        self.path = Path(self.tmp) / "suppressions.json"
 
     def test_delimiter_no_longer_collides(self):
         reg = SuppressionRegistry(self.path)
-        reg.add({'snippet_id': 'a::', 'class': 'b', 'validate_reason': 'fp1'})
-        reg.add({'snippet_id': 'a', 'class': '::b', 'validate_reason': 'fp2'})
-        self.assertEqual(len(reg), 2,
-                         'FIXED: distinct (snippet_id, class) pairs no longer collide')
+        reg.add({"snippet_id": "a::", "class": "b", "validate_reason": "fp1"})
+        reg.add({"snippet_id": "a", "class": "::b", "validate_reason": "fp2"})
+        self.assertEqual(
+            len(reg), 2, "FIXED: distinct (snippet_id, class) pairs no longer collide"
+        )
 
 
 # ===================================================================
@@ -108,17 +137,24 @@ class SuppressionKeyCollisionFixed(unittest.TestCase):
 # ===================================================================
 class ParseFindingsDeeplyNestedFixed(unittest.TestCase):
     def test_finding_inside_nested_object_now_extracted(self):
-        text = json.dumps({
-            'outer': {
-                'inner': {
-                    'snippet_id': 's1', 'class': 'overflow', 'severity': 'HIGH',
-                    'desc': 'deep', 'status': 'raw', 'poc_confirmed': False,
+        text = json.dumps(
+            {
+                "outer": {
+                    "inner": {
+                        "snippet_id": "s1",
+                        "class": "overflow",
+                        "severity": "HIGH",
+                        "desc": "deep",
+                        "status": "raw",
+                        "poc_confirmed": False,
+                    }
                 }
             }
-        })
+        )
         f, g = parse_findings(text)
-        self.assertEqual(len(f), 1,
-                         'FIXED: nested findings are now extracted recursively')
+        self.assertEqual(
+            len(f), 1, "FIXED: nested findings are now extracted recursively"
+        )
 
 
 # ===================================================================
@@ -126,9 +162,10 @@ class ParseFindingsDeeplyNestedFixed(unittest.TestCase):
 # ===================================================================
 class SplitModelPoolsDuplicatesFixed(unittest.TestCase):
     def test_duplicate_models_deduplicated(self):
-        hunt, validate = split_model_pools(['deepseek', 'deepseek', 'qwen'])
-        self.assertEqual(hunt.count('deepseek'), 1,
-                         'FIXED: duplicate models are deduplicated')
+        hunt, validate = split_model_pools(["deepseek", "deepseek", "qwen"])
+        self.assertEqual(
+            hunt.count("deepseek"), 1, "FIXED: duplicate models are deduplicated"
+        )
 
 
 # ===================================================================
@@ -136,9 +173,9 @@ class SplitModelPoolsDuplicatesFixed(unittest.TestCase):
 # ===================================================================
 class ValidateSubsetSchemaTuple(unittest.TestCase):
     def test_tuple_not_detected_as_array(self):
-        schema = {'type': 'array', 'items': {'type': 'string'}}
+        schema = {"type": "array", "items": {"type": "string"}}
         errors = validate_subset_schema((1, 2, 3), schema)
-        self.assertIn('expected array', errors[0])
+        self.assertIn("expected array", errors[0])
 
 
 # ===================================================================
@@ -148,11 +185,11 @@ class ValidateSubsetSchemaTuple(unittest.TestCase):
 class AuthConfigDedup(unittest.TestCase):
     def test_exact_path_same_as_default_loaded_once(self):
         d = tempfile.mkdtemp()
-        auth_file = Path(d) / 'auth.json'
-        auth_file.write_text(json.dumps({'openrouter': 'sk-test'}))
+        auth_file = Path(d) / "auth.json"
+        auth_file.write_text(json.dumps({"openrouter": "sk-test"}))
         # If explicit_path == script_dir / 'auth.json', it's loaded twice
         config = load_auth_config(explicit_path=auth_file, script_dir=Path(d))
-        self.assertEqual(config.get('openrouter'), 'sk-test')
+        self.assertEqual(config.get("openrouter"), "sk-test")
 
 
 # ===================================================================
@@ -173,14 +210,21 @@ class CosineSimilarityNan(unittest.TestCase):
 # ===================================================================
 class DeduplicateSemanticEdge(unittest.TestCase):
     def test_single_finding_returns_unchanged(self):
-        findings = [{'snippet_id': 's1', 'class': 'overflow', 'severity': 'HIGH', 'desc': 'test overflow'}]
+        findings = [
+            {
+                "snippet_id": "s1",
+                "class": "overflow",
+                "severity": "HIGH",
+                "desc": "test overflow",
+            }
+        ]
         result = deduplicate_semantic(findings, threshold=0.85)
         self.assertEqual(len(result), 1)
 
     def test_empty_desc_does_not_crash(self):
         findings = [
-            {'snippet_id': 's1', 'class': 'overflow', 'severity': 'HIGH', 'desc': ''},
-            {'snippet_id': 's2', 'class': 'overflow', 'severity': 'HIGH', 'desc': ''},
+            {"snippet_id": "s1", "class": "overflow", "severity": "HIGH", "desc": ""},
+            {"snippet_id": "s2", "class": "overflow", "severity": "HIGH", "desc": ""},
         ]
         result = deduplicate_semantic(findings, threshold=0.85)
         self.assertEqual(len(result), 2)  # two different snippet_ids kept
@@ -191,8 +235,8 @@ class DeduplicateSemanticEdge(unittest.TestCase):
 # ===================================================================
 class HallucinationDescRatio(unittest.TestCase):
     def test_empty_desc_tokens_does_not_crash(self):
-        snippet = {'content': 'void foo() { int x; }'}
-        finding = {'desc': 'ab', 'call_path': []}  # tokens < 4 chars → none extracted
+        snippet = {"content": "void foo() { int x; }"}
+        finding = {"desc": "ab", "call_path": []}  # tokens < 4 chars → none extracted
         detected, reason = detect_hallucination(finding, snippet)
         self.assertFalse(detected)
 
@@ -203,10 +247,12 @@ class HallucinationDescRatio(unittest.TestCase):
 # ===================================================================
 class IsApiByDesignBroadMatchFixed(unittest.TestCase):
     def test_execute_query_no_longer_false_positive(self):
-        finding = {'class': 'xss', 'desc': 'xss in execute_query'}
-        snippet = {'name': 'execute_query', 'content': 'def execute_query(sql): pass'}
-        self.assertFalse(is_api_by_design(finding, snippet),
-                         'FIXED: execute_query is not a standard API name')
+        finding = {"class": "xss", "desc": "xss in execute_query"}
+        snippet = {"name": "execute_query", "content": "def execute_query(sql): pass"}
+        self.assertFalse(
+            is_api_by_design(finding, snippet),
+            "FIXED: execute_query is not a standard API name",
+        )
 
 
 # ===================================================================
@@ -215,15 +261,17 @@ class IsApiByDesignBroadMatchFixed(unittest.TestCase):
 class CrossRunRegressionEmpty(unittest.TestCase):
     def test_no_history_no_drift(self):
         d = tempfile.mkdtemp()
-        path = Path(d) / 'history.jsonl'
+        path = Path(d) / "history.jsonl"
         crr = CrossRunRegression(path)
         signals = crr.detect_drift(window=5, threshold=0.15)
         self.assertEqual(signals, [])
 
     def test_single_record_no_drift(self):
         d = tempfile.mkdtemp()
-        path = Path(d) / 'history.jsonl'
-        path.write_text('{"timestamp": "t1", "total_findings": 5, "class_counts": {"x": 5}}\n')
+        path = Path(d) / "history.jsonl"
+        path.write_text(
+            '{"timestamp": "t1", "total_findings": 5, "class_counts": {"x": 5}}\n'
+        )
         crr = CrossRunRegression(path)
         signals = crr.detect_drift(window=5, threshold=0.15)
         self.assertEqual(signals, [])
@@ -234,18 +282,21 @@ class CrossRunRegressionEmpty(unittest.TestCase):
 # ===================================================================
 class HallucinationPathRatioFixed(unittest.TestCase):
     def test_four_char_desc_tokens_now_checked(self):
-        snippet = {'content': 'int x = 0;'}
-        finding = {'desc': 'size error bug data state', 'call_path': []}
+        snippet = {"content": "int x = 0;"}
+        finding = {"desc": "size error bug data state", "call_path": []}
         detected, _ = detect_hallucination(finding, snippet)
-        self.assertTrue(detected,
-            'FIXED: 4-5 char desc tokens like "size" now trigger desc check')
+        self.assertTrue(
+            detected, 'FIXED: 4-5 char desc tokens like "size" now trigger desc check'
+        )
 
     def test_three_char_call_path_names_now_checked(self):
-        snippet = {'content': 'void foo() { int x; }'}
-        finding = {'desc': 'bug in code', 'call_path': ['len', 'bar']}
+        snippet = {"content": "void foo() { int x; }"}
+        finding = {"desc": "bug in code", "call_path": ["len", "bar"]}
         detected, reason = detect_hallucination(finding, snippet)
-        self.assertTrue(detected,
-            'FIXED: 3-char call_path names like "len"/"bar" now trigger path check')
+        self.assertTrue(
+            detected,
+            'FIXED: 3-char call_path names like "len"/"bar" now trigger path check',
+        )
 
 
 # ===================================================================
@@ -253,8 +304,8 @@ class HallucinationPathRatioFixed(unittest.TestCase):
 # ===================================================================
 class StandardizeFindingMissingSnippetId(unittest.TestCase):
     def test_missing_snippet_id_is_not_set(self):
-        result = standardize_finding({'class': 'overflow', 'severity': 'HIGH'})
-        self.assertNotIn('snippet_id', result)
+        result = standardize_finding({"class": "overflow", "severity": "HIGH"})
+        self.assertNotIn("snippet_id", result)
 
 
 # ===================================================================
@@ -263,8 +314,9 @@ class StandardizeFindingMissingSnippetId(unittest.TestCase):
 # ===================================================================
 class ContainsVulnSignalEdgeFixed(unittest.TestCase):
     def test_exit_code_1_no_longer_vuln(self):
-        self.assertFalse(_contains_vuln_signal("all good", 1),
-                         'FIXED: exit code 1 is not a signal')
+        self.assertFalse(
+            _contains_vuln_signal("all good", 1), "FIXED: exit code 1 is not a signal"
+        )
 
     def test_exit_code_neg_one_still_vuln(self):
         self.assertTrue(_contains_vuln_signal("", -1))
@@ -275,7 +327,7 @@ class ContainsVulnSignalEdgeFixed(unittest.TestCase):
 # ===================================================================
 class BuildCallGraphEdge(unittest.TestCase):
     def test_no_name_no_id_does_not_add_to_graph(self):
-        snippets = [{'callees': ['foo']}]
+        snippets = [{"callees": ["foo"]}]
         graph = build_call_graph(snippets)
         self.assertEqual(graph, {})
 
@@ -286,17 +338,17 @@ class BuildCallGraphEdge(unittest.TestCase):
 class MergeHunterOutputsEdge(unittest.TestCase):
     def test_empty_snippet_id_skipped(self):
         outputs = [
-            [{'snippet_id': '', 'class': 'overflow', 'severity': 'HIGH'}],
-            [{'snippet_id': '', 'class': 'overflow', 'severity': 'HIGH'}],
+            [{"snippet_id": "", "class": "overflow", "severity": "HIGH"}],
+            [{"snippet_id": "", "class": "overflow", "severity": "HIGH"}],
         ]
         promoted, suppressed = merge_hunter_outputs(outputs, min_votes=2)
         self.assertEqual(len(promoted), 0)
 
     def test_single_run_returns_all_with_vote_count_1(self):
-        outputs = [[{'snippet_id': 's1', 'class': 'overflow', 'severity': 'HIGH'}]]
+        outputs = [[{"snippet_id": "s1", "class": "overflow", "severity": "HIGH"}]]
         promoted, suppressed = merge_hunter_outputs(outputs, min_votes=2)
         self.assertEqual(len(promoted), 1)
-        self.assertEqual(promoted[0]['vote_count'], 1)
+        self.assertEqual(promoted[0]["vote_count"], 1)
 
 
 # ===================================================================
@@ -304,9 +356,17 @@ class MergeHunterOutputsEdge(unittest.TestCase):
 # ===================================================================
 class BuildContextPacksNegativeToken(unittest.TestCase):
     def test_negative_token_count_does_not_crash(self):
-        snippets = [{'file': 'a.c', 'token_count': -100}]
-        tasks = [{'task_id': 't1', 'domain': 'mem', 'attack_class': 'mem',
-                  'target_files': ['a.c'], 'rationale': 'r', 'priority': 'high'}]
+        snippets = [{"file": "a.c", "token_count": -100}]
+        tasks = [
+            {
+                "task_id": "t1",
+                "domain": "mem",
+                "attack_class": "mem",
+                "target_files": ["a.c"],
+                "rationale": "r",
+                "priority": "high",
+            }
+        ]
         packs = build_context_packs(snippets, tasks, budget_tokens=100)
         self.assertEqual(len(packs), 1)
 
@@ -316,33 +376,45 @@ class BuildContextPacksNegativeToken(unittest.TestCase):
 # ===================================================================
 class BucketFindingEdge(unittest.TestCase):
     def test_missing_severity_defaults_to_backlog(self):
-        f = {'snippet_id': 's1', 'class': 'overflow', 'desc': 'd', 'status': 'raw', 'poc_confirmed': False}
+        f = {
+            "snippet_id": "s1",
+            "class": "overflow",
+            "desc": "d",
+            "status": "raw",
+            "poc_confirmed": False,
+        }
         bucket, _ = bucket_finding(f, trace_required=False)
-        self.assertEqual(bucket, 'backlog')
+        self.assertEqual(bucket, "backlog")
 
     def test_missing_status_defaults_to_backlog(self):
-        f = {'snippet_id': 's1', 'class': 'overflow', 'severity': 'CRITICAL', 'desc': 'd', 'poc_confirmed': True}
+        f = {
+            "snippet_id": "s1",
+            "class": "overflow",
+            "severity": "CRITICAL",
+            "desc": "d",
+            "poc_confirmed": True,
+        }
         bucket, _ = bucket_finding(f, trace_required=False)
-        self.assertEqual(bucket, 'backlog')
+        self.assertEqual(bucket, "backlog")
 
 
 # ===================================================================
 # 20. _scan_git_security_patches — only checks 500 commits   MEDIUM
 # ===================================================================
 class GitScanLimit(unittest.TestCase):
-    @patch('stages.recon.subprocess.run')
+    @patch("stages.recon.subprocess.run")
     def test_phase1_checks_2000_commits(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="")
-        _scan_git_security_patches('/repo')
+        _scan_git_security_patches("/repo")
         call_args = mock_run.call_args[0][0]
-        self.assertIn('--max-count=2000', call_args)
+        self.assertIn("--max-count=2000", call_args)
 
-    @patch('stages.recon.subprocess.run')
+    @patch("stages.recon.subprocess.run")
     def test_security_commit_beyond_window_missed(self, mock_run):
         security_commits = "\n".join(f"abc{i} feat: commit {i}" for i in range(500))
         # No security pattern in first 500
         mock_run.return_value = MagicMock(returncode=0, stdout=security_commits)
-        result = _scan_git_security_patches('/repo')
+        result = _scan_git_security_patches("/repo")
         self.assertEqual(result, set())
 
 
@@ -352,8 +424,8 @@ class GitScanLimit(unittest.TestCase):
 class FindSiblingFilesEdge(unittest.TestCase):
     def test_patched_file_with_no_stem(self):
         # Path('.gitignore').stem = '.gitignore', parent = '.'
-        patched = {'.gitignore'}
-        all_files = {'.gitignore', 'src/', 'Makefile'}
+        patched = {".gitignore"}
+        all_files = {".gitignore", "src/", "Makefile"}
         result = _find_sibling_files(patched, all_files)
         self.assertIsInstance(result, set)
 
@@ -363,12 +435,12 @@ class FindSiblingFilesEdge(unittest.TestCase):
 # ===================================================================
 class TagSnippetCaseEdge(unittest.TestCase):
     def test_uppercase_printf_still_matches(self):
-        tags = tag_snippet({'content': 'PRINTF("hello")'})
-        self.assertIn('format-string', tags)
+        tags = tag_snippet({"content": 'PRINTF("hello")'})
+        self.assertIn("format-string", tags)
 
     def test_lowercase_printf_matches(self):
-        tags = tag_snippet({'content': 'printf("hello")'})
-        self.assertIn('format-string', tags)
+        tags = tag_snippet({"content": 'printf("hello")'})
+        self.assertIn("format-string", tags)
 
 
 # ===================================================================
@@ -376,12 +448,12 @@ class TagSnippetCaseEdge(unittest.TestCase):
 # ===================================================================
 class KlDivergenceEdge(unittest.TestCase):
     def test_identical_distributions_produce_zero(self):
-        d = {'a': 0.5, 'b': 0.5}
+        d = {"a": 0.5, "b": 0.5}
         self.assertAlmostEqual(kl_divergence(d, d), 0.0)
 
     def test_disjoint_vocab_very_large_kl(self):
-        p = {'a': 1.0}
-        q = {'b': 1.0}
+        p = {"a": 1.0}
+        q = {"b": 1.0}
         kl = kl_divergence(p, q)
         # epsilon = 1e-8, so KL = 1.0 * log(1.0 / 1e-8) = log(1e8) ≈ 18.42
         self.assertAlmostEqual(kl, 18.420680743952367, places=4)
@@ -393,8 +465,10 @@ class KlDivergenceEdge(unittest.TestCase):
 class LoadHistoryMalformed(unittest.TestCase):
     def test_corrupt_line_skipped_quietly(self):
         d = tempfile.mkdtemp()
-        path = Path(d) / 'history.jsonl'
-        path.write_text('{"valid": true, "class_counts": {"x": 1}}\nnot json\n{"valid": true, "class_counts": {"y": 1}}\n')
+        path = Path(d) / "history.jsonl"
+        path.write_text(
+            '{"valid": true, "class_counts": {"x": 1}}\nnot json\n{"valid": true, "class_counts": {"y": 1}}\n'
+        )
         crr = CrossRunRegression(path)
         history = crr._load_history()
         self.assertEqual(len(history), 2)
@@ -414,10 +488,18 @@ class CosineSimilarityMismatch(unittest.TestCase):
 # ===================================================================
 class ParseFindingsListOnly(unittest.TestCase):
     def test_flat_list_of_findings_parsed_correctly(self):
-        text = json.dumps([
-            {'snippet_id': 's1', 'class': 'overflow', 'severity': 'HIGH',
-             'desc': 'd', 'status': 'raw', 'poc_confirmed': False},
-        ])
+        text = json.dumps(
+            [
+                {
+                    "snippet_id": "s1",
+                    "class": "overflow",
+                    "severity": "HIGH",
+                    "desc": "d",
+                    "status": "raw",
+                    "poc_confirmed": False,
+                },
+            ]
+        )
         f, g = parse_findings(text)
         self.assertEqual(len(f), 1)
 
@@ -433,8 +515,18 @@ class ParseFindingsListOnly(unittest.TestCase):
 class DeduplicateEdge(unittest.TestCase):
     def test_same_class_diff_file_not_deduped(self):
         findings = [
-            {'snippet_id': 's1', 'class': 'overflow', 'severity': 'HIGH', 'file': 'a.c'},
-            {'snippet_id': 's2', 'class': 'overflow', 'severity': 'HIGH', 'file': 'b.c'},
+            {
+                "snippet_id": "s1",
+                "class": "overflow",
+                "severity": "HIGH",
+                "file": "a.c",
+            },
+            {
+                "snippet_id": "s2",
+                "class": "overflow",
+                "severity": "HIGH",
+                "file": "b.c",
+            },
         ]
         result = deduplicate(findings)
         self.assertEqual(len(result), 2)
@@ -445,15 +537,15 @@ class DeduplicateEdge(unittest.TestCase):
 # ===================================================================
 class VerifyCallPathEdge(unittest.TestCase):
     def test_empty_graph_returns_true(self):
-        ok, reason = verify_call_path({'call_path': ['main', 'foo']}, {})
+        ok, reason = verify_call_path({"call_path": ["main", "foo"]}, {})
         self.assertTrue(ok)
-        self.assertEqual(reason, 'no-graph-data')
+        self.assertEqual(reason, "no-graph-data")
 
     def test_single_node_in_graph(self):
-        graph = {'main': set()}
-        ok, reason = verify_call_path({'call_path': ['main']}, graph)
+        graph = {"main": set()}
+        ok, reason = verify_call_path({"call_path": ["main"]}, graph)
         self.assertTrue(ok)
-        self.assertEqual(reason, 'single-node-present')
+        self.assertEqual(reason, "single-node-present")
 
 
 # ===================================================================
@@ -461,10 +553,10 @@ class VerifyCallPathEdge(unittest.TestCase):
 # ===================================================================
 class DowngradeSeverityEdge(unittest.TestCase):
     def test_unknown_severity_goes_to_informational(self):
-        self.assertEqual(_downgrade_severity('GODLIKE'), 'INFORMATIONAL')
+        self.assertEqual(_downgrade_severity("GODLIKE"), "INFORMATIONAL")
 
     def test_critical_downgrades_to_high(self):
-        self.assertEqual(_downgrade_severity('CRITICAL'), 'HIGH')
+        self.assertEqual(_downgrade_severity("CRITICAL"), "HIGH")
 
 
 # ===================================================================
@@ -473,34 +565,34 @@ class DowngradeSeverityEdge(unittest.TestCase):
 class DetectHallucinationKlNoneSnippet(unittest.TestCase):
     def test_snippet_with_no_content(self):
         snippet = {}
-        finding = {'desc': 'bug in bar', 'call_path': ['bar']}
+        finding = {"desc": "bug in bar", "call_path": ["bar"]}
         detected, reason = detect_hallucination_kl(finding, snippet)
         self.assertFalse(detected)
-        self.assertEqual(reason, 'no-snippet-content')
+        self.assertEqual(reason, "no-snippet-content")
 
     def test_no_content_with_present_q_counts(self):
-        snippet = {'content': ''}
-        finding = {'desc': 'bug in bar', 'call_path': ['bar']}
+        snippet = {"content": ""}
+        finding = {"desc": "bug in bar", "call_path": ["bar"]}
         detected, reason = detect_hallucination_kl(finding, snippet)
         self.assertFalse(detected)
-        self.assertEqual(reason, 'no-snippet-content')
+        self.assertEqual(reason, "no-snippet-content")
 
     def test_no_desc_still_no_crash(self):
-        snippet = {'content': 'void foo() { int x; }'}
-        finding = {'desc': '', 'call_path': []}
+        snippet = {"content": "void foo() { int x; }"}
+        finding = {"desc": "", "call_path": []}
         detected, reason = detect_hallucination_kl(finding, snippet)
         self.assertFalse(detected)
 
 
 class KlDivergenceEdgeProbs(unittest.TestCase):
     def test_empty_normalise_returns_empty_dict(self):
-        result = _normalise(__import__('collections').Counter())
+        result = _normalise(__import__("collections").Counter())
         self.assertEqual(result, {})
 
     def test_empty_token_freqs_returns_empty_counter(self):
-        result = _token_freqs('   ')
-        self.assertEqual(result, __import__('collections').Counter())
+        result = _token_freqs("   ")
+        self.assertEqual(result, __import__("collections").Counter())
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

@@ -18,26 +18,24 @@ def _covered_domains(findings: list[dict]) -> set[str]:
     """Return the set of domains that have at least one confirmed finding."""
     covered: set[str] = set()
     for f in findings:
-        domain = str(
-            f.get('domain') or f.get('class') or f.get('attack_class') or ''
-        )
-        if domain and str(f.get('status', '')).lower() == 'confirmed':
+        domain = str(f.get("domain") or f.get("class") or f.get("attack_class") or "")
+        if domain and str(f.get("status", "")).lower() == "confirmed":
             covered.add(domain)
     return covered
 
 
 def _hunted_domains(tasks: list[dict]) -> set[str]:
     """Return the set of domains that appeared in previous Hunt tasks."""
-    return {str(t.get('domain') or '') for t in tasks if t.get('domain')}
+    return {str(t.get("domain") or "") for t in tasks if t.get("domain")}
 
 
 def _domain_files(tasks: list[dict]) -> dict[str, set[str]]:
     """Build a mapping of domain → set of target files from existing tasks."""
     mapping: dict[str, set[str]] = {}
     for t in tasks:
-        d = str(t.get('domain') or '')
+        d = str(t.get("domain") or "")
         if d:
-            for f in t.get('target_files') or []:
+            for f in t.get("target_files") or []:
                 mapping.setdefault(d, set()).add(f)
     return mapping
 
@@ -68,6 +66,7 @@ def build_gapfill_tasks(
     -------
     list of new task dicts (may be empty when all hunted domains have ≥1
     confirmed finding).
+
     """
     hunted = _hunted_domains(existing_tasks)
     confirmed = _covered_domains(findings)
@@ -79,19 +78,19 @@ def build_gapfill_tasks(
     for idx, domain in enumerate(sorted(gap_domains)[:max_tasks], start=1):
         files = sorted(files_by_domain.get(domain, set()))
         task: dict = {
-            'task_id': f'gapfill_{domain}_{idx}',
-            'domain': domain,
-            'attack_class': domain,
-            'target_files': files,
-            'rationale': (
-                f'Gapfill: {domain!r} produced zero confirmed findings in the '
-                'previous Hunt round; re-scanning from a different angle.'
+            "task_id": f"gapfill_{domain}_{idx}",
+            "domain": domain,
+            "attack_class": domain,
+            "target_files": files,
+            "rationale": (
+                f"Gapfill: {domain!r} produced zero confirmed findings in the "
+                "previous Hunt round; re-scanning from a different angle."
             ),
-            'priority': 'medium',
-            'source': 'gapfill',
+            "priority": "medium",
+            "source": "gapfill",
         }
         if scope_notes:
-            task['scope_notes'] = scope_notes
+            task["scope_notes"] = scope_notes
         new_tasks.append(task)
 
     return new_tasks

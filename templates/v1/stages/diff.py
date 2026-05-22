@@ -23,17 +23,20 @@ from __future__ import annotations
 
 import re
 import subprocess
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # Matches the ``+<start>[,<count>]`` part of a unified-diff hunk header.
 # Example lines: ``@@ -3,7 +3,6 @@ ...``  → group(1)="3", group(2)="6"
-_HUNK_RE = re.compile(r'^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@')
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 
 def get_changed_line_ranges(
     repo: Path,
     base_commit: str,
-    head_commit: str = 'HEAD',
+    head_commit: str = "HEAD",
 ) -> dict[str, list[tuple[int, int]]]:
     """Return changed line ranges per file by diffing two commits.
 
@@ -52,7 +55,7 @@ def get_changed_line_ranges(
     """
     try:
         result = subprocess.run(
-            ['git', 'diff', '--unified=0', base_commit, head_commit],
+            ["git", "diff", "--unified=0", base_commit, head_commit],
             cwd=str(repo),
             capture_output=True,
             text=True,
@@ -65,24 +68,21 @@ def get_changed_line_ranges(
     current_file: str | None = None
 
     for line in result.stdout.splitlines():
-        if line.startswith('+++ '):
+        if line.startswith("+++ "):
             # ``+++ b/relative/path`` for changed files; ``+++ /dev/null`` for deletions.
             rest = line[4:]
-            if rest.startswith('b/'):
+            if rest.startswith("b/"):
                 current_file = rest[2:]
                 changed.setdefault(current_file, [])
             else:
                 current_file = None  # deleted file — no new lines to scan
-        elif line.startswith('@@ ') and current_file is not None:
+        elif line.startswith("@@ ") and current_file is not None:
             m = _HUNK_RE.match(line)
             if not m:
                 continue
             start = int(m.group(1))
             count_str = m.group(2)
-            if count_str is None:
-                count = 1
-            else:
-                count = int(count_str)
+            count = 1 if count_str is None else int(count_str)
 
             if count == 0:
                 # Pure deletion: no new lines, but record position for context.
@@ -125,12 +125,12 @@ def filter_snippets_by_diff(
 
     result: list[dict] = []
     for snippet in snippets:
-        file_key = snippet.get('file', '')
+        file_key = snippet.get("file", "")
         ranges = changed_ranges.get(file_key)
         if not ranges:
             continue
 
-        lines = snippet.get('lines')
+        lines = snippet.get("lines")
         if isinstance(lines, (list, tuple)) and len(lines) >= 2:
             s_start, s_end = int(lines[0]), int(lines[1])
         else:
@@ -146,7 +146,7 @@ def get_changed_snippets(
     repo: Path,
     snippets: list[dict],
     base_commit: str,
-    head_commit: str = 'HEAD',
+    head_commit: str = "HEAD",
 ) -> list[dict]:
     """Filter *snippets* to only those changed between *base_commit* and *head_commit*.
 

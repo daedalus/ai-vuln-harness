@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: templates/v1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[test]"
+
+      - name: Run tests with coverage
+        run: python -m pytest --cov --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./templates/v1/coverage.xml
+          fail_ci_if_error: false
+
+  lint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: templates/v1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[lint]"
+
+      - name: Run ruff format
+        run: ruff format --check stages/ run.py
+
+      - name: Run prospector
+        run: prospector --with-tool ruff --with-tool mypy --with-tool pylint .
+
+      - name: Run semgrep
+        run: semgrep --config=auto --severity=ERROR stages/ run.py
+
+      - name: Run vulture
+        run: vulture --min-confidence 90 stages/ run.py --exclude .vulture_whitelist.py
