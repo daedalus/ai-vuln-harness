@@ -157,7 +157,9 @@ def test_run_benchmark_gate_flags_regression(tmp_path: Path):
     mock_state.total_cost.return_value = 0.0
 
     with (
-        patch("ai_vuln_harness.run.run", return_value=_sample_report(status="rejected")),
+        patch(
+            "ai_vuln_harness.run.run", return_value=_sample_report(status="rejected")
+        ),
         patch("ai_vuln_harness.run.StateDB", return_value=mock_state),
         pytest.raises(RuntimeError),
     ):

@@ -33,7 +33,7 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .stages.chains import synthesize_exploit_chains
@@ -898,7 +898,9 @@ def _average(values: list[float]) -> float:
     return sum(values) / len(values)
 
 
-def _extract_report_kpis(report: dict, top_n: int, elapsed_seconds: float, cost_usd: float) -> dict:
+def _extract_report_kpis(
+    report: dict, top_n: int, elapsed_seconds: float, cost_usd: float
+) -> dict:
     findings = report.get("findings") or []
     summary = report.get("summary") or {}
     total_findings = len(findings)
@@ -967,7 +969,9 @@ def _extract_report_kpis(report: dict, top_n: int, elapsed_seconds: float, cost_
         "duplicate_rate": duplicate_rate,
         "gap_closure_rate": gap_closure_rate,
         "runtime_per_confirmed_finding_seconds": (
-            elapsed_seconds if confirmed_findings == 0 else elapsed_seconds / confirmed_findings
+            elapsed_seconds
+            if confirmed_findings == 0
+            else elapsed_seconds / confirmed_findings
         ),
         "cost_per_confirmed_finding_usd": (
             cost_usd if confirmed_findings == 0 else cost_usd / confirmed_findings
@@ -989,7 +993,9 @@ def _load_json_dict(path: Path, fallback: dict) -> dict:
     return data if isinstance(data, dict) else fallback
 
 
-def _resolve_benchmark_targets(corpus_path: Path, repo: Path, profile: str) -> list[dict]:
+def _resolve_benchmark_targets(
+    corpus_path: Path, repo: Path, profile: str
+) -> list[dict]:
     corpus = _load_json_dict(corpus_path, {"targets": []})
     targets = corpus.get("targets")
     if not isinstance(targets, list) or not targets:
@@ -1007,7 +1013,7 @@ def _resolve_benchmark_targets(corpus_path: Path, repo: Path, profile: str) -> l
             repo_path = (corpus_path.parent / repo_path).resolve()
         resolved.append(
             {
-                "name": str(target.get("name", f"target-{idx+1}")),
+                "name": str(target.get("name", f"target-{idx + 1}")),
                 "repo": str(repo_path),
                 "profile": str(target.get("profile", profile)),
             },
@@ -1086,8 +1092,12 @@ def run_benchmark_gate(
     pkg_dir = Path(__file__).parent
     corpus_path = benchmark_corpus or (pkg_dir / "config/benchmark_corpus.json")
     baseline_path = benchmark_baseline or (pkg_dir / "config/benchmark_baselines.json")
-    thresholds_path = benchmark_thresholds or (pkg_dir / "config/benchmark_thresholds.json")
-    output_path = benchmark_output or (Path.cwd() / "output/benchmark_regression_report.json")
+    thresholds_path = benchmark_thresholds or (
+        pkg_dir / "config/benchmark_thresholds.json"
+    )
+    output_path = benchmark_output or (
+        Path.cwd() / "output/benchmark_regression_report.json"
+    )
 
     targets = _resolve_benchmark_targets(corpus_path, repo, benchmark_profile)
     baseline_doc = _load_json_dict(baseline_path, {"profiles": {}})
@@ -1150,7 +1160,9 @@ def run_benchmark_gate(
             current_value = float(current_kpis.get(metric, 0.0))
             baseline_value = float(baseline_kpis.get(metric, 0.0))
             delta = current_value - baseline_value
-            allowed = float(thresholds.get(metric, _BENCHMARK_DEFAULT_THRESHOLDS[metric]))
+            allowed = float(
+                thresholds.get(metric, _BENCHMARK_DEFAULT_THRESHOLDS[metric])
+            )
             higher_is_better = metric in _BENCHMARK_HIGHER_IS_BETTER
             if higher_is_better:
                 regressed = delta < (-allowed)
@@ -1171,7 +1183,9 @@ def run_benchmark_gate(
                     "delta": delta,
                     "allowed_regression": allowed,
                     "status": status,
-                    "direction": "higher_is_better" if higher_is_better else "lower_is_better",
+                    "direction": "higher_is_better"
+                    if higher_is_better
+                    else "lower_is_better",
                 },
             )
         if profile_regressed:
@@ -1182,12 +1196,14 @@ def run_benchmark_gate(
     if update_benchmark_baseline:
         baseline_profiles.update(profile_current)
         baseline_doc["profiles"] = baseline_profiles
-        baseline_doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+        baseline_doc["updated_at"] = datetime.now(UTC).isoformat()
         baseline_path.parent.mkdir(parents=True, exist_ok=True)
         baseline_path.write_text(json.dumps(baseline_doc, indent=2))
         baseline_updated = True
 
-    gate_passed = bool(not missing_baselines and not regressed_profiles) or baseline_updated
+    gate_passed = (
+        bool(not missing_baselines and not regressed_profiles) or baseline_updated
+    )
     summary_text = _build_benchmark_summary(
         profile_comparisons=profile_comparisons,
         missing_baselines=missing_baselines,
@@ -1196,7 +1212,7 @@ def run_benchmark_gate(
     )
 
     artifact = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "gate_passed": gate_passed,
         "baseline_updated": baseline_updated,
         "missing_baselines": missing_baselines,
