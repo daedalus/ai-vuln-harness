@@ -8,7 +8,7 @@ repos:
   rev: v2.16
   hooks:
   - id: vulture
-    args: ["--min-confidence", "90", "templates/v1/stages", "templates/v1/run.py", "--exclude", "templates/v1/.vulture_whitelist.py"]
+    args: ["--min-confidence", "90", "src/ai_vuln_harness/stages", "src/ai_vuln_harness/run.py", "--exclude", "src/ai_vuln_harness/.vulture_whitelist.py"]
 - repo: https://github.com/pre-commit/pre-commit-hooks
   rev: v5.0.0
   hooks:
@@ -20,7 +20,7 @@ repos:
   hooks:
   - id: prospector
     name: prospector (ruff check + mypy)
-    entry: bash -c 'cd templates/v1 && prospector --with-tool ruff --with-tool mypy .'
+    entry: bash -c 'prospector --with-tool ruff --with-tool mypy --with-tool pylint src/ai_vuln_harness/'
     language: system
     pass_filenames: false
     stages:
@@ -28,7 +28,7 @@ repos:
       - manual
   - id: semgrep
     name: semgrep
-    entry: bash -c 'cd templates/v1 && semgrep --config=auto --severity=ERROR stages/ run.py'
+    entry: bash -c 'semgrep --config=auto --severity=ERROR src/ai_vuln_harness/'
     language: system
     pass_filenames: false
     stages:
@@ -36,7 +36,7 @@ repos:
       - manual
   - id: lizard
     name: lizard - Code Complexity Check
-    entry: bash -c 'cd templates/v1 && lizard stages/ run.py --languages python --CCN 15 -w'
+    entry: bash -c 'lizard src/ai_vuln_harness/ --languages python --CCN 15 -w'
     language: system
     pass_filenames: false
     stages:
@@ -45,7 +45,7 @@ repos:
   - id: pytest
     name: pytest
     language: system
-    entry: bash -c 'cd templates/v1 && python -m pytest tests/ -q'
+    entry: bash -c 'python -m pytest tests/ -q'
     pass_filenames: false
     stages:
       - pre-commit
@@ -64,3 +64,9 @@ repos:
     always_run: true
     stages:
       - post-commit
+  - id: build-check
+    name: Build package before push
+    entry: uv run python -m build
+    language: system
+    stages:
+      - pre-push

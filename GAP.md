@@ -1,7 +1,7 @@
 # Gap Analysis: ai-vuln-harness vs. Project Glasswing / Claude Mythos / GPT-5.5-Cyber
 
 **Last updated:** 2026-05-21
-**Baseline:** v1 scaffold (`templates/v1/`)
+**Baseline:** v1 scaffold (`src/ai_vuln_harness/`)
 **Benchmarks:** Project Glasswing (Anthropic), Claude Mythos Preview, OpenAI GPT-5.5 / GPT-5.5-Cyber (CyberGym score: 81.9%)
 
 ---

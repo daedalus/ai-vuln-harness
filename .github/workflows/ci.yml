@@ -9,9 +9,6 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: templates/v1
 
     steps:
       - uses: actions/checkout@v4
@@ -33,14 +30,11 @@ jobs:
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         with:
-          files: ./templates/v1/coverage.xml
+          files: ./coverage.xml
           fail_ci_if_error: false
 
   lint:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: templates/v1
 
     steps:
       - uses: actions/checkout@v4
@@ -57,13 +51,13 @@ jobs:
         run: uv pip install --system -e ".[lint]"
 
       - name: Run ruff format
-        run: ruff format --check stages/ run.py
+        run: ruff format --check src/ai_vuln_harness/ tests/
 
       - name: Run prospector
-        run: prospector --with-tool ruff --with-tool mypy --with-tool pylint .
+        run: prospector --with-tool ruff --with-tool mypy --with-tool pylint src/ai_vuln_harness/
 
       - name: Run semgrep
-        run: semgrep --config=auto --severity=ERROR stages/ run.py
+        run: semgrep --config=auto --severity=ERROR src/ai_vuln_harness/
 
       - name: Run vulture
-        run: vulture --min-confidence 90 stages/ run.py --exclude .vulture_whitelist.py
+        run: vulture --min-confidence 90 src/ai_vuln_harness/ --exclude src/ai_vuln_harness/.vulture_whitelist.py
