@@ -366,8 +366,7 @@ def detect_hallucination_kl(
     if kl >= threshold:
         return (
             True,
-            "KL="
-            f"{kl:.2f} JSD={js:.2f} (threshold={threshold}); "
+            f"KL={kl:.2f} JSD={js:.2f} (threshold={threshold}); "
             f"desc tokens missing from code: {missing}",
         )
 
