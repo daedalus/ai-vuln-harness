@@ -412,6 +412,7 @@ def annotate_hallucination_kl(
         out.append(
             {
                 **f,
+                # Decision is KL-only; JSD is emitted for observability/calibration.
                 "hallucination_kl": _metric_or_nan(kl),
                 "hallucination_js_divergence": _metric_or_nan(js),
                 "hallucination_kl_detected": detected,
