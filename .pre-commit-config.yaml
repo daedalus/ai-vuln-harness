@@ -18,6 +18,14 @@ repos:
   - id: check-added-large-files
 - repo: local
   hooks:
+  - id: mdformat
+    name: mdformat (markdown formatting)
+    entry: mdformat --check README.md
+    language: system
+    pass_filenames: false
+    stages:
+      - pre-commit
+      - manual
   - id: prospector
     name: prospector (ruff check + mypy)
     entry: bash -c 'prospector --with-tool ruff --with-tool mypy --with-tool pylint src/ai_vuln_harness/'

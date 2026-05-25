@@ -31,6 +31,7 @@ lint = [
     "prospector[with_ruff,with_mypy]",
     "semgrep",
     "vulture",
+    "mdformat",
 ]
 all = ["ai-vuln-harness[dev,test,lint]"]
 

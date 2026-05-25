@@ -59,6 +59,9 @@ jobs:
       - name: Run ruff format
         run: ruff format --check src/ai_vuln_harness/ tests/
 
+      - name: Run mdformat (markdown formatting)
+        run: mdformat --check README.md
+
       - name: Run prospector (ruff check + mypy + pylint)
         run: prospector --with-tool ruff --with-tool mypy --with-tool pylint src/ai_vuln_harness/
 

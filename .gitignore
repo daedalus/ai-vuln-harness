@@ -29,3 +29,4 @@ htmlcov/
 output/
 references/
 workdir/
+*.coverage_full
