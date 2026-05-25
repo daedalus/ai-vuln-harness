@@ -214,11 +214,15 @@ def build_patch_candidates(
         snippet_id = finding.get("snippet_id", "")
         snippet = db.get(snippet_id, {})
 
+        finding_id = finding.get("id") or finding.get("finding_id") or snippet_id or ""
+        # Use the global candidate counter (not len-after-append) plus a hash of
+        # the finding_id to guarantee uniqueness even when multiple findings share
+        # the same snippet_id.
+        idx = len(candidates) + 1
+        fid_tail = finding_id[-8:] if finding_id else "unknown"
         candidate: dict = {
-            "patch_id": f"patch-{snippet_id or 'unknown'}-{len(candidates) + 1:04d}",
-            "finding_id": (
-                finding.get("id") or finding.get("finding_id") or snippet_id or ""
-            ),
+            "patch_id": f"patch-{fid_tail}-{idx:04d}",
+            "finding_id": finding_id,
             "snippet_id": snippet_id,
             "file": finding.get("file") or snippet.get("file") or "",
             "lines": finding.get("lines") or snippet.get("lines") or [],

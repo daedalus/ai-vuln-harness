@@ -371,7 +371,7 @@ def _run_patch_stage(
         return []
     candidates = build_patch_candidates(findings, snippet_db)
     _persist_jsonl(output_dir / "patch_candidates.jsonl", candidates)
-    logger.info("patch generated %d patch candidate(s)", len(candidates))
+    logger.info("[PATCH] generated %d patch candidate(s)", len(candidates))
     return candidates
 
 
