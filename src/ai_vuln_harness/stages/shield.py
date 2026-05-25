@@ -365,11 +365,7 @@ def _detect_hallucination_kl_with_metrics(
     threshold: float,
 ) -> tuple[bool, str, float | None, float | None]:
     kl, js, status, missing = _hallucination_divergence_metrics(finding, snippet)
-    if status == "no-snippet-content":
-        return False, status, kl, js
-    if status == "no-desc":
-        return False, status, kl, js
-    if status == "no-desc-tokens":
+    if status in ("no-snippet-content", "no-desc", "no-desc-tokens"):
         return False, status, kl, js
     if status == "desc-tokens-absent-from-empty-code":
         return True, "desc-tokens-absent-from-empty-code", kl, js
@@ -386,6 +382,10 @@ def _detect_hallucination_kl_with_metrics(
         )
 
     return False, f"KL={kl:.2f} JSD={js:.2f} (ok)", kl, js
+
+
+def _metric_or_nan(value: float | None) -> float:
+    return float("nan") if value is None else value
 
 
 def annotate_hallucination_kl(
@@ -412,8 +412,8 @@ def annotate_hallucination_kl(
         out.append(
             {
                 **f,
-                "hallucination_kl": float("nan") if kl is None else kl,
-                "hallucination_js_divergence": float("nan") if js is None else js,
+                "hallucination_kl": _metric_or_nan(kl),
+                "hallucination_js_divergence": _metric_or_nan(js),
                 "hallucination_kl_detected": detected,
                 "hallucination_kl_reason": reason,
             },
