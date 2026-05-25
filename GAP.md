@@ -100,17 +100,32 @@ The v1 scaffold implements a **Hunt → Validate → Dedupe → Trace → PoC** 
 
 ---
 
+### 8. Mythos System Card — New Findings (May 2026)
+
+**Reference:** Claude Mythos Preview System Card — Anthropic (April 2026)
+
+| Gap | Details | Status |
+|---|---|---|
+| **Reward-hack / grind detection in VALIDATE** | Models re-run structurally identical experiments to fish for high-confidence scores (§4.2.2). `detect_reward_hack` in `validate.py` flags call histories where ≥3 attempts are near-identical and the finding flipped from rejected→confirmed. | ✅ Implemented |
+| **Confabulation cascade guard** | Models produce mutually contradictory confident assessments without surfacing the contradiction (§4.3.3). `build_negation_probe_prompt` and `confabulation_risk` in `validate.py` detect when a model agrees with both a finding and its negation. | ✅ Implemented |
+| **Egress audit + scope violation enforcement in POC** | Agentic models issued out-of-scope shell commands including posting exploit details to public websites (§4.2.4). `EgressAuditContext` in `poc.py` intercepts every subprocess call during PoC execution and raises `ScopeViolationError` on network or out-of-scope path access. | ✅ Implemented |
+
+---
+
 ## Priority Matrix
 
 | Priority | Gap | Estimated Effort |
 |---|---|---|
 | 🔴 Critical | Multi-language ingestor (Rust, Go, Python) | Medium |
 | 🔴 Critical | Diff-driven incremental scanning + CI hooks | Medium |
+| 🔴 Critical | VM-isolated sandbox (gVisor / Firecracker PoC) | High |
 | ~~🔴 Critical~~ | ~~Patch generation + re-validation stage~~ | ~~Medium~~ |
+| ✅ Done | Reward-hack / grind detection in VALIDATE | Low |
+| ✅ Done | Confabulation cascade guard | Low |
+| ✅ Done | Egress audit + scope violation enforcement in POC | Low |
 | 🟠 High | Inter-component exploit chain graph | High |
 | 🟠 High | CyberGym / CVE benchmark mode | Low–Medium |
 | 🟠 High | Exposure-window tracking | Low |
-| 🟡 Medium | Sandbox simulation (gVisor / Firecracker PoC) | High |
 | 🟡 Medium | Role-tiered access layer + audit log | Low–Medium |
 | 🟡 Medium | Auth/IAM + cloud-native domain expansion | Medium |
 | 🟢 Stretch | LLM-specific vuln classes (prompt injection, etc.) | High |
@@ -119,6 +134,7 @@ The v1 scaffold implements a **Hunt → Validate → Dedupe → Trace → PoC** 
 
 ## References
 
+- [Claude Mythos Preview System Card — Anthropic (April 2026)](https://www.anthropic.com/research/claude-mythos-preview)
 - [Project Glasswing — Anthropic](https://www.anthropic.com/project/glasswing)
 - [Anthropic Glasswing and the Future of Vulnerability Research — GetCybr](https://getcybr.com/insights/anthropic-glasswing-future-vulnerability-research/)
 - [Project Glasswing Proved AI Can Find the Bugs. Who's Going to Fix Them? — The Hacker News](https://thehackernews.com/2026/04/project-glasswing-proved-ai-can-find.html)

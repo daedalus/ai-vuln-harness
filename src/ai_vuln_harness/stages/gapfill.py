@@ -91,6 +91,11 @@ def build_gapfill_tasks(
         }
         if scope_notes:
             task["scope_notes"] = scope_notes
+        task["simplicity_note"] = (
+            "Prefer the simplest vulnerability class that accounts for the evidence. "
+            "If a simpler bug class also explains the pattern, report that instead. "
+            "Do not chain more than 3 preconditions into a single finding."
+        )
         new_tasks.append(task)
 
     return new_tasks
