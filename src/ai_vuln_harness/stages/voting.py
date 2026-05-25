@@ -6,7 +6,81 @@ This cuts noise before it reaches the Validate stage.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
+
+# ---------------------------------------------------------------------------
+# Complexity scoring (Mythos system card §4.3.1)
+# ---------------------------------------------------------------------------
+
+_CONJUNCTIVE_CONNECTORS = re.compile(
+    r"\b(and|also|additionally|furthermore|requires\s+that|only\s+if)\b",
+    re.IGNORECASE,
+)
+
+_CALL_PATH_CEILING = 8
+_CONNECTOR_CEILING = 5
+_FILE_CEILING = 4
+
+
+def complexity_score(finding: dict) -> float:
+    """Return a 0.0–1.0 complexity score for a finding.
+
+    Higher scores indicate more over-engineered, multi-precondition findings
+    that are statistically more likely to be false positives (Mythos system
+    card §4.3.1).
+
+    Components:
+
+    - **call_path score** — ``len(call_path) / 8`` capped at 1.0.
+    - **connector score** — count of conjunctive connectors ("and", "also",
+      "additionally", "furthermore", "requires that", "only if") in ``desc``
+      divided by 5, capped at 1.0.
+    - **file score** — count of distinct files referenced in ``call_path``
+      divided by 4, capped at 1.0.
+
+    Weighted average: ``0.5 * call_path + 0.3 * connectors + 0.2 * files``.
+
+    Parameters
+    ----------
+    finding:
+        A finding dict, expected to contain optional keys ``call_path``
+        (list) and ``desc`` (str).
+
+    Returns
+    -------
+    float
+        Score in [0.0, 1.0].
+
+    """
+    call_path: list[object] = finding.get("call_path") or []
+    desc: str = str(finding.get("desc") or "")
+
+    # Call-path length component
+    cp_score = min(len(call_path) / _CALL_PATH_CEILING, 1.0)
+
+    # Conjunctive connector component
+    connector_count = len(_CONJUNCTIVE_CONNECTORS.findall(desc))
+    conn_score = min(connector_count / _CONNECTOR_CEILING, 1.0)
+
+    # Distinct files in call path component
+    distinct_files: set[str] = set()
+    for entry in call_path:
+        if isinstance(entry, str):
+            # Accept "file.c:func" or bare "file.c" patterns
+            part = entry.split(":")[0]
+            if part:
+                distinct_files.add(part)
+        elif isinstance(entry, dict):
+            f = entry.get("file") or entry.get("path") or ""
+            if f:
+                distinct_files.add(str(f))
+    file_score = min(len(distinct_files) / _FILE_CEILING, 1.0)
+
+    return 0.5 * cp_score + 0.3 * conn_score + 0.2 * file_score
+
+
+_COMPLEXITY_PENALTY_THRESHOLD = 0.75
 
 
 def _finding_key(finding: dict) -> tuple[str, str]:
@@ -39,8 +113,11 @@ def merge_hunter_outputs(
     -------
     (promoted, suppressed)
         *promoted* contains deduplicated findings that reached the vote
-        threshold, each annotated with a ``vote_count`` field.
-        *suppressed* contains findings that did not reach threshold.
+        threshold, each annotated with a ``vote_count`` field and a
+        ``complexity_score`` field.
+        *suppressed* contains findings that did not reach threshold, plus
+        findings demoted by the complexity penalty (annotated with
+        ``"suppressed_reason": "complexity_penalty"``).
 
     """
     if not outputs:
@@ -48,7 +125,11 @@ def merge_hunter_outputs(
 
     # Single-run fast path: return all findings unchanged, vote_count=1
     if len(outputs) == 1:
-        return [{**f, "vote_count": 1} for f in (outputs[0] or [])], []
+        result = []
+        for f in outputs[0] or []:
+            annotated = {**f, "vote_count": 1, "complexity_score": complexity_score(f)}
+            result.append(annotated)
+        return result, []
 
     # Count votes per (snippet_id, class) and keep the highest-severity variant
     vote_counts: dict[tuple[str, str], int] = defaultdict(int)
@@ -74,9 +155,16 @@ def merge_hunter_outputs(
 
     for key, variant in best_variant.items():
         count = vote_counts[key]
-        annotated = {**variant, "vote_count": count}
+        cscore = complexity_score(variant)
+        annotated = {**variant, "vote_count": count, "complexity_score": cscore}
         if count >= min_votes:
-            promoted.append(annotated)
+            # Complexity penalty: demote findings that only just made the
+            # threshold and have a high complexity score
+            if cscore > _COMPLEXITY_PENALTY_THRESHOLD and count == min_votes:
+                annotated["suppressed_reason"] = "complexity_penalty"
+                suppressed.append(annotated)
+            else:
+                promoted.append(annotated)
         else:
             suppressed.append(annotated)
 

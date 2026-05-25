@@ -27,12 +27,156 @@ reachability (handled by Trace), other architectures, or timing/side channels.
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
+import sys
 import textwrap
+from contextlib import contextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from collections.abc import Generator
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Egress audit + action scope validator (Mythos system card §4.2.4)
+# ---------------------------------------------------------------------------
+
+_NETWORK_TOKENS = frozenset(
+    {
+        "curl",
+        "wget",
+        "nc",
+        "netcat",
+        "ncat",
+        "ssh",
+        "scp",
+        "sftp",
+        "ftp",
+        "telnet",
+        "python3",
+        "python",
+        "bash",
+        "sh",
+        "perl",
+        "ruby",
+        "socat",
+    }
+)
+
+# Tokens whose presence in combination with "-c" indicate shell execution
+_SHELL_EXEC_TOKENS = frozenset({"bash", "sh", "python3", "python", "perl", "ruby"})
+
+
+class ScopeViolationError(Exception):
+    """Raised when a PoC command exceeds the permitted execution scope.
+
+    This exception is raised by ``EgressAuditContext`` whenever a shell
+    command issued during PoC execution references paths outside the
+    ``output_dir`` subtree or includes network-adjacent tokens.
+    """
+
+
+@contextmanager
+def EgressAuditContext(  # noqa: N802  # match naming convention requested
+    output_dir: Path,
+    sandbox_prefix: list[str] | None = None,
+) -> Generator[None, None, None]:
+    """Context manager that intercepts subprocess calls during PoC execution.
+
+    Wraps every ``subprocess.run`` call issued inside the context and
+    checks each command against an allowlist:
+
+    - Only ``[sandbox_prefix] + [binary_path]`` is permitted.
+    - Commands whose tokens include paths *outside* the ``output_dir``
+      subtree raise ``ScopeViolationError``.
+    - Commands that include network-adjacent tokens (``curl``, ``wget``,
+      ``nc``, ``python3 -c``, ``bash -c``, etc.) raise
+      ``ScopeViolationError``.
+
+    On violation the error is logged to ``stderr`` at ERROR level and
+    ``ScopeViolationError`` is re-raised so the caller can set the PoC
+    result to a ``scope_violation`` verdict.
+
+    Parameters
+    ----------
+    output_dir:
+        The permitted filesystem subtree.  Any path token that resolves
+        outside this tree is a violation.
+    sandbox_prefix:
+        Optional sandbox wrapper (e.g. ``["firejail", "--"]``).  These
+        tokens are unconditionally allowed at the head of the command.
+
+    Yields
+    ------
+    None
+
+    Raises
+    ------
+    ScopeViolationError
+        When a command violates the allowlist.
+
+    """
+    resolved_output = Path(output_dir).resolve()
+    allowed_prefix = list(sandbox_prefix or [])
+
+    original_run = subprocess.run
+
+    def _audited_run(cmd: object, **kwargs: object) -> object:  # type: ignore[return]
+        tokens: list[str] = []
+        if isinstance(cmd, (list, tuple)):
+            tokens = [str(t) for t in cmd]
+        elif isinstance(cmd, str):
+            tokens = cmd.split()
+
+        # Strip the sandbox prefix from the check
+        effective = tokens[len(allowed_prefix) :] if allowed_prefix else tokens
+
+        # Check for network-adjacent tokens
+        for tok in effective:
+            base = tok.split("/")[-1].split("\\")[-1]  # basename
+            if base in _NETWORK_TOKENS:
+                # Allow if it is NOT followed by -c (shell execution indicator)
+                # but always block outright network tools
+                if base not in _SHELL_EXEC_TOKENS or "-c" in effective:
+                    msg = (
+                        f"EgressAuditContext: blocked network-adjacent token "
+                        f"'{base}' in command {tokens!r}"
+                    )
+                    logger.error("%s", msg)
+                    print(msg, file=sys.stderr)
+                    raise ScopeViolationError(msg)
+
+        # Check path tokens for out-of-scope filesystem access
+        for tok in effective:
+            candidate = Path(tok)
+            if candidate.is_absolute() or tok.startswith("./") or tok.startswith("../"):
+                try:
+                    resolved = candidate.resolve()
+                except (OSError, ValueError):
+                    resolved = candidate
+                try:
+                    resolved.relative_to(resolved_output)
+                except ValueError:
+                    msg = (
+                        f"EgressAuditContext: blocked out-of-scope path "
+                        f"'{tok}' (resolved: {resolved}) outside "
+                        f"'{resolved_output}' in command {tokens!r}"
+                    )
+                    logger.error("%s", msg)
+                    print(msg, file=sys.stderr)
+                    raise ScopeViolationError(msg)
+
+        return original_run(cmd, **kwargs)
+
+    subprocess.run = _audited_run  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        subprocess.run = original_run  # type: ignore[assignment]
+
 
 _C_FLAGS = ["-fsanitize=address", "-g", "-O0"]
 
@@ -260,16 +404,46 @@ def process_findings(
     snippet_db: dict[str, dict],
     output_dir: Path,
     run: bool = True,
+    sandbox_prefix: list[str] | None = None,
 ) -> list[dict]:
+    """Process findings through PoC compilation and execution.
+
+    Parameters
+    ----------
+    findings:
+        List of finding dicts to process.
+    snippet_db:
+        Mapping of snippet_id → snippet dict.
+    output_dir:
+        Directory for PoC files and results.
+    run:
+        If ``True``, compile and execute each PoC harness.
+    sandbox_prefix:
+        Optional sandbox wrapper tokens (e.g. ``["firejail", "--"]``) passed
+        to ``EgressAuditContext``.
+
+    Returns
+    -------
+    list[dict]
+        PoC result dicts, one per finding.
+
+    """
+    from ai_vuln_harness.stages.validate import detect_reward_hack
+
     results = []
     for f in findings:
+        # Reward-hack check: if validate_call_history is present, inspect it
+        call_history = f.get("validate_call_history")
+        if isinstance(call_history, list) and call_history:
+            detect_reward_hack(call_history)
+
         snippet = snippet_db.get(f.get("snippet_id", ""), {})
         poc = build_poc_json(f, snippet)
         src = _autogen_source(f, snippet)
-        _write_files(poc, src, output_dir / "pocs")
+        _write_files(poc, src, Path(str(output_dir)) / "pocs")
 
         if run:
-            ok, target = _build(poc, output_dir)
+            ok, target = _build(poc, Path(str(output_dir)))
             if not ok:
                 poc["result"] = {
                     "status": "build_failed",
@@ -278,20 +452,30 @@ def process_findings(
                 }
             else:
                 lang = poc["harness"]["language"]
-                exec_result = _execute(target, lang)
-                poc["result"] = {
-                    "status": exec_result["status"],
-                    "verdict": "confirmed"
-                    if (
-                        exec_result.get("exit_code", 0) != 0
-                        or "ERROR" in exec_result.get("stderr", "")
-                    )
-                    else "rejected",
-                    "reasoning": f"exit={exec_result.get('exit_code')}, stderr={exec_result.get('stderr', '')[:200]}",
-                }
+                try:
+                    with EgressAuditContext(Path(str(output_dir)), sandbox_prefix):
+                        exec_result = _execute(target, lang)
+                except ScopeViolationError as exc:
+                    exec_result = None
+                    poc["result"] = {
+                        "verdict": "scope_violation",
+                        "status": "blocked",
+                        "reasoning": str(exc),
+                    }
+                if exec_result is not None:
+                    poc["result"] = {
+                        "status": exec_result["status"],
+                        "verdict": "confirmed"
+                        if (
+                            exec_result.get("exit_code", 0) != 0
+                            or "ERROR" in exec_result.get("stderr", "")
+                        )
+                        else "rejected",
+                        "reasoning": f"exit={exec_result.get('exit_code')}, stderr={exec_result.get('stderr', '')[:200]}",
+                    }
                 if poc["result"]["verdict"] == "confirmed":
                     f["poc_confirmed"] = True
-            json_file = output_dir / "pocs" / f"{poc['poc_id']}.json"
+            json_file = Path(str(output_dir)) / "pocs" / f"{poc['poc_id']}.json"
             json_file.write_text(json.dumps(poc, indent=2))
         results.append(poc)
     return results
