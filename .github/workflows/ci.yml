@@ -12,14 +12,17 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -45,7 +48,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.12"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -56,13 +59,13 @@ jobs:
       - name: Run ruff format
         run: ruff format --check src/ai_vuln_harness/ tests/
 
-      - name: Run prospector
+      - name: Run prospector (ruff check + mypy + pylint)
         run: prospector --with-tool ruff --with-tool mypy --with-tool pylint src/ai_vuln_harness/
 
       - name: Run semgrep
         run: semgrep --config=auto --severity=ERROR src/ai_vuln_harness/
 
-      - name: Run vulture
+      - name: Run vulture (dead code detection)
         run: vulture --min-confidence 90 src/ai_vuln_harness/ --exclude src/ai_vuln_harness/.vulture_whitelist.py
 
   benchmark-regression-gate:
@@ -120,3 +123,22 @@ jobs:
           name: benchmark-regression-report
           path: output/benchmark_regression_report.json
           if-no-files-found: ignore
+
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build package
+        run: |
+          pip install build
+          python -m build
+
+      - name: Check package
+        run: pip install twine && python -m twine check dist/*
