@@ -330,7 +330,12 @@ def _hallucination_divergence_metrics(
     p_probs = _normalise(p_counts)
     q_probs = _normalise(q_counts)
     missing = sorted(p_counts.keys() - q_counts.keys())[:5]
-    return kl_divergence(p_probs, q_probs), js_divergence(p_probs, q_probs), "ok", missing
+    return (
+        kl_divergence(p_probs, q_probs),
+        js_divergence(p_probs, q_probs),
+        "ok",
+        missing,
+    )
 
 
 def detect_hallucination_kl(
@@ -348,26 +353,39 @@ def detect_hallucination_kl(
 
     Fail-open when snippet content or desc is empty.
     """
+    detected, reason, _, _ = _detect_hallucination_kl_with_metrics(
+        finding, snippet, threshold
+    )
+    return detected, reason
+
+
+def _detect_hallucination_kl_with_metrics(
+    finding: dict,
+    snippet: dict,
+    threshold: float,
+) -> tuple[bool, str, float | None, float | None]:
     kl, js, status, missing = _hallucination_divergence_metrics(finding, snippet)
     if status == "no-snippet-content":
-        return False, status
+        return False, status, kl, js
     if status == "no-desc":
-        return False, status
+        return False, status, kl, js
     if status == "no-desc-tokens":
-        return False, status
+        return False, status, kl, js
     if status == "desc-tokens-absent-from-empty-code":
-        return True, "desc-tokens-absent-from-empty-code"
+        return True, "desc-tokens-absent-from-empty-code", kl, js
     if kl is None or js is None:
-        return False, status
+        return False, status, kl, js
 
     if kl >= threshold:
         return (
             True,
             f"KL={kl:.2f} JSD={js:.2f} (threshold={threshold}); "
             f"desc tokens missing from code: {missing}",
+            kl,
+            js,
         )
 
-    return False, f"KL={kl:.2f} JSD={js:.2f} (ok)"
+    return False, f"KL={kl:.2f} JSD={js:.2f} (ok)", kl, js
 
 
 def annotate_hallucination_kl(
@@ -375,15 +393,22 @@ def annotate_hallucination_kl(
     snippet_db: dict[str, dict],
     threshold: float = 2.0,
 ) -> list[dict]:
-    """Add KL/JSD metric annotations and KL-based hallucination decision fields.
+    """Add hallucination metrics and KL-based decision annotations.
 
-    Decision is based only on KL thresholding from ``detect_hallucination_kl``.
+    Adds:
+      - ``hallucination_kl`` (float)
+      - ``hallucination_js_divergence`` (float)
+      - ``hallucination_kl_detected`` (bool)
+      - ``hallucination_kl_reason`` (str)
+
+    Decision is based only on KL thresholding.
     """
     out = []
     for f in findings:
         snippet = snippet_db.get(f.get("snippet_id", ""), {})
-        detected, reason = detect_hallucination_kl(f, snippet, threshold)
-        kl, js, _, _ = _hallucination_divergence_metrics(f, snippet)
+        detected, reason, kl, js = _detect_hallucination_kl_with_metrics(
+            f, snippet, threshold
+        )
         out.append(
             {
                 **f,
