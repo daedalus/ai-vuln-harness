@@ -248,6 +248,7 @@ class PipelineInvariantTests(unittest.TestCase):
             "suppressions",
             "chainer",
             "poc",
+            "patch",
             "trace",
             "exposure",
             "feedback",
