@@ -308,28 +308,29 @@ def js_divergence(p: dict[str, float], q: dict[str, float]) -> float:
 def _hallucination_divergence_metrics(
     finding: dict,
     snippet: dict,
-) -> tuple[float | None, float | None, str]:
+) -> tuple[float | None, float | None, str, list[str]]:
     """Compute KL/JSD hallucination metrics or return a no-metric reason."""
     content = str(snippet.get("content") or "")
     if not content:
-        return None, None, "no-snippet-content"
+        return None, None, "no-snippet-content", []
 
     desc = str(finding.get("desc") or "")
     if not desc.strip():
-        return None, None, "no-desc"
+        return None, None, "no-desc", []
 
     p_counts = _token_freqs(desc)
     q_counts = _token_freqs(content)
 
     if not p_counts:
-        return None, None, "no-desc-tokens"
+        return None, None, "no-desc-tokens", []
 
     if not q_counts:
-        return None, None, "desc-tokens-absent-from-empty-code"
+        return None, None, "desc-tokens-absent-from-empty-code", []
 
     p_probs = _normalise(p_counts)
     q_probs = _normalise(q_counts)
-    return kl_divergence(p_probs, q_probs), js_divergence(p_probs, q_probs), "ok"
+    missing = sorted(p_counts.keys() - q_counts.keys())[:5]
+    return kl_divergence(p_probs, q_probs), js_divergence(p_probs, q_probs), "ok", missing
 
 
 def detect_hallucination_kl(
@@ -347,7 +348,7 @@ def detect_hallucination_kl(
 
     Fail-open when snippet content or desc is empty.
     """
-    kl, js, status = _hallucination_divergence_metrics(finding, snippet)
+    kl, js, status, missing = _hallucination_divergence_metrics(finding, snippet)
     if status == "no-snippet-content":
         return False, status
     if status == "no-desc":
@@ -358,10 +359,6 @@ def detect_hallucination_kl(
         return True, "desc-tokens-absent-from-empty-code"
     if kl is None or js is None:
         return False, status
-
-    p_counts = _token_freqs(str(finding.get("desc") or ""))
-    q_counts = _token_freqs(str(snippet.get("content") or ""))
-    missing = sorted(p_counts.keys() - q_counts.keys())[:5]
 
     if kl >= threshold:
         return (
@@ -386,7 +383,7 @@ def annotate_hallucination_kl(
     for f in findings:
         snippet = snippet_db.get(f.get("snippet_id", ""), {})
         detected, reason = detect_hallucination_kl(f, snippet, threshold)
-        kl, js, _ = _hallucination_divergence_metrics(f, snippet)
+        kl, js, _, _ = _hallucination_divergence_metrics(f, snippet)
         out.append(
             {
                 **f,
