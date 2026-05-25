@@ -15,6 +15,7 @@ from ai_vuln_harness.stages.shield import (
     detect_hallucination,
     detect_hallucination_kl,
     filter_unreachable,
+    js_divergence,
     kl_divergence,
     verify_call_path,
 )
@@ -212,6 +213,11 @@ class KlDivergenceTests(unittest.TestCase):
         self.assertGreater(kl, 5.0)
         self.assertNotEqual(kl, math.inf)
 
+    def test_js_divergence_is_symmetric(self):
+        p = {"a": 0.9, "b": 0.1}
+        q = {"a": 0.2, "b": 0.8}
+        self.assertAlmostEqual(js_divergence(p, q), js_divergence(q, p), places=6)
+
 
 class DetectHallucinationKlTests(unittest.TestCase):
     def test_ok_when_no_content(self):
@@ -232,6 +238,7 @@ class DetectHallucinationKlTests(unittest.TestCase):
         detected, reason = detect_hallucination_kl(finding, snippet, threshold=5.0)
         self.assertFalse(detected)
         self.assertIn("KL=", reason)
+        self.assertIn("JSD=", reason)
 
     def test_hallucinated_desc_high_kl(self):
         snippet = {"content": "void x() { int y = 1; }"}
@@ -242,6 +249,7 @@ class DetectHallucinationKlTests(unittest.TestCase):
         detected, reason = detect_hallucination_kl(finding, snippet, threshold=5.0)
         self.assertTrue(detected)
         self.assertIn("KL=", reason)
+        self.assertIn("JSD=", reason)
 
     def test_empty_desc_tokens(self):
         snippet = {"content": "void foo() { int x = 1; }"}
@@ -275,6 +283,10 @@ class AnnotateHallucinationKlTests(unittest.TestCase):
         self.assertIn("hallucination_kl_detected", result[1])
         self.assertIn("hallucination_kl_reason", result[0])
         self.assertIn("hallucination_kl", result[0])
+        self.assertIn("hallucination_js_divergence", result[0])
+        self.assertIsInstance(result[0]["hallucination_kl"], float)
+        self.assertIsInstance(result[0]["hallucination_js_divergence"], float)
+        self.assertTrue(math.isnan(result[1]["hallucination_js_divergence"]))
 
 
 # ---------------------------------------------------------------------------

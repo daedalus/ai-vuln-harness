@@ -298,6 +298,40 @@ def kl_divergence(p: dict[str, float], q: dict[str, float]) -> float:
     return d
 
 
+def js_divergence(p: dict[str, float], q: dict[str, float]) -> float:
+    """Jensen-Shannon divergence between two probability distributions."""
+    vocab = set(p.keys()) | set(q.keys())
+    m = {t: (p.get(t, 0.0) + q.get(t, 0.0)) / 2.0 for t in vocab}
+    return (kl_divergence(p, m) + kl_divergence(q, m)) / 2.0
+
+
+def _hallucination_divergence_metrics(
+    finding: dict,
+    snippet: dict,
+) -> tuple[float | None, float | None, str]:
+    """Compute KL/JSD hallucination metrics or return a no-metric reason."""
+    content = str(snippet.get("content") or "")
+    if not content:
+        return None, None, "no-snippet-content"
+
+    desc = str(finding.get("desc") or "")
+    if not desc.strip():
+        return None, None, "no-desc"
+
+    p_counts = _token_freqs(desc)
+    q_counts = _token_freqs(content)
+
+    if not p_counts:
+        return None, None, "no-desc-tokens"
+
+    if not q_counts:
+        return None, None, "desc-tokens-absent-from-empty-code"
+
+    p_probs = _normalise(p_counts)
+    q_probs = _normalise(q_counts)
+    return kl_divergence(p_probs, q_probs), js_divergence(p_probs, q_probs), "ok"
+
+
 def detect_hallucination_kl(
     finding: dict,
     snippet: dict,
@@ -313,37 +347,31 @@ def detect_hallucination_kl(
 
     Fail-open when snippet content or desc is empty.
     """
-    content = str(snippet.get("content") or "")
-    if not content:
-        return False, "no-snippet-content"
-
-    desc = str(finding.get("desc") or "")
-    if not desc.strip():
-        return False, "no-desc"
-
-    p_counts = _token_freqs(desc)
-    q_counts = _token_freqs(content)
-
-    if not p_counts:
-        return False, "no-desc-tokens"
-
-    if not q_counts:
+    kl, js, status = _hallucination_divergence_metrics(finding, snippet)
+    if status == "no-snippet-content":
+        return False, status
+    if status == "no-desc":
+        return False, status
+    if status == "no-desc-tokens":
+        return False, status
+    if status == "desc-tokens-absent-from-empty-code":
         return True, "desc-tokens-absent-from-empty-code"
+    if kl is None or js is None:
+        return False, status
 
-    p_probs = _normalise(p_counts)
-    q_probs = _normalise(q_counts)
-
-    kl = kl_divergence(p_probs, q_probs)
-
+    p_counts = _token_freqs(str(finding.get("desc") or ""))
+    q_counts = _token_freqs(str(snippet.get("content") or ""))
     missing = sorted(p_counts.keys() - q_counts.keys())[:5]
 
     if kl >= threshold:
         return (
             True,
-            f"KL={kl:.2f} (threshold={threshold}); desc tokens missing from code: {missing}",
+            "KL="
+            f"{kl:.2f} JSD={js:.2f} (threshold={threshold}); "
+            f"desc tokens missing from code: {missing}",
         )
 
-    return False, f"KL={kl:.2f} (ok)"
+    return False, f"KL={kl:.2f} JSD={js:.2f} (ok)"
 
 
 def annotate_hallucination_kl(
@@ -351,17 +379,20 @@ def annotate_hallucination_kl(
     snippet_db: dict[str, dict],
     threshold: float = 2.0,
 ) -> list[dict]:
-    """Add ``hallucination_kl`` (float), ``hallucination_kl_detected`` (bool),
-    and ``hallucination_kl_reason`` (str) to each finding.
+    """Add KL/JSD metric annotations and KL-based hallucination decision fields.
+
+    Decision is based only on KL thresholding from ``detect_hallucination_kl``.
     """
     out = []
     for f in findings:
         snippet = snippet_db.get(f.get("snippet_id", ""), {})
         detected, reason = detect_hallucination_kl(f, snippet, threshold)
+        kl, js, _ = _hallucination_divergence_metrics(f, snippet)
         out.append(
             {
                 **f,
-                "hallucination_kl": float("nan") if reason.startswith("no-") else None,
+                "hallucination_kl": float("nan") if kl is None else kl,
+                "hallucination_js_divergence": float("nan") if js is None else js,
                 "hallucination_kl_detected": detected,
                 "hallucination_kl_reason": reason,
             },
