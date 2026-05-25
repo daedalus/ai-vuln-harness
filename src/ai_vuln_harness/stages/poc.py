@@ -80,7 +80,8 @@ class ScopeViolationError(Exception):
 
 
 @contextmanager
-def EgressAuditContext(  # noqa: N802  # match naming convention requested
+def EgressAuditContext(  # noqa: N802 — CamelCase matches the exported public API name
+    # required by the problem spec so callers can do `with EgressAuditContext(...)`
     output_dir: Path,
     sandbox_prefix: list[str] | None = None,
 ) -> Generator[None, None, None]:
