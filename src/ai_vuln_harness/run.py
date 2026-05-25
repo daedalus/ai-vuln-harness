@@ -45,6 +45,7 @@ from .stages.feedback import build_feedback_tasks
 from .stages.gapfill import build_gapfill_tasks
 from .stages.ingestor import filter_snippets, load_repo_snippets, tag_snippet
 from .stages.parser import parse_findings
+from .stages.patch import build_patch_candidates
 from .stages.poc import process_findings as run_poc
 from .stages.recon import build_recon_tasks
 from .stages.report import build_report, deduplicate
@@ -350,6 +351,28 @@ def _run_poc_stage(
     pocs = run_poc(target, snippet_db)
     _persist_jsonl(output_dir / "pocs.jsonl", pocs)
     return pocs
+
+
+def _run_patch_stage(
+    findings: list[dict],
+    snippet_db: dict,
+    output_dir: Path,
+    run_patch_enabled: bool,
+) -> list[dict]:
+    """Generate patch candidates for confirmed findings (PATCH stage).
+
+    Skipped when *run_patch_enabled* is False (default).  When enabled,
+    delegates to :func:`build_patch_candidates` and persists the results
+    to ``output/patch_candidates.jsonl``.
+
+    Returns the list of patch candidate dicts (empty when disabled).
+    """
+    if not run_patch_enabled:
+        return []
+    candidates = build_patch_candidates(findings, snippet_db)
+    _persist_jsonl(output_dir / "patch_candidates.jsonl", candidates)
+    logger.info("patch generated %d patch candidate(s)", len(candidates))
+    return candidates
 
 
 def _run_trace_stage(findings: list[dict], state: StateDB) -> None:
@@ -1276,6 +1299,7 @@ def run(
     validate_model_chain_override: list[str] | None = None,
     run_poc_enabled: bool = False,
     poc_finding_id: str | None = None,
+    run_patch_enabled: bool = False,
     refresh_models: bool = False,
     budget_ratio: float = 0.85,
     pooled: bool = False,
@@ -1426,6 +1450,12 @@ def run(
         run_poc_enabled,
         poc_finding_id,
     )
+    patch_candidates = _run_patch_stage(
+        findings,
+        snippet_db,
+        output_dir,
+        run_patch_enabled,
+    )
     _run_trace_stage(findings, state)
 
     findings, exposure_metrics = annotate_exposure_windows(findings, repo)
@@ -1453,6 +1483,8 @@ def run(
     )
     if pocs:
         report["pocs"] = pocs
+    if patch_candidates:
+        report["patch_candidates"] = patch_candidates
 
     state.put_meta("last_mode", mode)
     state.finish_run(run_id)
@@ -1528,6 +1560,7 @@ def run_all(
     validate_model_chain_override: list[str] | None = None,
     run_poc_enabled: bool = False,
     poc_finding_id: str | None = None,
+    run_patch_enabled: bool = False,
     refresh_models: bool = False,
     budget_ratio: float = 0.85,
     pooled: bool = False,
@@ -1558,6 +1591,7 @@ def run_all(
             validate_model_chain_override=validate_model_chain_override,
             run_poc_enabled=run_poc_enabled,
             poc_finding_id=poc_finding_id,
+            run_patch_enabled=run_patch_enabled,
             refresh_models=refresh_models,
             budget_ratio=budget_ratio,
             pooled=pooled,
@@ -1686,6 +1720,7 @@ def _build_run_kwargs(args: argparse.Namespace) -> dict:
         "validate_model_chain_override": args.validate_model_override,
         "run_poc_enabled": args.poc_finding is not None or args.poc_only,
         "poc_finding_id": args.poc_finding if args.poc_finding != "all" else None,
+        "run_patch_enabled": args.run_patch,
         "refresh_models": args.refresh_models,
         "budget_ratio": args.budget_ratio,
         "pooled": args.pooled,
@@ -1746,6 +1781,12 @@ def main() -> None:
         dest="poc_finding",
     )
     parser.add_argument("--poc-only", action="store_true", dest="poc_only")
+    parser.add_argument(
+        "--run-patch",
+        action="store_true",
+        dest="run_patch",
+        help="Generate patch candidates for confirmed findings (PATCH stage).",
+    )
     parser.add_argument("--log-file", type=Path, default=None)
     parser.add_argument("--benchmark-corpus", type=Path, default=None)
     parser.add_argument("--benchmark-baseline", type=Path, default=None)

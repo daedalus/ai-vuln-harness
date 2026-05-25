@@ -29,6 +29,7 @@ PIPELINE_STAGES = [
     "suppressions",
     "chainer",
     "poc",
+    "patch",
     "trace",
     "exposure",
     "feedback",

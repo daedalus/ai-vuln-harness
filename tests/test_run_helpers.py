@@ -220,6 +220,7 @@ class TestBuildRunKwargs:
         ns.validate_model_override = None
         ns.poc_finding = None
         ns.poc_only = False
+        ns.run_patch = False
         ns.refresh_models = False
         ns.budget_ratio = 0.85
         ns.pooled = False

@@ -72,7 +72,7 @@ The v1 scaffold implements a **Hunt → Validate → Dedupe → Trace → PoC** 
 
 | Gap | Details |
 |---|---|
-| **Patch generation stage** | The harness stops at a `fix_now` annotation. A patch generation stage should call a model to produce a minimal, correct patch (diff format), then re-run the PoC against the patched binary to verify the fix. |
+| ~~**Patch generation stage**~~ | ~~The harness stops at a `fix_now` annotation. A patch generation stage should call a model to produce a minimal, correct patch (diff format), then re-run the PoC against the patched binary to verify the fix.~~ **Implemented**: `stages/patch.py` provides a deterministic PATCH stage that builds structured `PatchCandidate` records with a class-driven fix strategy, CWE mapping, and PoC-based verification plan. Enable with `--run-patch`. |
 | **Regression gate on patches** | Generated patches should be validated against the existing test suite before being recommended, with regressions flagged. |
 
 ---
@@ -106,7 +106,7 @@ The v1 scaffold implements a **Hunt → Validate → Dedupe → Trace → PoC** 
 |---|---|---|
 | 🔴 Critical | Multi-language ingestor (Rust, Go, Python) | Medium |
 | 🔴 Critical | Diff-driven incremental scanning + CI hooks | Medium |
-| 🔴 Critical | Patch generation + re-validation stage | Medium |
+| ~~🔴 Critical~~ | ~~Patch generation + re-validation stage~~ | ~~Medium~~ |
 | 🟠 High | Inter-component exploit chain graph | High |
 | 🟠 High | CyberGym / CVE benchmark mode | Low–Medium |
 | 🟠 High | Exposure-window tracking | Low |
