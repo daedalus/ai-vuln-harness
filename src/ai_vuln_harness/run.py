@@ -294,14 +294,13 @@ def _run_fuzz_orchestrator_stage(
     *,
     chains: list[dict],
     mode: str,
-    benchmark_context: bool = False,
 ) -> list[dict]:
     fuzz_cfg = cfg.get("fuzz_orchestrator", {})
     enabled = bool(cfg.get("enable_fuzz_orchestrator", False))
     benchmark_only = bool(fuzz_cfg.get("benchmark_only", True))
     if not enabled:
         return []
-    if benchmark_only and mode != "benchmark" and not benchmark_context:
+    if benchmark_only and mode != "benchmark":
         return []
     artifacts = orchestrate_fuzz_targets(
         findings,
@@ -310,7 +309,9 @@ def _run_fuzz_orchestrator_stage(
         execute=bool(fuzz_cfg.get("execute", False)),
         timeout_seconds=int(fuzz_cfg.get("timeout_seconds", 10)),
         max_targets=int(fuzz_cfg.get("max_targets", 25)),
-        high_confidence_threshold=float(fuzz_cfg.get("high_confidence_threshold", 0.75)),
+        high_confidence_threshold=float(
+            fuzz_cfg.get("high_confidence_threshold", 0.75)
+        ),
         max_chain_targets=int(fuzz_cfg.get("max_chain_targets", 10)),
     )
     _persist_jsonl(output_dir / "fuzz_artifacts.jsonl", artifacts)
@@ -516,6 +517,21 @@ def _load_stages_config(script_dir: Path) -> dict:
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError):
         return {}
+
+
+def _apply_runtime_flags(
+    cfg: dict,
+    *,
+    enable_fuzz_orchestrator: bool | None,
+) -> dict:
+    if enable_fuzz_orchestrator is None:
+        return cfg
+    cfg["enable_fuzz_orchestrator"] = bool(enable_fuzz_orchestrator)
+    if enable_fuzz_orchestrator:
+        cfg["enable_localization_stage"] = True
+    if enable_fuzz_orchestrator and isinstance(cfg.get("fuzz_orchestrator"), dict):
+        cfg["fuzz_orchestrator"]["benchmark_only"] = False
+    return cfg
 
 
 def _stage_workers(stages_cfg: dict, stage: str, global_max: int) -> int:
@@ -834,6 +850,8 @@ def _sort_for_validation(findings: list[dict]) -> list[dict]:
 
 def _enforce_localization_evidence(finding: dict) -> dict:
     """Require stronger evidence before low-confidence findings can be confirmed."""
+    if not bool(finding.get("localization_enforced")):
+        return finding
     status = str(finding.get("validate_status", "needs-more-info")).lower()
     confidence = float(finding.get("localization_confidence", 0.0))
     runtime = finding.get("validate_runtime")
@@ -1303,9 +1321,7 @@ def run_benchmark_gate(
     if not isinstance(baseline_profiles, dict):
         baseline_profiles = {}
 
-    run_kwargs.setdefault("enable_localization_stage", True)
     run_kwargs.setdefault("enable_fuzz_orchestrator", True)
-    run_kwargs.setdefault("benchmark_context", True)
     profile_runs: dict[str, list[dict]] = {}
     for target in targets:
         target_repo = Path(target["repo"])
@@ -1465,17 +1481,15 @@ def run(
     budget_ratio: float = 0.85,
     pooled: bool = False,
     load_packs_cache: bool = False,
-    enable_localization_stage: bool | None = None,
     enable_fuzz_orchestrator: bool | None = None,
-    benchmark_context: bool = False,
 ) -> dict:
     pkg_dir = Path(__file__).parent
     work_dir = Path.cwd()
     cfg = json.loads((pkg_dir / "config/defaults.json").read_text())
-    if enable_localization_stage is not None:
-        cfg["enable_localization_stage"] = bool(enable_localization_stage)
-    if enable_fuzz_orchestrator is not None:
-        cfg["enable_fuzz_orchestrator"] = bool(enable_fuzz_orchestrator)
+    cfg = _apply_runtime_flags(
+        cfg,
+        enable_fuzz_orchestrator=enable_fuzz_orchestrator,
+    )
     stages_cfg = _load_stages_config(pkg_dir)
     state = StateDB(work_dir / cfg["state_db"])
     cache = JsonCache(work_dir / cfg["cache_file"])
@@ -1626,7 +1640,6 @@ def run(
         output_dir,
         chains=chains,
         mode=mode,
-        benchmark_context=benchmark_context,
     )
     pocs = _run_poc_stage(
         findings,
@@ -1752,9 +1765,7 @@ def run_all(
     budget_ratio: float = 0.85,
     pooled: bool = False,
     load_packs_cache: bool = False,
-    enable_localization_stage: bool | None = None,
     enable_fuzz_orchestrator: bool | None = None,
-    benchmark_context: bool = False,
 ) -> dict:
     reports: list[dict] = []
     for mode in _SINGLE_MODES:
@@ -1786,9 +1797,7 @@ def run_all(
             budget_ratio=budget_ratio,
             pooled=pooled,
             load_packs_cache=load_packs_cache,
-            enable_localization_stage=enable_localization_stage,
             enable_fuzz_orchestrator=enable_fuzz_orchestrator,
-            benchmark_context=benchmark_context,
         )
         report["mode_run"] = mode
         reports.append(report)
@@ -1918,7 +1927,6 @@ def _build_run_kwargs(args: argparse.Namespace) -> dict:
         "budget_ratio": args.budget_ratio,
         "pooled": args.pooled,
         "load_packs_cache": args.load_packs_cache,
-        "enable_localization_stage": args.enable_localization_stage,
         "enable_fuzz_orchestrator": args.enable_fuzz_orchestrator,
     }
 
@@ -1967,7 +1975,6 @@ def main() -> None:
     parser.add_argument("--refresh-models", action="store_true")
     parser.add_argument("--load-packs-cache", action="store_true")
     parser.add_argument("--pooled", action="store_true")
-    parser.add_argument("--enable-localization-stage", action="store_true")
     parser.add_argument("--enable-fuzz-orchestrator", action="store_true")
     parser.add_argument(
         "--poc",

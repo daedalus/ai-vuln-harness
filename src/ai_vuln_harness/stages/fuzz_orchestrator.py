@@ -14,9 +14,9 @@ def _finding_queue(
     high_confidence_threshold: float,
     max_targets: int,
 ) -> list[dict]:
-    high = deque()
-    medium = deque()
-    low = deque()
+    high: deque[dict] = deque()
+    medium: deque[dict] = deque()
+    low: deque[dict] = deque()
     for finding in findings:
         confidence = float(finding.get("localization_confidence", 0.0))
         if confidence >= high_confidence_threshold:
@@ -60,7 +60,9 @@ def _chain_targets(chains: list[dict], max_targets: int) -> list[dict]:
                 "phase": "phase2-cross-function",
                 "function": " -> ".join(str(v) for v in call_path) or "unknown-chain",
                 "file": str(chain.get("file", "unknown")),
-                "lines": chain.get("lines") if isinstance(chain.get("lines"), list) else [],
+                "lines": chain.get("lines")
+                if isinstance(chain.get("lines"), list)
+                else [],
                 "confidence": float(chain.get("confidence", 0.4)),
                 "seed_input": "chain-seed",
                 "command": ["local-harness", "--chain", str(idx + 1)],
@@ -175,4 +177,3 @@ def orchestrate_fuzz_targets(
             },
         )
     return artifacts
-
