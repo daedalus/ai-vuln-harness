@@ -56,6 +56,20 @@ def _check_call_path_blocker(f: dict, sev: str, status: str) -> tuple[str, str] 
     return None
 
 
+def _check_localization_blocker(f: dict, sev: str, status: str) -> tuple[str, str] | None:
+    if not bool(f.get("localization_enforced")):
+        return None
+    if sev not in {"CRITICAL", "HIGH"} or status != "confirmed":
+        return None
+    points = f.get("suspicious_points")
+    if not isinstance(points, list) or not points:
+        return (
+            "backlog",
+            "Blocked from fix_now: missing suspicious_points localization evidence.",
+        )
+    return None
+
+
 def bucket_finding(
     finding: dict,
     trace_required: bool = True,
@@ -80,6 +94,9 @@ def bucket_finding(
     blocker = _check_call_path_blocker(f, sev, status)
     if blocker is not None:
         return blocker
+    localization_blocker = _check_localization_blocker(f, sev, status)
+    if localization_blocker is not None:
+        return localization_blocker
 
     # Improvement ⑤: downgrade severity for unconfirmed/needs-more-info findings.
     if not f.get("poc_confirmed") and status in {"needs-more-info", "raw"}:

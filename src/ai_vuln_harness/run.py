@@ -1,8 +1,9 @@
 """AI Vulnerability Research Harness — multi-agent pipeline runner.
 
-Canonical pipeline (15 stages):
-  INGESTOR → RECON → COORDINATOR → HUNT → VALIDATE → GAPFILL → VOTING →
-  SHIELD → SUPPRESSIONS → CHAINS → POC → TRACE → EXPOSURE → FEEDBACK → REPORT
+Canonical pipeline (17 stages):
+  INGESTOR → RECON → COORDINATOR → HUNT → LOCALIZATION → VALIDATE →
+  FUZZ_ORCHESTRATOR → GAPFILL → VOTING → SHIELD → SUPPRESSIONS → CHAINS →
+  POC → TRACE → EXPOSURE → FEEDBACK → REPORT
 
 Never edit the template in place. Copy it first:
   cp -a /home/dclavijo/.opencode/skills/ai-vuln-harness/templates/v1/ ./my-harness/
@@ -37,13 +38,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .stages.chains import synthesize_exploit_chains
-from .stages.contracts import standardize_finding
+from .stages.contracts import has_valid_suspicious_points, standardize_finding
 from .stages.coordinator import build_context_packs
 from .stages.diff import get_changed_snippets
 from .stages.exposure import annotate_exposure_windows
 from .stages.feedback import build_feedback_tasks
+from .stages.fuzz_orchestrator import orchestrate_fuzz_targets
 from .stages.gapfill import build_gapfill_tasks
 from .stages.ingestor import filter_snippets, load_repo_snippets, tag_snippet
+from .stages.localization import localize_findings
 from .stages.parser import parse_findings
 from .stages.patch import build_patch_candidates
 from .stages.poc import process_findings as run_poc
@@ -217,6 +220,37 @@ def _run_hunt_stage(
     return all_findings, all_gaps
 
 
+def _run_localization_stage(
+    all_findings: list[dict],
+    snippet_db: dict[str, dict],
+    cfg: dict,
+    output_dir: Path,
+) -> tuple[list[dict], list[dict]]:
+    if not all_findings:
+        return [], []
+    localization_cfg = cfg.get("localization", {})
+    if not cfg.get("enable_localization_stage", False):
+        passthrough = []
+        for finding in all_findings:
+            standardized = standardize_finding(finding)
+            standardized["has_valid_localization"] = has_valid_suspicious_points(
+                standardized,
+            )
+            standardized["localization_enforced"] = False
+            passthrough.append(standardized)
+        _persist_jsonl(output_dir / "localized_findings.jsonl", passthrough)
+        return passthrough, []
+    localized, unreachable = localize_findings(
+        all_findings,
+        snippet_db,
+        entry_points=cfg.get("entry_points", []),
+        max_hops=int(localization_cfg.get("max_reachability_hops", 6)),
+    )
+    _persist_jsonl(output_dir / "localized_findings.jsonl", localized)
+    _persist_jsonl(output_dir / "localized_unreachable.jsonl", unreachable)
+    return localized, unreachable
+
+
 def _run_validate_stage(
     mode: str,
     all_findings: list[dict],
@@ -228,15 +262,19 @@ def _run_validate_stage(
     validate_workers: int,
     model_pool: ModelPool | None,
     output_dir: Path,
+    cfg: dict,
 ) -> list[dict]:
-    if mode in ("validate-only", "poc-only") or not all_findings or not auth:
+    prioritized = all_findings
+    if cfg.get("enable_localization_stage", False):
+        prioritized = _sort_for_validation(prioritized)
+    if mode in ("validate-only", "poc-only") or not prioritized or not auth:
         validated = all_findings[:]
         for f in validated:
             f.setdefault("validate_status", "needs-more-info")
             f.setdefault("validate_reason", "skipped")
         return validated
     validated = _run_validate_findings(
-        all_findings,
+        prioritized,
         snippet_db,
         validate_models,
         auth=auth,
@@ -246,6 +284,37 @@ def _run_validate_stage(
     )
     _persist_jsonl(output_dir / "validated.jsonl", validated)
     return validated
+
+
+def _run_fuzz_orchestrator_stage(
+    findings: list[dict],
+    snippet_db: dict[str, dict],
+    cfg: dict,
+    output_dir: Path,
+    *,
+    chains: list[dict],
+    mode: str,
+    benchmark_context: bool = False,
+) -> list[dict]:
+    fuzz_cfg = cfg.get("fuzz_orchestrator", {})
+    enabled = bool(cfg.get("enable_fuzz_orchestrator", False))
+    benchmark_only = bool(fuzz_cfg.get("benchmark_only", True))
+    if not enabled:
+        return []
+    if benchmark_only and mode != "benchmark" and not benchmark_context:
+        return []
+    artifacts = orchestrate_fuzz_targets(
+        findings,
+        snippet_db,
+        chains=chains,
+        execute=bool(fuzz_cfg.get("execute", False)),
+        timeout_seconds=int(fuzz_cfg.get("timeout_seconds", 10)),
+        max_targets=int(fuzz_cfg.get("max_targets", 25)),
+        high_confidence_threshold=float(fuzz_cfg.get("high_confidence_threshold", 0.75)),
+        max_chain_targets=int(fuzz_cfg.get("max_chain_targets", 10)),
+    )
+    _persist_jsonl(output_dir / "fuzz_artifacts.jsonl", artifacts)
+    return artifacts
 
 
 def _run_gapfill_loop(
@@ -647,6 +716,7 @@ def _run_validate_finding(
     auth: dict[str, str],
     cache: JsonCache,
 ) -> dict:
+    finding = standardize_finding(finding)
     if is_api_by_design(finding, snippet):
         logger.debug(
             "validate skip %s: api_by_design",
@@ -657,7 +727,6 @@ def _run_validate_finding(
             "validate_status": "rejected",
             "validate_reason": "api_by_design",
         }
-    finding = standardize_finding(finding)
     prompt = build_validate_prompt(finding, snippet)
     logger.debug(
         "validate finding=%s model=%s prompt_chars=%d",
@@ -681,7 +750,8 @@ def _run_validate_finding(
         if not parsed:
             reason = f"unparseable LLM response: {raw[:200]}"
         logger.debug("validate result: status=%s reason=%s", status, reason[:80])
-        return {**finding, "validate_status": status, "validate_reason": reason}
+        result = {**finding, "validate_status": status, "validate_reason": reason}
+        return _enforce_localization_evidence(result)
     except Exception as e:
         logger.warning("validate exception for %s: %s", finding.get("title", "?"), e)
         return {
@@ -699,13 +769,13 @@ def _run_validate_finding_from_pool(
     auth: dict[str, str],
     cache: JsonCache,
 ) -> dict:
+    finding = standardize_finding(finding)
     if is_api_by_design(finding, snippet):
         return {
             **finding,
             "validate_status": "rejected",
             "validate_reason": "api_by_design",
         }
-    finding = standardize_finding(finding)
     prompt = build_validate_prompt(finding, snippet)
     try:
         raw = call_llm_from_pool(
@@ -722,13 +792,63 @@ def _run_validate_finding_from_pool(
         reason = parsed.get("reason", "") or ""
         if not parsed:
             reason = f"unparseable LLM response: {raw[:200]}"
-        return {**finding, "validate_status": status, "validate_reason": reason}
+        result = {**finding, "validate_status": status, "validate_reason": reason}
+        return _enforce_localization_evidence(result)
     except Exception as e:
         return {
             **finding,
             "validate_status": "needs-more-info",
             "validate_reason": f"validate exception: {e}",
         }
+
+
+def _is_high_priority_validate_finding(finding: dict) -> bool:
+    if bool(finding.get("high_priority_validate")):
+        return True
+    confidence = float(finding.get("localization_confidence", 0.0))
+    if confidence >= 0.75:
+        return True
+    points = finding.get("suspicious_points")
+    if not isinstance(points, list) or not points:
+        return False
+    sink = str(points[0].get("sink_source_type", "")).lower()
+    return sink in {
+        "memory-corruption",
+        "buffer-overflow",
+        "use-after-free",
+        "format-string",
+        "command-injection",
+        "path-traversal",
+    }
+
+
+def _sort_for_validation(findings: list[dict]) -> list[dict]:
+    return sorted(
+        findings,
+        key=lambda finding: (
+            0 if _is_high_priority_validate_finding(finding) else 1,
+            -float(finding.get("localization_confidence", 0.0)),
+        ),
+    )
+
+
+def _enforce_localization_evidence(finding: dict) -> dict:
+    """Require stronger evidence before low-confidence findings can be confirmed."""
+    status = str(finding.get("validate_status", "needs-more-info")).lower()
+    confidence = float(finding.get("localization_confidence", 0.0))
+    runtime = finding.get("validate_runtime")
+    observed = False
+    if isinstance(runtime, dict):
+        observed = bool(runtime.get("vulnerability_observed"))
+    if status == "confirmed" and confidence < 0.5 and not observed:
+        reason = str(finding.get("validate_reason", "")).strip()
+        prefix = "downgraded_low_localization_confidence_without_runtime_signal"
+        finding = {
+            **finding,
+            "validate_status": "needs-more-info",
+            "validate_reason": f"{prefix}: {reason}" if reason else prefix,
+        }
+    return finding
 
 
 def _run_validate_findings(
@@ -743,6 +863,7 @@ def _run_validate_findings(
 ) -> list[dict]:
     if not findings:
         return []
+    findings = _sort_for_validation(findings)
 
     validated: list[dict] = []
     total = len(findings)
@@ -891,17 +1012,32 @@ _BENCHMARK_METRICS = [
     "reject_rate",
     "duplicate_rate",
     "gap_closure_rate",
+    "reproducible_confirmation_rate",
+    "fuzz_target_compile_success_rate",
+    "sanitizer_confirmed_rate",
+    "triage_false_positive_drop",
     "runtime_per_confirmed_finding_seconds",
     "cost_per_confirmed_finding_usd",
 ]
 
-_BENCHMARK_HIGHER_IS_BETTER = {"precision_at_top_n", "gap_closure_rate"}
+_BENCHMARK_HIGHER_IS_BETTER = {
+    "precision_at_top_n",
+    "gap_closure_rate",
+    "reproducible_confirmation_rate",
+    "fuzz_target_compile_success_rate",
+    "sanitizer_confirmed_rate",
+    "triage_false_positive_drop",
+}
 
 _BENCHMARK_DEFAULT_THRESHOLDS = {
     "precision_at_top_n": 0.03,
     "reject_rate": 0.03,
     "duplicate_rate": 0.02,
     "gap_closure_rate": 0.05,
+    "reproducible_confirmation_rate": 0.03,
+    "fuzz_target_compile_success_rate": 0.05,
+    "sanitizer_confirmed_rate": 0.03,
+    "triage_false_positive_drop": 0.03,
     "runtime_per_confirmed_finding_seconds": 20.0,
     "cost_per_confirmed_finding_usd": 0.2,
 }
@@ -985,12 +1121,34 @@ def _extract_report_kpis(
         ).lower()
         == "confirmed"
     )
+    fuzz_artifacts = report.get("fuzz_artifacts") or []
+    compile_successes = 0
+    sanitizer_hits = 0
+    reproduced = 0
+    for artifact in fuzz_artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        payload = artifact.get("artifact")
+        if not isinstance(payload, dict):
+            continue
+        if bool(payload.get("compile_succeeded")):
+            compile_successes += 1
+        if str(payload.get("sanitizer_signal", "")).strip():
+            sanitizer_hits += 1
+        if bool(payload.get("reproduced")):
+            reproduced += 1
+    fuzz_count = len([entry for entry in fuzz_artifacts if isinstance(entry, dict)])
+    triage_false_positive_drop = 1.0 - _safe_ratio(rejected, total_bucketed)
 
     return {
         "precision_at_top_n": precision_at_top_n,
         "reject_rate": _safe_ratio(rejected, total_bucketed),
         "duplicate_rate": duplicate_rate,
         "gap_closure_rate": gap_closure_rate,
+        "reproducible_confirmation_rate": _safe_ratio(reproduced, fuzz_count),
+        "fuzz_target_compile_success_rate": _safe_ratio(compile_successes, fuzz_count),
+        "sanitizer_confirmed_rate": _safe_ratio(sanitizer_hits, fuzz_count),
+        "triage_false_positive_drop": triage_false_positive_drop,
         "runtime_per_confirmed_finding_seconds": (
             0.0 if confirmed_findings == 0 else elapsed_seconds / confirmed_findings
         ),
@@ -1145,6 +1303,9 @@ def run_benchmark_gate(
     if not isinstance(baseline_profiles, dict):
         baseline_profiles = {}
 
+    run_kwargs.setdefault("enable_localization_stage", True)
+    run_kwargs.setdefault("enable_fuzz_orchestrator", True)
+    run_kwargs.setdefault("benchmark_context", True)
     profile_runs: dict[str, list[dict]] = {}
     for target in targets:
         target_repo = Path(target["repo"])
@@ -1304,10 +1465,17 @@ def run(
     budget_ratio: float = 0.85,
     pooled: bool = False,
     load_packs_cache: bool = False,
+    enable_localization_stage: bool | None = None,
+    enable_fuzz_orchestrator: bool | None = None,
+    benchmark_context: bool = False,
 ) -> dict:
     pkg_dir = Path(__file__).parent
     work_dir = Path.cwd()
     cfg = json.loads((pkg_dir / "config/defaults.json").read_text())
+    if enable_localization_stage is not None:
+        cfg["enable_localization_stage"] = bool(enable_localization_stage)
+    if enable_fuzz_orchestrator is not None:
+        cfg["enable_fuzz_orchestrator"] = bool(enable_fuzz_orchestrator)
     stages_cfg = _load_stages_config(pkg_dir)
     state = StateDB(work_dir / cfg["state_db"])
     cache = JsonCache(work_dir / cfg["cache_file"])
@@ -1391,6 +1559,13 @@ def run(
         model_pool,
         output_dir,
     )
+    all_findings, localization_unreachable = _run_localization_stage(
+        all_findings,
+        snippet_db,
+        cfg,
+        output_dir,
+    )
+    state.put_meta("localization_unreachable_count", str(len(localization_unreachable)))
 
     validated = _run_validate_stage(
         mode,
@@ -1403,6 +1578,7 @@ def run(
         validate_workers,
         model_pool,
         output_dir,
+        cfg,
     )
 
     validated, all_gaps, gapfill_tasks = _run_gapfill_loop(
@@ -1443,6 +1619,15 @@ def run(
     state.put_meta("registry_suppressed", str(len(registry_suppressed)))
 
     chains = synthesize_exploit_chains(findings, snippets)
+    fuzz_artifacts = _run_fuzz_orchestrator_stage(
+        findings,
+        snippet_db,
+        cfg,
+        output_dir,
+        chains=chains,
+        mode=mode,
+        benchmark_context=benchmark_context,
+    )
     pocs = _run_poc_stage(
         findings,
         snippet_db,
@@ -1485,6 +1670,8 @@ def run(
         report["pocs"] = pocs
     if patch_candidates:
         report["patch_candidates"] = patch_candidates
+    if fuzz_artifacts:
+        report["fuzz_artifacts"] = fuzz_artifacts
 
     state.put_meta("last_mode", mode)
     state.finish_run(run_id)
@@ -1565,6 +1752,9 @@ def run_all(
     budget_ratio: float = 0.85,
     pooled: bool = False,
     load_packs_cache: bool = False,
+    enable_localization_stage: bool | None = None,
+    enable_fuzz_orchestrator: bool | None = None,
+    benchmark_context: bool = False,
 ) -> dict:
     reports: list[dict] = []
     for mode in _SINGLE_MODES:
@@ -1596,6 +1786,9 @@ def run_all(
             budget_ratio=budget_ratio,
             pooled=pooled,
             load_packs_cache=load_packs_cache,
+            enable_localization_stage=enable_localization_stage,
+            enable_fuzz_orchestrator=enable_fuzz_orchestrator,
+            benchmark_context=benchmark_context,
         )
         report["mode_run"] = mode
         reports.append(report)
@@ -1725,6 +1918,8 @@ def _build_run_kwargs(args: argparse.Namespace) -> dict:
         "budget_ratio": args.budget_ratio,
         "pooled": args.pooled,
         "load_packs_cache": args.load_packs_cache,
+        "enable_localization_stage": args.enable_localization_stage,
+        "enable_fuzz_orchestrator": args.enable_fuzz_orchestrator,
     }
 
 
@@ -1772,6 +1967,8 @@ def main() -> None:
     parser.add_argument("--refresh-models", action="store_true")
     parser.add_argument("--load-packs-cache", action="store_true")
     parser.add_argument("--pooled", action="store_true")
+    parser.add_argument("--enable-localization-stage", action="store_true")
+    parser.add_argument("--enable-fuzz-orchestrator", action="store_true")
     parser.add_argument(
         "--poc",
         type=str,

@@ -1,8 +1,9 @@
 """Canonical stage contracts, required field schemas, and data flow contracts.
 
-Canonical pipeline order (15 stages):
-  INGESTOR → RECON → COORDINATOR → HUNT → VALIDATE → GAPFILL → VOTING →
-  SHIELD → SUPPRESSIONS → CHAINS → POC → TRACE → EXPOSURE → FEEDBACK → REPORT
+Canonical pipeline order (17 stages):
+  INGESTOR → RECON → COORDINATOR → HUNT → LOCALIZATION → VALIDATE →
+  FUZZ_ORCHESTRATOR → GAPFILL → VOTING → SHIELD → SUPPRESSIONS → CHAINS →
+  POC → TRACE → EXPOSURE → FEEDBACK → REPORT
 
 Every stage is a standalone module under ``stages/`` with a clean import path.
 ``run.py`` is the only entry point — it imports stages, it does not implement
@@ -22,7 +23,9 @@ PIPELINE_STAGES = [
     "recon",
     "coordinator",
     "hunt",
+    "localization",
     "validate",
+    "fuzz_orchestrator",
     "gapfill",
     "voting",
     "shield",
@@ -43,7 +46,47 @@ def standardize_finding(finding: dict) -> dict:
     out.setdefault("poc_confirmed", False)
     out.setdefault("bucket_rationale", "")
     out.setdefault("call_path", [])
+    out.setdefault("suspicious_points", [])
+    out.setdefault("has_valid_localization", False)
+    out.setdefault("localization_confidence", 0.0)
     return out
+
+
+def has_valid_suspicious_points(finding: dict) -> bool:
+    """Return True when finding contains at least one well-shaped suspicious point."""
+    points = finding.get("suspicious_points")
+    if not isinstance(points, list) or not points:
+        return False
+    for point in points:
+        if not isinstance(point, dict):
+            continue
+        function_name = point.get("function")
+        file_path = point.get("file")
+        lines = point.get("lines")
+        sink_type = point.get("sink_source_type")
+        confidence = point.get("confidence")
+        rationale = point.get("rationale")
+        evidence_links = point.get("evidence_links")
+        if not isinstance(function_name, str) or not function_name.strip():
+            continue
+        if not isinstance(file_path, str) or not file_path.strip():
+            continue
+        if not isinstance(lines, list) or not lines:
+            continue
+        if not all(isinstance(line, int) and line > 0 for line in lines):
+            continue
+        if not isinstance(sink_type, str) or not sink_type.strip():
+            continue
+        if not isinstance(confidence, (int, float)):
+            continue
+        if not isinstance(rationale, str):
+            continue
+        if not isinstance(evidence_links, list):
+            continue
+        if not all(isinstance(link, str) for link in evidence_links):
+            continue
+        return True
+    return False
 
 
 _TYPE_CHECK = {

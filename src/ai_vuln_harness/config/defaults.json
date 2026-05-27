@@ -2,6 +2,8 @@
   "mode": "full",
   "is_library_target": true,
   "allow_full_db_fallback": false,
+  "enable_localization_stage": false,
+  "enable_fuzz_orchestrator": false,
   "sync_default": true,
   "max_workers": 3,
   "cache_file": "output/cache.json",
@@ -13,6 +15,17 @@
     "max_reachability_hops": 6,
     "hallucination_desc_token_threshold": 0.60,
     "hallucination_path_token_threshold": 0.70
+  },
+  "localization": {
+    "max_reachability_hops": 6
+  },
+  "fuzz_orchestrator": {
+    "benchmark_only": true,
+    "execute": false,
+    "max_targets": 25,
+    "max_chain_targets": 10,
+    "high_confidence_threshold": 0.75,
+    "timeout_seconds": 10
   },
   "kpis": [
     "precision_at_top_n",

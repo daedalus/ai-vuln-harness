@@ -9,6 +9,8 @@
     "summary": {"type": "object"},
     "findings": {"type": "array"},
     "chains": {"type": "array"},
-    "gaps": {"type": "array"}
+    "gaps": {"type": "array"},
+    "fuzz_artifacts": {"type": "array"},
+    "exposure_window_kpis": {"type": "object"}
   }
 }

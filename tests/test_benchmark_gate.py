@@ -42,6 +42,10 @@ def test_extract_report_kpis_includes_expected_metrics():
     assert kpis["reject_rate"] == 0.0
     assert kpis["duplicate_rate"] == 0.0
     assert kpis["gap_closure_rate"] == 1.0
+    assert kpis["reproducible_confirmation_rate"] == 0.0
+    assert kpis["fuzz_target_compile_success_rate"] == 0.0
+    assert kpis["sanitizer_confirmed_rate"] == 0.0
+    assert kpis["triage_false_positive_drop"] == 1.0
     assert kpis["runtime_per_confirmed_finding_seconds"] == 10.0
     assert kpis["cost_per_confirmed_finding_usd"] == 0.5
 
