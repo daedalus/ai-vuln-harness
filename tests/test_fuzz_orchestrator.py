@@ -51,7 +51,17 @@ def test_orchestrate_fuzz_targets_uses_valgrind_prefix(run_mock, _which_mock):
         {
             "snippet_id": "s1",
             "localization_confidence": 0.9,
-            "suspicious_points": [{"function": "target", "file": "src/a.c", "lines": [1]}],
+            "suspicious_points": [
+                {
+                    "function": "target",
+                    "file": "src/a.c",
+                    "lines": [1],
+                    "sink_source_type": "buffer-overflow",
+                    "confidence": 0.9,
+                    "rationale": "verified",
+                    "evidence_links": ["s1", "src/a.c"],
+                }
+            ],
         }
     ]
     snippet_db = {"s1": {"id": "s1", "file": "src/a.c", "content": "int main(){return 0;}"}}
@@ -76,7 +86,17 @@ def test_orchestrate_fuzz_targets_handles_missing_valgrind(run_mock, _which_mock
         {
             "snippet_id": "s1",
             "localization_confidence": 0.9,
-            "suspicious_points": [{"function": "target", "file": "src/a.c", "lines": [1]}],
+            "suspicious_points": [
+                {
+                    "function": "target",
+                    "file": "src/a.c",
+                    "lines": [1],
+                    "sink_source_type": "buffer-overflow",
+                    "confidence": 0.9,
+                    "rationale": "verified",
+                    "evidence_links": ["s1", "src/a.c"],
+                }
+            ],
         }
     ]
     snippet_db = {"s1": {"id": "s1", "file": "src/a.c", "content": "int main(){return 0;}"}}

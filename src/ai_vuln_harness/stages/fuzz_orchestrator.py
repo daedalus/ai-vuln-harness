@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections import deque
 import shutil
+from collections import deque
 
 from .contracts import has_valid_suspicious_points
 from .validate import recompile_and_run_unvalidated_vulnerable_snippet
