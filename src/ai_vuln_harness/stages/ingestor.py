@@ -103,6 +103,10 @@ _FUNC_PATTERNS = {
     ),
 }
 _BINARY_NON_TEXT_THRESHOLD = 0.30
+_ASCII_HORIZONTAL_TAB = 9
+_ASCII_CARRIAGE_RETURN = 13
+_ASCII_SPACE = 32
+_ASCII_DELETE = 127
 
 
 def _is_probably_binary(path: Path) -> bool:
@@ -114,7 +118,12 @@ def _is_probably_binary(path: Path) -> bool:
         return False
     if b"\x00" in sample:
         return True
-    non_text = sum(b < 9 or (13 < b < 32) or b == 127 for b in sample)
+    non_text = sum(
+        b < _ASCII_HORIZONTAL_TAB
+        or (_ASCII_CARRIAGE_RETURN < b < _ASCII_SPACE)
+        or b == _ASCII_DELETE
+        for b in sample
+    )
     return (non_text / len(sample)) > _BINARY_NON_TEXT_THRESHOLD
 
 
