@@ -4,17 +4,25 @@
     "reject_rate": 0.03,
     "duplicate_rate": 0.02,
     "gap_closure_rate": 0.05,
+    "reproducible_confirmation_rate": 0.03,
+    "fuzz_target_compile_success_rate": 0.05,
+    "sanitizer_confirmed_rate": 0.03,
+    "triage_false_positive_drop": 0.03,
     "runtime_per_confirmed_finding_seconds": 20.0,
     "cost_per_confirmed_finding_usd": 0.2
   },
   "profiles": {
     "library": {
       "precision_at_top_n": 0.02,
-      "gap_closure_rate": 0.04
+      "gap_closure_rate": 0.04,
+      "reproducible_confirmation_rate": 0.02,
+      "fuzz_target_compile_success_rate": 0.04
     },
     "application": {
       "precision_at_top_n": 0.04,
-      "gap_closure_rate": 0.06
+      "gap_closure_rate": 0.06,
+      "reproducible_confirmation_rate": 0.04,
+      "fuzz_target_compile_success_rate": 0.06
     }
   }
 }

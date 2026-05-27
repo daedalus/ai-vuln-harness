@@ -13,9 +13,17 @@
       "model_pool": "hunt",
       "max_workers": 10
     },
+    "localization": {
+      "model_pool": "none",
+      "max_workers": 1
+    },
     "validate": {
       "model_pool": "validate",
       "max_workers": 5
+    },
+    "fuzz_orchestrator": {
+      "model_pool": "none",
+      "max_workers": 1
     },
     "gapfill": {
       "model_pool": "hunt",

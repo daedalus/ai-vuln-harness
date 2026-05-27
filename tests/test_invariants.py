@@ -27,6 +27,8 @@ class StructuralInvariantTests(unittest.TestCase):
             "feedback",
             "gapfill",
             "validate",
+            "localization",
+            "fuzz_orchestrator",
             "contracts",
         ]
         for s in expected_stages:
@@ -55,6 +57,8 @@ class StructuralInvariantTests(unittest.TestCase):
             "exposure",
             "feedback",
             "gapfill",
+            "localization",
+            "fuzz_orchestrator",
         ]:
             self.assertIn(
                 f".stages.{stage_ref}",
@@ -241,7 +245,9 @@ class PipelineInvariantTests(unittest.TestCase):
             "recon",
             "coordinator",
             "hunt",
+            "localization",
             "validate",
+            "fuzz_orchestrator",
             "gapfill",
             "voting",
             "shield",

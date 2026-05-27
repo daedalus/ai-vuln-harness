@@ -27,6 +27,36 @@
     "call_path": {
       "type": "array",
       "items": {"type": "string"}
+    },
+    "suspicious_points": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "function",
+          "file",
+          "lines",
+          "sink_source_type",
+          "confidence",
+          "rationale",
+          "evidence_links"
+        ],
+        "properties": {
+          "function": {"type": "string"},
+          "file": {"type": "string"},
+          "lines": {
+            "type": "array",
+            "items": {"type": "integer"}
+          },
+          "sink_source_type": {"type": "string"},
+          "confidence": {"type": "number"},
+          "rationale": {"type": "string"},
+          "evidence_links": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        }
+      }
     }
   }
 }

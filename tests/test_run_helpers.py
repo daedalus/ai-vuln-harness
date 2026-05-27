@@ -24,6 +24,7 @@ from ai_vuln_harness.run import (
     _resolve_model_chain,
     _resolve_pools,
     _run_hunt_stage,
+    _run_localization_stage,
     _run_trace_stage,
     _run_validate_stage,
     _setup_logging,
@@ -225,6 +226,8 @@ class TestBuildRunKwargs:
         ns.budget_ratio = 0.85
         ns.pooled = False
         ns.load_packs_cache = False
+        ns.enable_localization_stage = False
+        ns.enable_fuzz_orchestrator = False
         return ns
 
     def test_returns_dict(self, args):
@@ -424,6 +427,7 @@ class TestRunValidateStage:
             3,
             None,
             tmp_path,
+            {},
         )
         assert result == [
             {
@@ -435,9 +439,22 @@ class TestRunValidateStage:
 
     def test_empty_findings_returns_empty(self, tmp_path: Path):
         result = _run_validate_stage(
-            "full", [], {}, [], False, {}, MagicMock(), 3, None, tmp_path
+            "full", [], {}, [], False, {}, MagicMock(), 3, None, tmp_path, {}
         )
         assert result == []
+
+
+class TestRunLocalizationStage:
+    def test_localization_disabled_passthrough(self, tmp_path: Path):
+        localized, unreachable = _run_localization_stage(
+            [{"snippet_id": "s1", "severity": "LOW", "class": "x", "desc": "d"}],
+            {},
+            {"enable_localization_stage": False},
+            tmp_path,
+        )
+        assert len(localized) == 1
+        assert unreachable == []
+        assert "suspicious_points" in localized[0]
 
 
 class TestRunTraceStage:

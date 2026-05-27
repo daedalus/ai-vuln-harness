@@ -22,7 +22,7 @@ High-level guide for building a production-style AI vulnerability harness.
 
 ## Canonical pipeline stages
 
-`INGESTOR → RECON → COORDINATOR → HUNT → VALIDATE → GAPFILL → VOTING → SHIELD → SUPPRESSIONS → CHAINS → POC → TRACE → EXPOSURE → FEEDBACK → REPORT`
+`INGESTOR → RECON → COORDINATOR → HUNT → LOCALIZATION → VALIDATE → FUZZ_ORCHESTRATOR → GAPFILL → VOTING → SHIELD → SUPPRESSIONS → CHAINS → POC → TRACE → EXPOSURE → FEEDBACK → REPORT`
 
 See `stages/contracts.py` → `PIPELINE_STAGES` for the ordered list and `run.py` docstring for the overview.
 

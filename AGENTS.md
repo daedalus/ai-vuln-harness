@@ -41,8 +41,9 @@ prospector --with-tool ruff --with-tool mypy --with-tool pylint src/ai_vuln_harn
 ## Pipeline Stages
 
 ```
-INGESTOR → RECON → COORDINATOR → HUNT → VALIDATE → GAPFILL → VOTING →
-SHIELD → SUPPRESSIONS → CHAINS → POC → TRACE → EXPOSURE → FEEDBACK → REPORT
+INGESTOR → RECON → COORDINATOR → HUNT → LOCALIZATION → VALIDATE →
+FUZZ_ORCHESTRATOR → GAPFILL → VOTING → SHIELD → SUPPRESSIONS → CHAINS →
+POC → TRACE → EXPOSURE → FEEDBACK → REPORT
 ```
 
 Only HUNT and VALIDATE call LLMs. All other stages are deterministic logic.

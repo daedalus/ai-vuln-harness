@@ -102,6 +102,29 @@ _FUNC_PATTERNS = {
         re.MULTILINE,
     ),
 }
+_BINARY_NON_TEXT_THRESHOLD = 0.30
+_ASCII_HORIZONTAL_TAB = 9
+_ASCII_CARRIAGE_RETURN = 13
+_ASCII_SPACE = 32
+_ASCII_DELETE = 127
+
+
+def _is_probably_binary(path: Path) -> bool:
+    try:
+        sample = path.read_bytes()[:4096]
+    except OSError:
+        return False
+    if not sample:
+        return False
+    if b"\x00" in sample:
+        return True
+    non_text = sum(
+        b < _ASCII_HORIZONTAL_TAB
+        or (_ASCII_CARRIAGE_RETURN < b < _ASCII_SPACE)
+        or b == _ASCII_DELETE
+        for b in sample
+    )
+    return (non_text / len(sample)) > _BINARY_NON_TEXT_THRESHOLD
 
 
 def should_exclude_path(path: str, is_library_target: bool = True) -> bool:
@@ -178,6 +201,8 @@ def load_repo_snippets(repo: Path, is_library_target: bool = True) -> list[dict]
     snippets: list[dict] = []
     for path in sorted(repo.rglob("*")):
         if path.suffix.lower() not in _SUPPORTED_EXTENSIONS or not path.is_file():
+            continue
+        if _is_probably_binary(path):
             continue
         snippets.extend(
             _extract_path_snippets(path, repo, is_library_target=is_library_target),
