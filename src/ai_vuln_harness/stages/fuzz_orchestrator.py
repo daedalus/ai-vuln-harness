@@ -8,6 +8,8 @@ from collections import deque
 from .contracts import has_valid_suspicious_points
 from .validate import recompile_and_run_unvalidated_vulnerable_snippet
 
+_VALGRIND_ERROR_EXIT_CODE = 99
+
 
 def _finding_queue(
     findings: list[dict],
@@ -105,7 +107,7 @@ def _runtime_artifact(
             return default
         sandbox_prefix = [
             "valgrind",
-            "--error-exitcode=99",
+            f"--error-exitcode={_VALGRIND_ERROR_EXIT_CODE}",
             "--quiet",
         ]
     runtime = recompile_and_run_unvalidated_vulnerable_snippet(

@@ -71,6 +71,7 @@ def test_orchestrate_fuzz_targets_uses_valgrind_prefix(run_mock, _which_mock):
         execute=True,
         use_valgrind=True,
     )
+    assert run_mock.call_args is not None
     sandbox_prefix = run_mock.call_args.kwargs["sandbox_prefix"]
     assert sandbox_prefix[0] == "valgrind"
     assert "--error-exitcode=99" in sandbox_prefix
