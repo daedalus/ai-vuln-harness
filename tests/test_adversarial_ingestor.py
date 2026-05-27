@@ -246,6 +246,17 @@ class IngestorCstIntegrationTests(unittest.TestCase):
             helper = next(s for s in snippets if s["name"] == "helper")
             self.assertEqual(helper["callers"], ["entry"])
 
+    def test_load_repo_snippets_skips_binary_content(self):
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "src").mkdir()
+            path = repo / "src" / "blob.c"
+            path.write_bytes(b"\x7fELF\x02\x01\x01\x00\x00garbage")
+
+            snippets = load_repo_snippets(repo)
+
+            self.assertEqual(snippets, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -104,6 +104,19 @@ _FUNC_PATTERNS = {
 }
 
 
+def _is_probably_binary(path: Path) -> bool:
+    try:
+        sample = path.read_bytes()[:4096]
+    except OSError:
+        return False
+    if not sample:
+        return False
+    if b"\x00" in sample:
+        return True
+    non_text = sum(b < 9 or (13 < b < 32) or b == 127 for b in sample)
+    return (non_text / len(sample)) > 0.30
+
+
 def should_exclude_path(path: str, is_library_target: bool = True) -> bool:
     if not is_library_target:
         return False
@@ -178,6 +191,8 @@ def load_repo_snippets(repo: Path, is_library_target: bool = True) -> list[dict]
     snippets: list[dict] = []
     for path in sorted(repo.rglob("*")):
         if path.suffix.lower() not in _SUPPORTED_EXTENSIONS or not path.is_file():
+            continue
+        if _is_probably_binary(path):
             continue
         snippets.extend(
             _extract_path_snippets(path, repo, is_library_target=is_library_target),

@@ -1,4 +1,6 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from ai_vuln_harness.stages.validate import (
@@ -62,6 +64,20 @@ class ValidateRuntimeTests(unittest.TestCase):
         )
         run_cmd = run_mock.call_args_list[1].args[0]
         self.assertEqual(run_cmd[0], "qemu-x86_64")
+
+    @patch("ai_vuln_harness.stages.validate.subprocess.run")
+    def test_binary_path_runs_without_compile(self, run_mock):
+        run_mock.return_value = _Proc(returncode=0, stdout="ok", stderr="")
+        with TemporaryDirectory() as td:
+            bin_path = Path(td) / "target.bin"
+            bin_path.write_bytes(b"\x7fELFfake")
+            finding = {"binary_path": str(bin_path)}
+            snippet = {"file": "x.py", "language": "python"}
+            out = recompile_and_run_unvalidated_vulnerable_snippet(finding, snippet)
+        self.assertFalse(out["compile_attempted"])
+        self.assertTrue(out["run_attempted"])
+        self.assertEqual(run_mock.call_count, 1)
+        self.assertEqual(run_mock.call_args.args[0][0], str(bin_path))
 
 
 if __name__ == "__main__":

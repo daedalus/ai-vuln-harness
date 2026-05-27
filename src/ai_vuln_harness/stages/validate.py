@@ -131,6 +131,16 @@ def _extract_unvalidated_vulnerable_snippet(finding: dict) -> str:
     return ""
 
 
+def _extract_binary_path(finding: dict, snippet: dict) -> str:
+    for candidate in (
+        finding.get("binary_path"),
+        snippet.get("binary_path"),
+    ):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return ""
+
+
 def _compiler_for(snippet: dict) -> str:
     suffix = Path(str(snippet.get("file", ""))).suffix.lower()
     if suffix in _CPP_SUFFIXES or str(snippet.get("language", "")).lower() in {
@@ -156,6 +166,7 @@ def recompile_and_run_unvalidated_vulnerable_snippet(
     sandbox_prefix: list[str] | None = None,
 ) -> dict:
     source = _extract_unvalidated_vulnerable_snippet(finding)
+    binary_path = _extract_binary_path(finding, snippet)
     result = {
         "compile_attempted": False,
         "compile_succeeded": False,
@@ -168,10 +179,36 @@ def recompile_and_run_unvalidated_vulnerable_snippet(
         "error": "",
     }
 
+    sandbox_prefix = sandbox_prefix or []
+
+    if binary_path:
+        bin_path = Path(binary_path)
+        if not bin_path.exists() or not bin_path.is_file():
+            result["error"] = "binary_not_found"
+            return result
+        result["run_attempted"] = True
+        run_cmd = [*sandbox_prefix, str(bin_path)]
+        run_proc = subprocess.run(
+            run_cmd,
+            cwd=bin_path.parent,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+        result["stdout"] = run_proc.stdout
+        result["stderr"] = run_proc.stderr
+        result["exit_code"] = run_proc.returncode
+        result["run_succeeded"] = True
+        result["vulnerability_observed"] = _contains_vuln_signal(
+            f"{run_proc.stdout}\n{run_proc.stderr}",
+            run_proc.returncode,
+        )
+        return result
+
     if not source or not _is_c_or_cpp(snippet):
         return result
 
-    sandbox_prefix = sandbox_prefix or []
     ext = ".cpp" if _compiler_for(snippet) == "g++" else ".c"
     compiler = _compiler_for(snippet)
 

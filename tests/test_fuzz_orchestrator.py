@@ -109,3 +109,43 @@ def test_orchestrate_fuzz_targets_handles_missing_valgrind(run_mock, _which_mock
     )
     assert not run_mock.called
     assert artifacts[0]["artifact"]["stderr"] == "valgrind_not_available"
+
+
+@patch(
+    "ai_vuln_harness.stages.fuzz_orchestrator.recompile_and_run_unvalidated_vulnerable_snippet"
+)
+def test_orchestrate_fuzz_targets_uses_binary_path_when_source_missing(run_mock):
+    run_mock.return_value = {
+        "stdout": "",
+        "stderr": "",
+        "exit_code": 0,
+        "compile_succeeded": False,
+        "vulnerability_observed": False,
+    }
+    findings = [
+        {
+            "snippet_id": "s1",
+            "binary_path": "/tmp/fuzz-target.bin",
+            "localization_confidence": 0.9,
+            "suspicious_points": [
+                {
+                    "function": "target",
+                    "file": "src/a.c",
+                    "lines": [1],
+                    "sink_source_type": "buffer-overflow",
+                    "confidence": 0.9,
+                    "rationale": "verified",
+                    "evidence_links": ["s1", "src/a.c"],
+                }
+            ],
+        }
+    ]
+    snippet_db = {"s1": {"id": "s1", "file": "src/a.c", "content": ""}}
+    artifacts = orchestrate_fuzz_targets(
+        findings,
+        snippet_db,
+        execute=True,
+    )
+    assert run_mock.called
+    assert run_mock.call_args.args[0]["binary_path"] == "/tmp/fuzz-target.bin"
+    assert artifacts[0]["artifact"]["stderr"] != "missing_snippet_source"

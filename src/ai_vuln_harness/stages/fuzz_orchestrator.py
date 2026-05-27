@@ -97,7 +97,8 @@ def _runtime_artifact(
         default["stderr"] = "execution_disabled"
         return default
     source = str(snippet.get("content", "")).strip()
-    if not source:
+    binary_path = str(finding.get("binary_path") or snippet.get("binary_path") or "").strip()
+    if not source and not binary_path:
         default["stderr"] = "missing_snippet_source"
         return default
     sandbox_prefix: list[str] | None = None
@@ -110,8 +111,13 @@ def _runtime_artifact(
             f"--error-exitcode={_VALGRIND_ERROR_EXIT_CODE}",
             "--quiet",
         ]
+    runtime_finding = {**finding}
+    if source:
+        runtime_finding["unvalidated_vulnerable_snippet"] = source
+    if binary_path:
+        runtime_finding["binary_path"] = binary_path
     runtime = recompile_and_run_unvalidated_vulnerable_snippet(
-        {**finding, "unvalidated_vulnerable_snippet": source},
+        runtime_finding,
         snippet,
         timeout_seconds=timeout_seconds,
         sandbox_prefix=sandbox_prefix,
