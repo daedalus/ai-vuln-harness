@@ -101,6 +101,11 @@ _CPP_SUFFIXES = {".cc", ".cpp", ".cxx", ".c++"}
 _VULN_MARKERS = (
     "addresssanitizer",
     "undefinedbehaviorsanitizer",
+    "valgrind",
+    "invalid read of size",
+    "invalid write of size",
+    "use of uninitialised value",
+    "definitely lost:",
     "heap-buffer-overflow",
     "stack-buffer-overflow",
     "use-after-free",

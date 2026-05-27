@@ -307,6 +307,7 @@ def _run_fuzz_orchestrator_stage(
         snippet_db,
         chains=chains,
         execute=bool(fuzz_cfg.get("execute", False)),
+        use_valgrind=bool(fuzz_cfg.get("use_valgrind", False)),
         timeout_seconds=int(fuzz_cfg.get("timeout_seconds", 10)),
         max_targets=int(fuzz_cfg.get("max_targets", 25)),
         high_confidence_threshold=float(

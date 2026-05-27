@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+import shutil
 
 from .contracts import has_valid_suspicious_points
 from .validate import recompile_and_run_unvalidated_vulnerable_snippet
@@ -78,6 +79,7 @@ def _runtime_artifact(
     *,
     execute: bool,
     timeout_seconds: int,
+    use_valgrind: bool,
 ) -> dict:
     default = {
         "seed_input": target.get("seed_input", "auto-seed"),
@@ -96,19 +98,41 @@ def _runtime_artifact(
     if not source:
         default["stderr"] = "missing_snippet_source"
         return default
+    sandbox_prefix: list[str] | None = None
+    if use_valgrind:
+        if shutil.which("valgrind") is None:
+            default["stderr"] = "valgrind_not_available"
+            return default
+        sandbox_prefix = [
+            "valgrind",
+            "--error-exitcode=99",
+            "--quiet",
+        ]
     runtime = recompile_and_run_unvalidated_vulnerable_snippet(
         {**finding, "unvalidated_vulnerable_snippet": source},
         snippet,
         timeout_seconds=timeout_seconds,
+        sandbox_prefix=sandbox_prefix,
     )
     stderr = str(runtime.get("stderr", ""))
     stdout = str(runtime.get("stdout", ""))
+    runtime_signal = stderr.lower()
+    has_signal = any(
+        marker in runtime_signal
+        for marker in (
+            "sanitizer",
+            "valgrind",
+            "invalid read",
+            "invalid write",
+            "definitely lost",
+        )
+    )
     return {
         "seed_input": target.get("seed_input", "auto-seed"),
         "command": target.get("command", []),
         "stdout": stdout,
         "stderr": stderr,
-        "sanitizer_signal": stderr if "sanitizer" in stderr.lower() else "",
+        "sanitizer_signal": stderr if has_signal else "",
         "exit_status": runtime.get("exit_code"),
         "compile_succeeded": bool(runtime.get("compile_succeeded")),
         "reproduced": bool(runtime.get("vulnerability_observed")),
@@ -125,6 +149,7 @@ def orchestrate_fuzz_targets(
     max_targets: int = 25,
     high_confidence_threshold: float = 0.75,
     max_chain_targets: int = 10,
+    use_valgrind: bool = False,
 ) -> list[dict]:
     """Build fuzz targets/artifacts for function and cross-function tiers."""
     chains = chains or []
@@ -148,6 +173,7 @@ def orchestrate_fuzz_targets(
             snippet,
             execute=execute,
             timeout_seconds=timeout_seconds,
+            use_valgrind=use_valgrind,
         )
         artifacts.append(
             {

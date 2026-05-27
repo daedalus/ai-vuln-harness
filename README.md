@@ -44,7 +44,7 @@ Only HUNT and VALIDATE call LLMs — all other stages are deterministic logic.
 - **Strict contracts**: schema validation + bounded repair turns
 - **Reliability**: sync path default, disjoint hunt/validate pools, JSON cache, SQLite state DB
 - **Validate/Trace policy**: code-in-prompt and trace-required promotion for library targets
-- **Validate runtime check**: C/C++ snippets can be recompiled and executed (optionally via container/qemu wrapper) to capture real PoC signals
+- **Validate runtime check**: C/C++ snippets can be recompiled and executed (optionally via container/qemu wrapper and valgrind in fuzz orchestrator) to capture real PoC signals
 
 ## Benchmark regression gate
 

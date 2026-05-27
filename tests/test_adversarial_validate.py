@@ -126,6 +126,14 @@ class ValidateVulnSignalTests(unittest.TestCase):
     def test_case_insensitive_marker(self):
         self.assertTrue(_contains_vuln_signal("HEAP-BUFFER-OVERFLOW", 0))
 
+    def test_valgrind_marker_found(self):
+        self.assertTrue(
+            _contains_vuln_signal(
+                "==123== Invalid read of size 4\n==123== ERROR SUMMARY: 1 errors",
+                0,
+            )
+        )
+
 
 class ValidateRequiresTraceTests(unittest.TestCase):
     """Edge cases for trace requirement logic."""
