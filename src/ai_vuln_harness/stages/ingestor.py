@@ -102,6 +102,7 @@ _FUNC_PATTERNS = {
         re.MULTILINE,
     ),
 }
+_BINARY_NON_TEXT_THRESHOLD = 0.30
 
 
 def _is_probably_binary(path: Path) -> bool:
@@ -114,7 +115,7 @@ def _is_probably_binary(path: Path) -> bool:
     if b"\x00" in sample:
         return True
     non_text = sum(b < 9 or (13 < b < 32) or b == 127 for b in sample)
-    return (non_text / len(sample)) > 0.30
+    return (non_text / len(sample)) > _BINARY_NON_TEXT_THRESHOLD
 
 
 def should_exclude_path(path: str, is_library_target: bool = True) -> bool:
