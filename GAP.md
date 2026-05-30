@@ -1,20 +1,31 @@
 # Gap Analysis: ai-vuln-harness vs. Project Glasswing / Claude Mythos / GPT-5.5-Cyber
 
 **Last updated:** 2026-05-30
-**Baseline:** v1 scaffold (`src/ai_vuln_harness/`)
+**Baseline:** 17-stage pipeline (`src/ai_vuln_harness/`, 2042-line orchestrator, 21 stage modules, 46 test files, ~730 tests)
 **Benchmarks:** Project Glasswing (Anthropic), Claude Mythos Preview, OpenAI GPT-5.5 / GPT-5.5-Cyber (CyberGym score: 81.9%)
 **Reference corpus:** [red.anthropic.com](https://red.anthropic.com) — Anthropic Frontier Red Team blog (Jun 2025 – May 2026)
+**Local competitors:** `~/code/audit/` (8-stage Agent SDK), `~/code/mythos-router/` (TypeScript SWD), `~/code/hackcode/` (Rust Ollama REPL)
 
 ---
 
 ## What the v1 Harness Does Today
 
-The v1 scaffold implements a **Hunt → Validate → Dedupe → Trace → PoC** pipeline with:
+The v1 scaffold implements a **17-stage pipeline**:
+
+```
+INGESTOR → RECON → COORDINATOR → HUNT → LOCALIZATION → VALIDATE →
+FUZZ_ORCHESTRATOR → GAPFILL → VOTING → SHIELD → SUPPRESSIONS → CHAINS →
+POC → TRACE → EXPOSURE → FEEDBACK → REPORT
+```
 
 - AST-based C/C++ ingestor via tree-sitter ≥ 0.25, KL-divergence hallucination filtering, cosine-sim dedup
-- Multi-provider model routing, resumable state DB, AddressSanitizer PoC compilation
+- Multi-provider model routing (OpenRouter free models), resumable SQLite StateDB, AddressSanitizer PoC compilation
 - 11 security domains, cross-run regression auditing, schema-validated stage contracts
-- Run modes: `full`, `max-run`, `validate-only`, `resume`, `poc-only`
+- Run modes: `full`, `max-run`, `validate-only`, `resume`, `diff`, `all`, `poc-only`, `benchmark`
+- Disjoint model pools between HUNT and VALIDATE to prevent correlated bias
+- 3 deterministic hallucination gates in SHIELD: call-path graph, token-overlap/KL-divergence, static reachability BFS
+- Mythos System Card mitigations: reward-hack detection, confabulation cascade guard, egress audit
+- PATCH stage: deterministic remediation co-pilot with class-driven fix strategy
 
 ---
 
@@ -193,6 +204,27 @@ These areas are **explicitly out of scope** for a vulnerability discovery harnes
 
 ---
 
+### 14. Local Project Comparison — Gaps vs. `audit/`, `mythos-router`, `hackcode`
+
+**Context:** Three local projects at `~/code/audit/`, `~/code/mythos-router/`, and `~/code/hackcode/` were reviewed as part of competitive landscaping (2026-05-30). None is a full competitor — `mythos-router` (TypeScript CLI, SWD filesystem verification, zero vuln discovery) and `hackcode` (Rust Ollama REPL, 100% local but capability-ceilinged at Qwen3.5-35B) solve entirely different problems. However, `audit/` is a direct alternative implementation of the same Glasswing methodology using a different SDK, and reveals specific gaps:
+
+| Gap | Source | Details |
+|---|---|---|
+| **Claude Agent SDK integration** | `audit/` | The harness calls LLMs via raw HTTP to OpenRouter/free models. `audit/` uses `claude_agent_sdk.ClaudeSDKClient` with tool-use, thinking blocks, session management, and native cost reporting. **Impact:** Harness misses access to Claude Code's subscription capabilities, first-class tool use, `ThinkingBlock` for deep reasoning, and `ResultMessage` telemetry. |
+| **Schema validation with `$ref` registry** | `audit/` | `audit/json_utils.py` loads sibling schemas into a `referencing.Registry` so `$ref` entries like `"hunt_task.schema.json"` resolve. The harness's `contracts.py` validates each stage's output JSON independently — no cross-schema references. **Impact:** Redundant field definitions across schemas can silently diverge. |
+| **Repair turns inside SDK session** | `audit/` | When schema validation fails, `audit/runner.py` sends a repair prompt in the same SDK session rather than reparsing the original output. The harness's `repair_json_output` in `runtime.py` uses string-level recovery (brace balancing, fence extraction) — no model-in-the-loop repair. **Impact:** String-level repair can silently produce valid-JSON-but-wrong-semantics outputs. |
+| **Live target testing** | `audit/` | `--target-url` + `--target-creds` passes a URL and credentials through every pipeline stage so agents can probe live deployments. The harness validates findings against source code only and runs PoCs in an isolated compilation sandbox. **Impact:** Harness cannot detect runtime-only bugs (race conditions, config-dependent issues, auth bypass) that require interacting with a live system. |
+| **Exponential-backoff retry with error classification** | `audit/` | `audit/runner.py` classifies API errors into `QuotaExhaustedError` (terminal) vs. `TransientAgentError` (retry up to 3× with exponential backoff 30s–240s). The harness has no retry logic — API failures silently produce empty results. **Impact:** Transient failures (529 Overloaded, 5xx) cause false-negative gaps. |
+| **Rich Click-based CLI** | `audit/` | `audit/cli.py` has 4 commands (`auth-check`, `run`, `status`, `report`) with Rich tables, run listing, per-run detail with KPI counts, markdown report rendering. The harness uses argparse with a single `main()` function and no secondary commands. **Impact:** Users must read JSON files directly to inspect results; no `status` command exists for checking run progress. |
+| **Separate prompt files per stage** | `audit/` | `audit/prompts/01-recon.md` through `08-report.md` are separate markdown files. The harness embeds prompts inline as Python string constants (`runtime.py`). **Impact:** Harder to version-control prompt changes independently, harder to audit diff between prompt versions. |
+| **SWD cryptographic filesystem snapshots** | `mythos-router` | `mythos-router` implements Secure Working Directory — SHA-256 snapshots of every file before and after agent actions, stored as receipts. The harness's POC stage has egress audit but no pre/post filesystem state comparison. **Impact:** Cannot prove that PoC execution did not modify the target repository (false-sense-of-security for read-only validation). |
+| **MCP adapter for tool exposure** | `mythos-router` | `mythos-router` exposes SWD check, integrity verify, and analyze commands via the Model Context Protocol (MCP) stdio server. The harness has no MCP interface — pipelines are CLI-only. **Impact:** Harness cannot be used as a tool from within MCP-compatible IDEs (Cursor, VS Code Claude extension) or agent frameworks. |
+| **100% local execution** | `hackcode` | `hackcode` runs entirely via Ollama with no external API calls. The harness requires network access to OpenRouter or Anthropic API. **Impact:** Harness cannot operate in air-gapped environments without deploying a local inference server and rewriting the model routing layer. |
+
+**Recommendation:** These gaps are lower priority than the ACE/PBT/CVD gaps but should be tracked as technical debt. The highest-leverage item is **Claude Agent SDK integration** — switching from raw HTTP to `ClaudeSDKClient` would simultaneously unlock tool-use, thinking blocks, native cost tracking, session-level repair, and retry logic.
+
+---
+
 ## Priority Matrix
 
 | Priority | Gap | Estimated Effort |
@@ -214,6 +246,16 @@ These areas are **explicitly out of scope** for a vulnerability discovery harnes
 | 🟡 Medium | Role-tiered access layer + audit log | Low–Medium |
 | 🟡 Medium | Auth/IAM + cloud-native domain expansion | Medium |
 | 🟢 Stretch | LLM-specific vuln classes (prompt injection, etc.) | High |
+| 🟢 Stretch | Claude Agent SDK integration | Medium |
+| 🟢 Stretch | Schema validation with `$ref` registry | Low |
+| 🟢 Stretch | Repair turns inside SDK session | Medium |
+| 🟢 Stretch | Exponential-backoff retry with error classification | Low |
+| 🟢 Stretch | Rich Click-based CLI with status/report commands | Low |
+| 🟢 Stretch | Separate prompt files per stage | Low |
+| 🟢 Stretch | Live target testing (`--target-url`) | Medium |
+| 🟢 Stretch | SWD cryptographic filesystem snapshots in POC | Low |
+| 🟢 Stretch | MCP adapter for tool exposure | Medium |
+| 🟢 Stretch | 100% local execution (air-gapped mode) | High |
 
 ---
 
@@ -249,3 +291,9 @@ These areas are **explicitly out of scope** for a vulnerability discovery harnes
 - [Assessing Claude Mythos Preview's Cybersecurity Capabilities](https://red.anthropic.com/2026/mythos-preview/) — Apr 2026
 - [Measuring LLMs' Ability to Develop Exploits](https://red.anthropic.com/2026/exploit-evals/) — May 2026
 - [Coordinated Vulnerability Disclosure Dashboard](https://red.anthropic.com/2026/cvd/) — May 2026
+
+### Local Competitor Repositories (reviewed 2026-05-30)
+
+- `~/code/audit/` — Local 8-stage Glasswing implementation using `claude_agent_sdk` (Claude Code Agent SDK). 4-mode auth (gateway/api_key/oauth/login), schema validation with `$ref` registry, exponential-backoff retry, live target testing, separate prompt files per stage, Click CLI. **Direct alternative implementation of the same methodology.**
+- `~/code/mythos-router/` — TypeScript zero-dep ESM CLI. SWD (Secure Working Directory) SHA-256 filesystem snapshot verification. 8 commands, MCP stdio server, 4-pronged security model. **Not a competitor — coding assistant with file integrity, not vulnerability discovery.**
+- `~/code/hackcode/` — Rust CLI fork of `ultraworkers/claw-code`. Local Ollama model execution (Qwen3.5-35B). Bash/tool access REPL. "Capybara protocol" is marketing only. **Not a competitor — local pentest REPL, no structured pipeline.**
