@@ -50,11 +50,11 @@ Then edit the copy. The template includes `run.py`, `stages/`, `prompts/`,
 
 ## Dependency checking
 
-See `run.py` → `_check_deps()` and `references/dependencies.md`.
+See `run.py` → `_check_deps()` and `docs/dependencies.md`.
 
 ## Required operating defaults
 
-See `config/defaults.json` + stage docstrings and `references/operating-defaults.md`.
+See `config/defaults.json` + stage docstrings and `docs/operating-defaults.md`.
 
 ## Progress tracking
 
@@ -65,12 +65,12 @@ Maintain a live `todowrite` task list throughout the session with states
 
 See `stages/runtime.py` docstring (dual-channel stderr/stdout, log levels,
 stage entry/exit, model call timing, bad model tracking, parallel progress)
-and `references/logging.md`.
+and `docs/logging.md`.
 
 ## Harness integrity
 
 See `stages/contracts.py` docstring for stage contracts, `tests/test_invariants.py`
-for enforced invariants, and `references/invariants.md` for the full list.
+for enforced invariants, and `docs/invariants.md` for the full list.
 
 ## Evaluation and operator guidance
 
@@ -80,11 +80,11 @@ for enforced invariants, and `references/invariants.md` for the full list.
 
 ## Deep references
 
-- `references/stages.md` — stage-by-stage design guidance
-- `references/operation.md` — implementation gotchas and operational notes
-- `references/implementation.md` — implementation sketches and patterns
-- `references/schemas.md` — canonical schema expectations
-- `references/logging.md` — logging conventions and setup
-- `references/dependencies.md` — dependency checking and startup verification
-- `references/operating-defaults.md` — required operating defaults
-- `references/invariants.md` — harness integrity invariants (pass/fail)
+- `docs/stages.md` — stage-by-stage design guidance
+- `docs/operation.md` — implementation gotchas and operational notes
+- `docs/implementation.md` — implementation sketches and patterns
+- `docs/schemas.md` — canonical schema expectations
+- `docs/logging.md` — logging conventions and setup
+- `docs/dependencies.md` — dependency checking and startup verification
+- `docs/operating-defaults.md` — required operating defaults
+- `docs/invariants.md` — harness integrity invariants (pass/fail)
