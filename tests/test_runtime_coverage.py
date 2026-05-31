@@ -9,6 +9,18 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from ai_vuln_harness.run import (
+    _run_hunt_packs as run_hunt_all,
+)
+from ai_vuln_harness.run import (
+    _run_one_hunt_pack as run_hunt_pack,
+)
+from ai_vuln_harness.run import (
+    _run_validate_finding as run_validate_finding,
+)
+from ai_vuln_harness.run import (
+    _run_validate_findings as run_validate_all,
+)
 from ai_vuln_harness.stages.runtime import (
     HUNT_SYSTEM_PROMPT,
     JsonCache,
@@ -18,12 +30,6 @@ from ai_vuln_harness.stages.runtime import (
     fetch_model_limits,
     repair_json_output,
     split_model_pools,
-)
-from ai_vuln_harness.run import (
-    _run_one_hunt_pack as run_hunt_pack,
-    _run_hunt_packs as run_hunt_all,
-    _run_validate_finding as run_validate_finding,
-    _run_validate_findings as run_validate_all,
 )
 
 
@@ -375,6 +381,7 @@ class CallLlmTests(_MockedCallTests):
             )
             self.assertEqual(result, "step by step...")
 
+    @patch.dict("os.environ", {"OPENROUTER_API_KEY": ""})
     def test_call_llm_raises_without_auth(self):
         with self.assertRaises(ValueError):
             call_llm("openrouter:test:free", "test", auth={})
