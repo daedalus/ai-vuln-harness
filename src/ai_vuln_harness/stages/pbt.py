@@ -26,10 +26,9 @@ from .contracts import has_valid_suspicious_points
 logger = logging.getLogger(__name__)
 
 _PBT_SYSTEM_PROMPT = (
-    "You are a property-based testing expert. Given a vulnerability finding "
-    "and its source code, infer a concise invariant that the finding claims "
-    "is violated. Then generate a standalone C fuzz harness that probes this "
-    "invariant with randomized inputs under AddressSanitizer."
+    (Path(__file__).parent.parent / "prompts" / "pbt.md")
+    .read_text(encoding="utf-8")
+    .strip()
 )
 
 _VULN_MARKERS = (

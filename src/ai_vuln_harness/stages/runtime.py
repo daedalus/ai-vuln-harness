@@ -601,20 +601,15 @@ _MODEL_BY_DOMAIN = {
     "secrets": "openrouter:deepseek/deepseek-v4-flash:free",
 }
 
-HUNT_SYSTEM_PROMPT = (
-    "You are a single-attack-class vulnerability hunter. You have one task, "
-    "one attack class, one scope. You go deep, not wide. Other hunters cover "
-    "other attack classes — you do not stray. Determine whether the given "
-    "attack class is present in the assigned scope. Emit zero or more findings, "
-    "each anchored to specific code lines with verbatim evidence. "
-    'If you find no vulnerabilities, emit {"done": true}.'
-)
+_PROMPT_DIR = Path(__file__).parent.parent / "prompts"
 
-VALIDATE_SYSTEM_PROMPT = (
-    "You are an adversarial code reviewer. Your job is to DISPROVE findings, "
-    'not confirm them. Output ONLY a JSON object with "status" '
-    '("confirmed" / "rejected" / "needs-more-info") and "reason".'
-)
+
+def _load_prompt(name: str) -> str:
+    return (_PROMPT_DIR / f"{name}.md").read_text(encoding="utf-8").strip()
+
+
+HUNT_SYSTEM_PROMPT = _load_prompt("hunt")
+VALIDATE_SYSTEM_PROMPT = _load_prompt("validate")
 
 
 def _get_auth_key(provider: str, auth: dict | None = None) -> str | None:
