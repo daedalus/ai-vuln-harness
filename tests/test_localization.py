@@ -21,7 +21,9 @@ def test_localize_findings_adds_suspicious_points():
             "callees": [],
         }
     }
-    localized, unreachable = localize_findings(findings, snippet_db, entry_points=["entry"])
+    localized, unreachable = localize_findings(
+        findings, snippet_db, entry_points=["entry"]
+    )
     assert len(localized) == 1
     assert unreachable == []
     point = localized[0]["suspicious_points"][0]

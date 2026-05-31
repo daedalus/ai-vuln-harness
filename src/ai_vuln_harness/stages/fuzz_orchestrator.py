@@ -97,7 +97,9 @@ def _runtime_artifact(
         default["stderr"] = "execution_disabled"
         return default
     source = str(snippet.get("content", "")).strip()
-    binary_path = str(finding.get("binary_path") or snippet.get("binary_path") or "").strip()
+    binary_path = str(
+        finding.get("binary_path") or snippet.get("binary_path") or ""
+    ).strip()
     if not source and not binary_path:
         default["stderr"] = "missing_snippet_source"
         return default

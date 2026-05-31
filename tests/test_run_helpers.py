@@ -228,6 +228,7 @@ class TestBuildRunKwargs:
         ns.load_packs_cache = False
         ns.enable_localization_stage = False
         ns.enable_fuzz_orchestrator = False
+        ns.enable_pbt = False
         return ns
 
     def test_returns_dict(self, args):

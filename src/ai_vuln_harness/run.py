@@ -1125,19 +1125,7 @@ def _average(values: list[float]) -> float:
     return sum(values) / len(values)
 
 
-def _extract_report_kpis(
-    report: dict, top_n: int, elapsed_seconds: float, cost_usd: float
-) -> dict:
-    findings = report.get("findings") or []
-    summary = report.get("summary") or {}
-    total_findings = len(findings)
-    total_bucketed = (
-        int(summary.get("fix_now", 0))
-        + int(summary.get("backlog", 0))
-        + int(summary.get("false_positive", 0))
-    )
-    rejected = int(summary.get("false_positive", 0))
-
+def _kpi_precision_top_n(findings: list[dict], top_n: int) -> float:
     ranked = sorted(
         findings,
         key=lambda item: _SEVERITY_RANK.get(
@@ -1155,8 +1143,10 @@ def _extract_report_kpis(
         ).lower()
         == "confirmed"
     )
-    precision_at_top_n = _safe_ratio(top_confirmed, len(top))
+    return _safe_ratio(top_confirmed, len(top))
 
+
+def _kpi_duplicate_rate(findings: list[dict]) -> float:
     dedup_keys = set()
     for finding in findings:
         lines = finding.get("lines") or []
@@ -1168,9 +1158,13 @@ def _extract_report_kpis(
                 line_start,
             ),
         )
-    duplicate_rate = 1.0 - _safe_ratio(len(dedup_keys), total_findings)
+    return 1.0 - _safe_ratio(len(dedup_keys), len(findings))
 
+
+def _kpi_gap_closure(report: dict) -> float:
     gaps = report.get("gaps") or []
+    if not gaps:
+        return 1.0
     closed_gaps = 0
     for gap in gaps:
         if gap.get("closed") is True:
@@ -1179,16 +1173,10 @@ def _extract_report_kpis(
         status = str(gap.get("status", "")).lower()
         if status in {"closed", "resolved", "covered", "fixed"}:
             closed_gaps += 1
-    gap_closure_rate = 1.0 if not gaps else _safe_ratio(closed_gaps, len(gaps))
+    return _safe_ratio(closed_gaps, len(gaps))
 
-    confirmed_findings = sum(
-        1
-        for finding in findings
-        if str(
-            finding.get("status", finding.get("validate_status", "")),
-        ).lower()
-        == "confirmed"
-    )
+
+def _kpi_fuzz_metrics(report: dict) -> dict:
     fuzz_artifacts = report.get("fuzz_artifacts") or []
     compile_successes = 0
     sanitizer_hits = 0
@@ -1206,17 +1194,56 @@ def _extract_report_kpis(
         if bool(payload.get("reproduced")):
             reproduced += 1
     fuzz_count = len([entry for entry in fuzz_artifacts if isinstance(entry, dict)])
-    triage_false_positive_drop = 1.0 - _safe_ratio(rejected, total_bucketed)
+    return {
+        "fuzz_count": fuzz_count,
+        "compile_successes": compile_successes,
+        "sanitizer_hits": sanitizer_hits,
+        "reproduced": reproduced,
+    }
+
+
+def _extract_report_kpis(
+    report: dict, top_n: int, elapsed_seconds: float, cost_usd: float
+) -> dict:
+    findings = report.get("findings") or []
+    summary = report.get("summary") or {}
+    total_findings = len(findings)
+    total_bucketed = (
+        int(summary.get("fix_now", 0))
+        + int(summary.get("backlog", 0))
+        + int(summary.get("false_positive", 0))
+    )
+    rejected = int(summary.get("false_positive", 0))
+
+    precision_at_top_n = _kpi_precision_top_n(findings, top_n)
+    duplicate_rate = _kpi_duplicate_rate(findings)
+    gap_closure_rate = _kpi_gap_closure(report)
+    fuzz = _kpi_fuzz_metrics(report)
+
+    confirmed_findings = sum(
+        1
+        for finding in findings
+        if str(
+            finding.get("status", finding.get("validate_status", "")),
+        ).lower()
+        == "confirmed"
+    )
 
     return {
         "precision_at_top_n": precision_at_top_n,
         "reject_rate": _safe_ratio(rejected, total_bucketed),
         "duplicate_rate": duplicate_rate,
         "gap_closure_rate": gap_closure_rate,
-        "reproducible_confirmation_rate": _safe_ratio(reproduced, fuzz_count),
-        "fuzz_target_compile_success_rate": _safe_ratio(compile_successes, fuzz_count),
-        "sanitizer_confirmed_rate": _safe_ratio(sanitizer_hits, fuzz_count),
-        "triage_false_positive_drop": triage_false_positive_drop,
+        "reproducible_confirmation_rate": _safe_ratio(
+            fuzz["reproduced"], fuzz["fuzz_count"]
+        ),
+        "fuzz_target_compile_success_rate": _safe_ratio(
+            fuzz["compile_successes"], fuzz["fuzz_count"]
+        ),
+        "sanitizer_confirmed_rate": _safe_ratio(
+            fuzz["sanitizer_hits"], fuzz["fuzz_count"]
+        ),
+        "triage_false_positive_drop": 1.0 - _safe_ratio(rejected, total_bucketed),
         "runtime_per_confirmed_finding_seconds": (
             0.0 if confirmed_findings == 0 else elapsed_seconds / confirmed_findings
         ),
@@ -1343,6 +1370,97 @@ def _update_baseline_if_requested(
     return True, []
 
 
+def _run_benchmark_targets(
+    targets: list[dict],
+    run_kwargs: dict,
+    pkg_dir: Path,
+    benchmark_top_n: int,
+    benchmark_profile: str,
+) -> tuple[dict[str, list[dict]], dict[str, dict]]:
+    profile_runs: dict[str, list[dict]] = {}
+    for target in targets:
+        target_repo = Path(target["repo"])
+        target_profile = str(target.get("profile", benchmark_profile))
+        started = time.time()
+        report = run("full", target_repo, **run_kwargs)
+        elapsed_seconds = time.time() - started
+        cfg = json.loads((pkg_dir / "config/defaults.json").read_text())
+        run_id = f"full:{target_repo!s}"
+        run_cost = 0.0
+        state = StateDB(Path.cwd() / cfg["state_db"])
+        try:
+            run_cost = state.total_cost(run_id)
+        finally:
+            state.close()
+        kpis = _extract_report_kpis(
+            report,
+            top_n=benchmark_top_n,
+            elapsed_seconds=elapsed_seconds,
+            cost_usd=run_cost,
+        )
+        profile_runs.setdefault(target_profile, []).append(
+            {
+                "target": target["name"],
+                "repo": str(target_repo),
+                "kpis": kpis,
+            }
+        )
+    profile_current: dict[str, dict] = {}
+    for profile_name, runs in profile_runs.items():
+        profile_current[profile_name] = {
+            metric: _average([float(r["kpis"][metric]) for r in runs])
+            for metric in _BENCHMARK_METRICS
+        }
+    return profile_runs, profile_current
+
+
+def _compare_profile_to_baseline(
+    profile_name: str,
+    current_kpis: dict,
+    baseline_profiles: dict,
+    thresholds_path: Path,
+) -> tuple[dict | None, dict | None, str | None]:
+    baseline_kpis = baseline_profiles.get(profile_name)
+    if not isinstance(baseline_kpis, dict):
+        return None, None, profile_name
+
+    thresholds = _load_thresholds(thresholds_path, profile_name)
+    metric_results: list[dict] = []
+    profile_regressed = False
+    for metric in _BENCHMARK_METRICS:
+        current_value = float(current_kpis.get(metric, 0.0))
+        baseline_value = float(baseline_kpis.get(metric, 0.0))
+        delta = current_value - baseline_value
+        allowed = float(thresholds.get(metric, _BENCHMARK_DEFAULT_THRESHOLDS[metric]))
+        higher_is_better = metric in _BENCHMARK_HIGHER_IS_BETTER
+        if higher_is_better:
+            regressed = delta < (-allowed)
+        else:
+            regressed = delta > allowed
+        if regressed:
+            status = "regressed"
+            profile_regressed = True
+        elif abs(delta) <= allowed:
+            status = "within-threshold"
+        else:
+            status = "improved"
+        metric_results.append(
+            {
+                "name": metric,
+                "current": current_value,
+                "baseline": baseline_value,
+                "delta": delta,
+                "allowed_regression": allowed,
+                "status": status,
+                "direction": "higher_is_better"
+                if higher_is_better
+                else "lower_is_better",
+            }
+        )
+    comparison = {"profile": profile_name, "metrics": metric_results}
+    return comparison, thresholds, profile_name if profile_regressed else None
+
+
 def run_benchmark_gate(
     repo: Path,
     *,
@@ -1371,43 +1489,13 @@ def run_benchmark_gate(
     if not isinstance(baseline_profiles, dict):
         baseline_profiles = {}
 
-    run_kwargs.setdefault("enable_fuzz_orchestrator", True)
-    profile_runs: dict[str, list[dict]] = {}
-    for target in targets:
-        target_repo = Path(target["repo"])
-        target_profile = str(target.get("profile", benchmark_profile))
-        started = time.time()
-        report = run("full", target_repo, **run_kwargs)
-        elapsed_seconds = time.time() - started
-        cfg = json.loads((pkg_dir / "config/defaults.json").read_text())
-        run_id = f"full:{target_repo!s}"
-        run_cost = 0.0
-        state = StateDB(Path.cwd() / cfg["state_db"])
-        try:
-            run_cost = state.total_cost(run_id)
-        finally:
-            state.close()
-
-        kpis = _extract_report_kpis(
-            report,
-            top_n=benchmark_top_n,
-            elapsed_seconds=elapsed_seconds,
-            cost_usd=run_cost,
-        )
-        profile_runs.setdefault(target_profile, []).append(
-            {
-                "target": target["name"],
-                "repo": str(target_repo),
-                "kpis": kpis,
-            },
-        )
-
-    profile_current: dict[str, dict] = {}
-    for profile_name, runs in profile_runs.items():
-        profile_current[profile_name] = {
-            metric: _average([float(r["kpis"][metric]) for r in runs])
-            for metric in _BENCHMARK_METRICS
-        }
+    profile_runs, profile_current = _run_benchmark_targets(
+        targets,
+        run_kwargs,
+        pkg_dir,
+        benchmark_top_n,
+        benchmark_profile,
+    )
 
     missing_baselines: list[str] = []
     profile_comparisons: list[dict] = []
@@ -1415,49 +1503,20 @@ def run_benchmark_gate(
     thresholds_used: dict[str, dict] = {}
 
     for profile_name, current_kpis in profile_current.items():
-        baseline_kpis = baseline_profiles.get(profile_name)
-        if not isinstance(baseline_kpis, dict):
+        comparison, thresholds, regressed = _compare_profile_to_baseline(
+            profile_name,
+            current_kpis,
+            baseline_profiles,
+            thresholds_path,
+        )
+        if comparison is None:
             missing_baselines.append(profile_name)
             continue
-        thresholds = _load_thresholds(thresholds_path, profile_name)
-        thresholds_used[profile_name] = thresholds
-        metric_results: list[dict] = []
-        profile_regressed = False
-        for metric in _BENCHMARK_METRICS:
-            current_value = float(current_kpis.get(metric, 0.0))
-            baseline_value = float(baseline_kpis.get(metric, 0.0))
-            delta = current_value - baseline_value
-            allowed = float(
-                thresholds.get(metric, _BENCHMARK_DEFAULT_THRESHOLDS[metric])
-            )
-            higher_is_better = metric in _BENCHMARK_HIGHER_IS_BETTER
-            if higher_is_better:
-                regressed = delta < (-allowed)
-            else:
-                regressed = delta > allowed
-            if regressed:
-                status = "regressed"
-                profile_regressed = True
-            elif abs(delta) <= allowed:
-                status = "within-threshold"
-            else:
-                status = "improved"
-            metric_results.append(
-                {
-                    "name": metric,
-                    "current": current_value,
-                    "baseline": baseline_value,
-                    "delta": delta,
-                    "allowed_regression": allowed,
-                    "status": status,
-                    "direction": "higher_is_better"
-                    if higher_is_better
-                    else "lower_is_better",
-                },
-            )
-        if profile_regressed:
-            regressed_profiles.append(profile_name)
-        profile_comparisons.append({"profile": profile_name, "metrics": metric_results})
+        if thresholds is not None:
+            thresholds_used[profile_name] = thresholds
+        if regressed is not None:
+            regressed_profiles.append(regressed)
+        profile_comparisons.append(comparison)
 
     baseline_updated, missing_baselines = _update_baseline_if_requested(
         update_benchmark_baseline=update_benchmark_baseline,

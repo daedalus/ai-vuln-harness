@@ -53,41 +53,50 @@ def standardize_finding(finding: dict) -> dict:
     return out
 
 
+def _check_field(value: object, typ: type | tuple, validator: object = None) -> bool:
+    if not isinstance(value, typ):
+        return False
+    if validator is not None and not validator(value):
+        return False
+    return True
+
+
+def _is_valid_point(point: object) -> bool:
+    if not isinstance(point, dict):
+        return False
+    if not _check_field(point.get("function"), str, lambda s: bool(s.strip())):
+        return False
+    if not _check_field(point.get("file"), str, lambda s: bool(s.strip())):
+        return False
+    if not _check_field(
+        point.get("lines"),
+        list,
+        lambda lst: (
+            bool(lst) and all(isinstance(line, int) and line > 0 for line in lst)
+        ),
+    ):
+        return False
+    if not _check_field(point.get("sink_source_type"), str, lambda s: bool(s.strip())):
+        return False
+    if not _check_field(point.get("confidence"), (int, float)):
+        return False
+    if not _check_field(point.get("rationale"), str):
+        return False
+    if not _check_field(
+        point.get("evidence_links"),
+        list,
+        lambda lst: all(isinstance(link, str) for link in lst),
+    ):
+        return False
+    return True
+
+
 def has_valid_suspicious_points(finding: dict) -> bool:
     """Return True when finding contains at least one well-shaped suspicious point."""
     points = finding.get("suspicious_points")
     if not isinstance(points, list) or not points:
         return False
-    for point in points:
-        if not isinstance(point, dict):
-            continue
-        function_name = point.get("function")
-        file_path = point.get("file")
-        lines = point.get("lines")
-        sink_type = point.get("sink_source_type")
-        confidence = point.get("confidence")
-        rationale = point.get("rationale")
-        evidence_links = point.get("evidence_links")
-        if not isinstance(function_name, str) or not function_name.strip():
-            continue
-        if not isinstance(file_path, str) or not file_path.strip():
-            continue
-        if not isinstance(lines, list) or not lines:
-            continue
-        if not all(isinstance(line, int) and line > 0 for line in lines):
-            continue
-        if not isinstance(sink_type, str) or not sink_type.strip():
-            continue
-        if not isinstance(confidence, (int, float)):
-            continue
-        if not isinstance(rationale, str):
-            continue
-        if not isinstance(evidence_links, list):
-            continue
-        if not all(isinstance(link, str) for link in evidence_links):
-            continue
-        return True
-    return False
+    return any(_is_valid_point(point) for point in points)
 
 
 _TYPE_CHECK = {

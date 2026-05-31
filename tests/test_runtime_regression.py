@@ -22,6 +22,22 @@ from ai_vuln_harness.stages.runtime import (
 
 
 class LoadAuthConfigTests(unittest.TestCase):
+    def setUp(self):
+        self._env_patch = patch.dict(
+            os.environ,
+            {
+                "OPENROUTER_API_KEY": "",
+                "GROQ_API_KEY": "",
+                "CEREBRAS_API_KEY": "",
+                "GOOGLE_API_KEY": "",
+                "ZEN_API_KEY": "",
+            },
+        )
+        self._env_patch.start()
+
+    def tearDown(self):
+        self._env_patch.stop()
+
     def test_no_files_returns_empty(self):
         auth = load_auth_config(
             script_dir=Path(tempfile.mkdtemp()), skip_global_fallback=True

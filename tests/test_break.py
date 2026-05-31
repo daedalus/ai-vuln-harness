@@ -5,6 +5,7 @@ Each test demonstrates a specific vulnerability, crash, or logic error.
 """
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -187,6 +188,22 @@ class ValidateSubsetSchemaTuple(unittest.TestCase):
 #     path matches default path
 # ===================================================================
 class AuthConfigDedup(unittest.TestCase):
+    def setUp(self):
+        self._env_patch = patch.dict(
+            os.environ,
+            {
+                "OPENROUTER_API_KEY": "",
+                "GROQ_API_KEY": "",
+                "CEREBRAS_API_KEY": "",
+                "GOOGLE_API_KEY": "",
+                "ZEN_API_KEY": "",
+            },
+        )
+        self._env_patch.start()
+
+    def tearDown(self):
+        self._env_patch.stop()
+
     def test_exact_path_same_as_default_loaded_once(self):
         d = tempfile.mkdtemp()
         auth_file = Path(d) / "auth.json"

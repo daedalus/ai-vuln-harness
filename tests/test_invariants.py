@@ -246,6 +246,7 @@ class PipelineInvariantTests(unittest.TestCase):
             "coordinator",
             "hunt",
             "localization",
+            "pbt",
             "validate",
             "fuzz_orchestrator",
             "gapfill",

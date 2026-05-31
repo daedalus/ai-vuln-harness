@@ -95,6 +95,50 @@ def _severity_rank(sev: str) -> int:
     return {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}.get(str(sev).upper(), 0)
 
 
+def _count_votes(
+    outputs: list[list[dict]],
+) -> tuple[dict[tuple[str, str], int], dict[tuple[str, str], dict]]:
+    vote_counts: dict[tuple[str, str], int] = defaultdict(int)
+    best_variant: dict[tuple[str, str], dict] = {}
+    for run in outputs:
+        seen_in_run: set[tuple[str, str]] = set()
+        for f in run or []:
+            key = _finding_key(f)
+            if not key[0]:
+                continue
+            if key not in seen_in_run:
+                vote_counts[key] += 1
+                seen_in_run.add(key)
+            existing = best_variant.get(key)
+            if existing is None or _severity_rank(
+                f.get("severity", ""),
+            ) > _severity_rank(existing.get("severity", "")):
+                best_variant[key] = f
+    return vote_counts, best_variant
+
+
+def _build_results(
+    best_variant: dict[tuple[str, str], dict],
+    vote_counts: dict[tuple[str, str], int],
+    min_votes: int,
+) -> tuple[list[dict], list[dict]]:
+    promoted: list[dict] = []
+    suppressed: list[dict] = []
+    for key, variant in best_variant.items():
+        count = vote_counts[key]
+        cscore = complexity_score(variant)
+        annotated = {**variant, "vote_count": count, "complexity_score": cscore}
+        if count >= min_votes:
+            if cscore > _COMPLEXITY_PENALTY_THRESHOLD and count == min_votes:
+                annotated["suppressed_reason"] = "complexity_penalty"
+                suppressed.append(annotated)
+            else:
+                promoted.append(annotated)
+        else:
+            suppressed.append(annotated)
+    return promoted, suppressed
+
+
 def merge_hunter_outputs(
     outputs: list[list[dict]],
     min_votes: int = 2,
@@ -123,7 +167,6 @@ def merge_hunter_outputs(
     if not outputs:
         return [], []
 
-    # Single-run fast path: return all findings unchanged, vote_count=1
     if len(outputs) == 1:
         result = []
         for f in outputs[0] or []:
@@ -131,41 +174,5 @@ def merge_hunter_outputs(
             result.append(annotated)
         return result, []
 
-    # Count votes per (snippet_id, class) and keep the highest-severity variant
-    vote_counts: dict[tuple[str, str], int] = defaultdict(int)
-    best_variant: dict[tuple[str, str], dict] = {}
-
-    for run in outputs:
-        seen_in_run: set[tuple[str, str]] = set()
-        for f in run or []:
-            key = _finding_key(f)
-            if not key[0]:
-                continue
-            if key not in seen_in_run:
-                vote_counts[key] += 1
-                seen_in_run.add(key)
-            existing = best_variant.get(key)
-            if existing is None or _severity_rank(
-                f.get("severity", ""),
-            ) > _severity_rank(existing.get("severity", "")):
-                best_variant[key] = f
-
-    promoted: list[dict] = []
-    suppressed: list[dict] = []
-
-    for key, variant in best_variant.items():
-        count = vote_counts[key]
-        cscore = complexity_score(variant)
-        annotated = {**variant, "vote_count": count, "complexity_score": cscore}
-        if count >= min_votes:
-            # Complexity penalty: demote findings that only just made the
-            # threshold and have a high complexity score
-            if cscore > _COMPLEXITY_PENALTY_THRESHOLD and count == min_votes:
-                annotated["suppressed_reason"] = "complexity_penalty"
-                suppressed.append(annotated)
-            else:
-                promoted.append(annotated)
-        else:
-            suppressed.append(annotated)
-
-    return promoted, suppressed
+    vote_counts, best_variant = _count_votes(outputs)
+    return _build_results(best_variant, vote_counts, min_votes)

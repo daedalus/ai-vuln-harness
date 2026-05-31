@@ -56,7 +56,9 @@ def _check_call_path_blocker(f: dict, sev: str, status: str) -> tuple[str, str] 
     return None
 
 
-def _check_localization_blocker(f: dict, sev: str, status: str) -> tuple[str, str] | None:
+def _check_localization_blocker(
+    f: dict, sev: str, status: str
+) -> tuple[str, str] | None:
     if not bool(f.get("localization_enforced")):
         return None
     if sev not in {"CRITICAL", "HIGH"} or status != "confirmed":

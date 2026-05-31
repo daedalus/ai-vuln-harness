@@ -1,10 +1,12 @@
 """Tests for the last uncovered lines across contracts, runtime, shield, parser."""
 
 import math
+import os
 import tempfile
 import unittest
 from collections import Counter
 from pathlib import Path
+from unittest.mock import patch
 
 from ai_vuln_harness.stages.contracts import validate_subset_schema
 from ai_vuln_harness.stages.parser import parse_findings
@@ -207,6 +209,22 @@ class ParserLineCoverageTests(unittest.TestCase):
 
 class RuntimeAuthErrorHandlingTests(unittest.TestCase):
     """Cover lines 89-90: JSONDecodeError/OSError in load_auth_config."""
+
+    def setUp(self):
+        self._env_patch = patch.dict(
+            os.environ,
+            {
+                "OPENROUTER_API_KEY": "",
+                "GROQ_API_KEY": "",
+                "CEREBRAS_API_KEY": "",
+                "GOOGLE_API_KEY": "",
+                "ZEN_API_KEY": "",
+            },
+        )
+        self._env_patch.start()
+
+    def tearDown(self):
+        self._env_patch.stop()
 
     def test_corrupted_auth_json_skipped(self):
         tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")

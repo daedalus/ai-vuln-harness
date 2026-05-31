@@ -485,6 +485,40 @@ def run_pbt_on_finding(
     return pbt_result
 
 
+def _annotate_finding_from_pbt(finding: dict, pbt_result: dict) -> float:
+    pbt_boost = float(pbt_result.get("pbt_confidence_boost", 0.0))
+    finding["pbt_invariant"] = pbt_result.get("pbt_invariant", "")
+    finding["pbt_falsified"] = pbt_result.get("pbt_falsified", False)
+    finding["pbt_iterations_run"] = pbt_result.get("pbt_iterations_run", 0)
+    finding["pbt_confidence_boost"] = pbt_boost
+    finding["pbt_compile_succeeded"] = pbt_result.get("pbt_compile_succeeded", False)
+    finding["pbt_skipped"] = pbt_result.get("pbt_skipped", False)
+    if pbt_boost != 0.0:
+        current_conf = float(finding.get("localization_confidence", 0.0))
+        finding["localization_confidence"] = max(
+            0.0, min(1.0, current_conf + pbt_boost)
+        )
+        finding["pbt_adjusted_confidence"] = True
+    else:
+        finding["pbt_adjusted_confidence"] = False
+    return pbt_boost
+
+
+def _append_skipped_findings(
+    annotated: list[dict],
+    findings: list[dict],
+    valid: list[dict],
+) -> None:
+    seen = {id(f) for f in valid}
+    for f in findings:
+        if id(f) not in seen:
+            f["pbt_skipped"] = True
+            f["pbt_falsified"] = False
+            f["pbt_confidence_boost"] = 0.0
+            f["pbt_adjusted_confidence"] = False
+            annotated.append(f)
+
+
 def run_pbt_on_findings(
     findings: list[dict],
     snippet_db: dict[str, dict],
@@ -531,7 +565,7 @@ def run_pbt_on_findings(
             call_llm_func=call_llm_func,
             enable_llm=enable_llm,
         )
-        pbt_boost = float(pbt_result.get("pbt_confidence_boost", 0.0))
+        pbt_boost = _annotate_finding_from_pbt(finding, pbt_result)
         logger.info(
             "[PBT] finding %d/%d: falsified=%s boost=%.2f %s",
             i + 1,
@@ -540,31 +574,9 @@ def run_pbt_on_findings(
             pbt_boost,
             "(skipped)" if pbt_result.get("pbt_skipped") else "",
         )
-        finding["pbt_invariant"] = pbt_result.get("pbt_invariant", "")
-        finding["pbt_falsified"] = pbt_result.get("pbt_falsified", False)
-        finding["pbt_iterations_run"] = pbt_result.get("pbt_iterations_run", 0)
-        finding["pbt_confidence_boost"] = pbt_boost
-        finding["pbt_compile_succeeded"] = pbt_result.get(
-            "pbt_compile_succeeded", False
-        )
-        finding["pbt_skipped"] = pbt_result.get("pbt_skipped", False)
-        if pbt_boost != 0.0:
-            current_conf = float(finding.get("localization_confidence", 0.0))
-            new_conf = max(0.0, min(1.0, current_conf + pbt_boost))
-            finding["localization_confidence"] = new_conf
-            finding["pbt_adjusted_confidence"] = True
-        else:
-            finding["pbt_adjusted_confidence"] = False
         annotated.append(finding)
 
-    seen = {id(f) for f in valid}
-    for f in findings:
-        if id(f) not in seen:
-            f["pbt_skipped"] = True
-            f["pbt_falsified"] = False
-            f["pbt_confidence_boost"] = 0.0
-            f["pbt_adjusted_confidence"] = False
-            annotated.append(f)
+    _append_skipped_findings(annotated, findings, valid)
 
     logger.info(
         "[PBT] completed: %d falsified, %d boosted, %d skipped",

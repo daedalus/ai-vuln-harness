@@ -21,7 +21,9 @@ def test_orchestrate_fuzz_targets_builds_function_and_chain_targets():
             ],
         }
     ]
-    snippet_db = {"s1": {"id": "s1", "file": "src/a.c", "content": "int target(){return 0;}"}}
+    snippet_db = {
+        "s1": {"id": "s1", "file": "src/a.c", "content": "int target(){return 0;}"}
+    }
     chains = [{"call_path": ["entry", "target"], "file": "src/a.c", "confidence": 0.5}]
     artifacts = orchestrate_fuzz_targets(
         findings,
@@ -35,7 +37,10 @@ def test_orchestrate_fuzz_targets_builds_function_and_chain_targets():
     assert artifacts[1]["target"]["phase"] == "phase2-cross-function"
 
 
-@patch("ai_vuln_harness.stages.fuzz_orchestrator.shutil.which", return_value="/bin/valgrind")
+@patch(
+    "ai_vuln_harness.stages.fuzz_orchestrator.shutil.which",
+    return_value="/bin/valgrind",
+)
 @patch(
     "ai_vuln_harness.stages.fuzz_orchestrator.recompile_and_run_unvalidated_vulnerable_snippet"
 )
@@ -64,7 +69,9 @@ def test_orchestrate_fuzz_targets_uses_valgrind_prefix(run_mock, _which_mock):
             ],
         }
     ]
-    snippet_db = {"s1": {"id": "s1", "file": "src/a.c", "content": "int main(){return 0;}"}}
+    snippet_db = {
+        "s1": {"id": "s1", "file": "src/a.c", "content": "int main(){return 0;}"}
+    }
     artifacts = orchestrate_fuzz_targets(
         findings,
         snippet_db,
@@ -100,7 +107,9 @@ def test_orchestrate_fuzz_targets_handles_missing_valgrind(run_mock, _which_mock
             ],
         }
     ]
-    snippet_db = {"s1": {"id": "s1", "file": "src/a.c", "content": "int main(){return 0;}"}}
+    snippet_db = {
+        "s1": {"id": "s1", "file": "src/a.c", "content": "int main(){return 0;}"}
+    }
     artifacts = orchestrate_fuzz_targets(
         findings,
         snippet_db,
