@@ -1594,6 +1594,7 @@ def run(
     enable_pbt: bool | None = None,
     cve_corpus: Path | None = None,
     no_fetch_cves: bool = False,
+    no_scan_git_cves: bool = False,
 ) -> dict:
     pkg_dir = Path(__file__).parent
     work_dir = Path.cwd()
@@ -1653,7 +1654,9 @@ def run(
         load_packs_cache,
     )
 
-    _inject_cve_entries(packs, repo, snippets, cache, cve_corpus, no_fetch_cves)
+    _inject_cve_entries(
+        packs, repo, snippets, cache, cve_corpus, no_fetch_cves, no_scan_git_cves
+    )
     state.put_meta("pack_count", str(len(packs)))
     domain_map = _build_domain_map(packs)
     _persist_jsonl(output_dir / "context_packs.json", packs)
@@ -1829,6 +1832,7 @@ def _inject_cve_entries(
     cache: JsonCache,
     cve_corpus: Path | None,
     no_fetch_cves: bool,
+    no_scan_git_cves: bool = False,
 ) -> None:
     from .stages.cve_corpus import filter_cves_by_domain
     from .stages.cve_fetcher import build_cve_corpus
@@ -1839,6 +1843,7 @@ def _inject_cve_entries(
         cache=cache,
         user_corpus_path=cve_corpus,
         no_fetch=no_fetch_cves,
+        no_scan_git=no_scan_git_cves,
     )
     if not cve_entries:
         return
@@ -1958,6 +1963,7 @@ def run_all(
     enable_pbt: bool | None = None,
     cve_corpus: Path | None = None,
     no_fetch_cves: bool = False,
+    no_scan_git_cves: bool = False,
 ) -> dict:
     reports: list[dict] = []
     for mode in _SINGLE_MODES:
@@ -1993,6 +1999,7 @@ def run_all(
             enable_pbt=enable_pbt,
             cve_corpus=cve_corpus,
             no_fetch_cves=no_fetch_cves,
+            no_scan_git_cves=no_scan_git_cves,
         )
         report["mode_run"] = mode
         reports.append(report)
@@ -2127,6 +2134,7 @@ def _build_run_kwargs(args: argparse.Namespace) -> dict:
         "enable_pbt": args.enable_pbt,
         "cve_corpus": args.cve_corpus,
         "no_fetch_cves": args.no_fetch_cves,
+        "no_scan_git_cves": args.no_scan_git_cves,
     }
 
 
@@ -2186,6 +2194,11 @@ def main() -> None:
         "--no-fetch-cves",
         action="store_true",
         help="Skip auto-fetching CVEs from OSV.dev; only use --cve-corpus if provided.",
+    )
+    parser.add_argument(
+        "--no-scan-git-cves",
+        action="store_true",
+        help="Skip scanning git history for CVE references in commits and branches.",
     )
     parser.add_argument(
         "--poc",

@@ -7,8 +7,11 @@ from unittest.mock import MagicMock, patch
 
 from ai_vuln_harness.stages.cve_fetcher import (
     _cve_class_from_description,
+    _collect_git_cves,
+    _extract_commit_diff,
     _extract_cve_entries,
     _extract_severity,
+    _get_head_commit,
     _parse_cargo_lock,
     _parse_gemfile,
     _parse_gemfile_lock,
@@ -16,6 +19,8 @@ from ai_vuln_harness.stages.cve_fetcher import (
     _parse_manifest,
     _parse_npm_lock,
     _parse_toml_deps,
+    _scan_git_branches,
+    _scan_git_commits,
     build_cve_corpus,
     infer_ecosystem,
     scan_manifests,
@@ -282,9 +287,17 @@ class BuildCveCorpusTests(unittest.TestCase):
         self.assertEqual(result[0]["cve_id"], "CVE-2024-0001")
 
     def test_cache_hit_skips_network(self):
+        now = 1000000.0
         cache = MagicMock()
-        cache.get.return_value = [{"cve_id": "CVE-2024-0001", "description": "cached"}]
-        with patch("ai_vuln_harness.stages.cve_fetcher._osv_batch_query") as mock_query:
+        cache.get.return_value = {
+            "entries": [{"cve_id": "CVE-2024-0001", "description": "cached"}],
+            "timestamp": now,
+            "fingerprint": "",
+        }
+        with (
+            patch("ai_vuln_harness.stages.cve_fetcher._osv_batch_query") as mock_query,
+            patch("ai_vuln_harness.stages.cve_fetcher.time.time", return_value=now),
+        ):
             result = build_cve_corpus(
                 Path("/tmp/nonexist"),
                 [],
@@ -335,6 +348,285 @@ class BuildCveCorpusTests(unittest.TestCase):
             result = build_cve_corpus(Path("/tmp/nonexist"), snippets, cache=cache)
         mock_query.assert_called_once()
         self.assertEqual(len(result), 1)
+
+
+class GetHeadCommitTests(unittest.TestCase):
+    def test_returns_sha_on_success(self):
+        mock = MagicMock()
+        mock.returncode = 0
+        mock.stdout = "abc123def\n"
+        with patch(
+            "ai_vuln_harness.stages.cve_fetcher.subprocess.run", return_value=mock
+        ):
+            result = _get_head_commit(Path("/repo"))
+        self.assertEqual(result, "abc123def")
+
+    def test_returns_none_on_git_failure(self):
+        mock = MagicMock()
+        mock.returncode = 1
+        with patch(
+            "ai_vuln_harness.stages.cve_fetcher.subprocess.run", return_value=mock
+        ):
+            result = _get_head_commit(Path("/repo"))
+        self.assertIsNone(result)
+
+    def test_returns_none_on_oserror(self):
+        with patch(
+            "ai_vuln_harness.stages.cve_fetcher.subprocess.run", side_effect=OSError
+        ):
+            result = _get_head_commit(Path("/repo"))
+        self.assertIsNone(result)
+
+
+class ScanGitCommitsTests(unittest.TestCase):
+    def test_no_commits_returns_empty(self):
+        mock = MagicMock()
+        mock.returncode = 0
+        mock.stdout = ""
+        with patch(
+            "ai_vuln_harness.stages.cve_fetcher.subprocess.run", return_value=mock
+        ):
+            result = _scan_git_commits(Path("/repo"))
+        self.assertEqual(result, [])
+
+    def test_git_failure_returns_empty(self):
+        mock = MagicMock()
+        mock.returncode = 128
+        with patch(
+            "ai_vuln_harness.stages.cve_fetcher.subprocess.run", return_value=mock
+        ):
+            result = _scan_git_commits(Path("/repo"))
+        self.assertEqual(result, [])
+
+    def test_cve_in_subject_extracted(self):
+        mock_git = MagicMock()
+        mock_git.returncode = 0
+        mock_git.stdout = "abc123\nFix CVE-2024-1234 buffer overflow\nAlice\n2024-06-01\n---DELIM---\n"
+        mock_show = MagicMock()
+        mock_show.returncode = 0
+        mock_show.stdout = "--- a/foo.c\n+++ b/foo.c\n@@ -1 +1 @@\n-x\n+y\n"
+
+        def _side_effect(cmd, **kw):
+            if cmd[:2] == ["git", "show"]:
+                return mock_show
+            return mock_git
+
+        with patch(
+            "ai_vuln_harness.stages.cve_fetcher.subprocess.run",
+            side_effect=_side_effect,
+        ):
+            result = _scan_git_commits(Path("/repo"))
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["cve_id"], "CVE-2024-1234")
+        self.assertEqual(result[0]["commit_hash"], "abc123")
+        self.assertIn("buffer overflow", result[0]["description"])
+        self.assertIn("foo.c", result[0]["diff"])
+
+    def test_no_cve_in_subject_returns_empty(self):
+        mock = MagicMock()
+        mock.returncode = 0
+        mock.stdout = "abc123\nFix a typo\nBob\n2024-06-01\n---DELIM---\n"
+        with patch(
+            "ai_vuln_harness.stages.cve_fetcher.subprocess.run", return_value=mock
+        ):
+            result = _scan_git_commits(Path("/repo"))
+        self.assertEqual(result, [])
+
+    def test_multiple_cves_deduplicated(self):
+        def _side_effect(cmd, **kw):
+            mock = MagicMock()
+            mock.returncode = 0
+            if cmd[:2] == ["git", "log"]:
+                mock.stdout = "c001\nFix CVE-2024-0001 and CVE-2024-0001 again\nAlice\n2024-06-01\n---DELIM---\n"
+            else:
+                mock.stdout = ""
+            return mock
+
+        with patch(
+            "ai_vuln_harness.stages.cve_fetcher.subprocess.run",
+            side_effect=_side_effect,
+        ):
+            result = _scan_git_commits(Path("/repo"))
+        self.assertEqual(len(result), 1)
+
+    def test_cve_in_message_body_extracted(self):
+        def _side_effect(cmd, **kw):
+            mock = MagicMock()
+            mock.returncode = 0
+            if cmd[:2] == ["git", "log"]:
+                mock.stdout = (
+                    "c002\nRefactor parser\nAlice\n2024-06-02\n"
+                    "This addresses CVE-2024-5678 by adding input validation.\n---DELIM---\n"
+                )
+            else:
+                mock.stdout = ""
+            return mock
+
+        with patch(
+            "ai_vuln_harness.stages.cve_fetcher.subprocess.run",
+            side_effect=_side_effect,
+        ):
+            result = _scan_git_commits(Path("/repo"))
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["cve_id"], "CVE-2024-5678")
+
+
+class ExtractCommitDiffTests(unittest.TestCase):
+    def test_returns_diff_on_success(self):
+        mock = MagicMock()
+        mock.returncode = 0
+        mock.stdout = "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-old\n+new\n"
+        with patch(
+            "ai_vuln_harness.stages.cve_fetcher.subprocess.run", return_value=mock
+        ):
+            result = _extract_commit_diff(Path("/repo"), "abc123")
+        self.assertIn("x.py", result)
+        self.assertIn("+new", result)
+
+    def test_returns_empty_on_failure(self):
+        mock = MagicMock()
+        mock.returncode = 128
+        with patch(
+            "ai_vuln_harness.stages.cve_fetcher.subprocess.run", return_value=mock
+        ):
+            result = _extract_commit_diff(Path("/repo"), "badhash")
+        self.assertEqual(result, "")
+
+    def test_returns_empty_on_oserror(self):
+        with patch(
+            "ai_vuln_harness.stages.cve_fetcher.subprocess.run", side_effect=OSError
+        ):
+            result = _extract_commit_diff(Path("/repo"), "abc")
+        self.assertEqual(result, "")
+
+
+class ScanGitBranchesTests(unittest.TestCase):
+    def test_no_branches_returns_empty(self):
+        mock = MagicMock()
+        mock.returncode = 0
+        mock.stdout = ""
+        with patch(
+            "ai_vuln_harness.stages.cve_fetcher.subprocess.run", return_value=mock
+        ):
+            result = _scan_git_branches(Path("/repo"))
+        self.assertEqual(result, [])
+
+    def test_branch_with_cve_extracted(self):
+        mock = MagicMock()
+        mock.returncode = 0
+        mock.stdout = "* main\n  fix/CVE-2024-9999-heap-overflow\n"
+        with patch(
+            "ai_vuln_harness.stages.cve_fetcher.subprocess.run", return_value=mock
+        ):
+            result = _scan_git_branches(Path("/repo"))
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["cve_id"], "CVE-2024-9999")
+        self.assertEqual(result[0]["branch"], "fix/CVE-2024-9999-heap-overflow")
+
+    def test_branches_without_cve_ignored(self):
+        mock = MagicMock()
+        mock.returncode = 0
+        mock.stdout = "* main\n  feature/new-thing\n  bugfix/typo\n"
+        with patch(
+            "ai_vuln_harness.stages.cve_fetcher.subprocess.run", return_value=mock
+        ):
+            result = _scan_git_branches(Path("/repo"))
+        self.assertEqual(result, [])
+
+    def test_remote_branches_included(self):
+        mock = MagicMock()
+        mock.returncode = 0
+        mock.stdout = "  remotes/origin/fix/CVE-2025-0011-oob\n"
+        with patch(
+            "ai_vuln_harness.stages.cve_fetcher.subprocess.run", return_value=mock
+        ):
+            result = _scan_git_branches(Path("/repo"))
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["cve_id"], "CVE-2025-0011")
+
+
+class CollectGitCvesTests(unittest.TestCase):
+    def test_non_git_repo_returns_empty(self):
+        with patch(
+            "ai_vuln_harness.stages.cve_fetcher._get_head_commit", return_value=None
+        ):
+            result = _collect_git_cves(Path("/repo"))
+        self.assertEqual(result, [])
+
+    def test_aggregates_commits_and_branches(self):
+        head_mock = MagicMock(return_value="abc123")
+        commits_mock = MagicMock(
+            return_value=[{"cve_id": "CVE-2024-0001", "commit_hash": "c001"}]
+        )
+        branches_mock = MagicMock(
+            return_value=[{"cve_id": "CVE-2024-9999", "branch": "fix/CVE-2024-9999"}]
+        )
+        with (
+            patch("ai_vuln_harness.stages.cve_fetcher._get_head_commit", head_mock),
+            patch("ai_vuln_harness.stages.cve_fetcher._scan_git_commits", commits_mock),
+            patch(
+                "ai_vuln_harness.stages.cve_fetcher._scan_git_branches", branches_mock
+            ),
+        ):
+            result = _collect_git_cves(Path("/repo"))
+        self.assertEqual(len(result), 2)
+
+
+class BuildCveCorpusGitTests(unittest.TestCase):
+    def test_no_scan_git_skips_git_scan(self):
+        cache = MagicMock()
+        cache.get.return_value = None
+        with (
+            patch("ai_vuln_harness.stages.cve_fetcher._collect_git_cves") as mock_git,
+            patch("ai_vuln_harness.stages.cve_fetcher._osv_batch_query") as mock_osv,
+        ):
+            mock_osv.return_value = {}
+            result = build_cve_corpus(
+                Path("/tmp/nonexist"),
+                [],
+                cache=cache,
+                no_scan_git=True,
+                no_fetch=True,
+            )
+        mock_git.assert_not_called()
+        self.assertEqual(result, [])
+
+    def test_git_cves_included_by_default(self):
+        cache = MagicMock()
+        cache.get.return_value = None
+        with (
+            patch("ai_vuln_harness.stages.cve_fetcher._collect_git_cves") as mock_git,
+            patch("ai_vuln_harness.stages.cve_fetcher._osv_batch_query") as mock_osv,
+        ):
+            mock_git.return_value = [{"cve_id": "CVE-2024-0001", "commit_hash": "c001"}]
+            mock_osv.return_value = {}
+            result = build_cve_corpus(
+                Path("/tmp/nonexist"),
+                [],
+                cache=cache,
+                no_fetch=True,
+            )
+        mock_git.assert_called_once()
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["cve_id"], "CVE-2024-0001")
+
+    def test_git_cves_merged_with_osv(self):
+        cache = MagicMock()
+        cache.get.return_value = None
+        with (
+            patch("ai_vuln_harness.stages.cve_fetcher._collect_git_cves") as mock_git,
+            patch("ai_vuln_harness.stages.cve_fetcher._osv_batch_query") as mock_osv,
+        ):
+            mock_git.return_value = [{"cve_id": "CVE-2024-0001"}]
+            mock_osv.return_value = {}
+            mock_osv.return_value = {}
+            result = build_cve_corpus(
+                Path("/tmp/nonexist"),
+                [],
+                cache=cache,
+                no_fetch=False,
+            )
+            self.assertGreaterEqual(len(result), 1)
 
 
 def _temp_repo(files: dict[str, str]):

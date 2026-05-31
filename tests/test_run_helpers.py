@@ -231,6 +231,7 @@ class TestBuildRunKwargs:
         ns.enable_pbt = False
         ns.cve_corpus = None
         ns.no_fetch_cves = False
+        ns.no_scan_git_cves = False
         return ns
 
     def test_returns_dict(self, args):

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import subprocess
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -11,6 +14,8 @@ if TYPE_CHECKING:
     from .runtime import JsonCache
 
 _OSV_BATCH_URL = "https://api.osv.dev/v1/querybatch"
+_CVE_CACHE_TTL: int = 86400  # 24 hours
+_CVE_ID_RE = re.compile(r"(CVE-\d{4}-\d{4,})", re.I)
 
 _MANIFEST_PARSERS: dict[str, str] = {
     "package.json": "npm",
@@ -408,12 +413,153 @@ def _cve_class_from_description(text: str) -> str:
     return ""
 
 
+def _get_head_commit(repo_path: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=repo_path,
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _scan_git_commits(repo_path: Path) -> list[dict]:
+    try:
+        result = subprocess.run(
+            ["git", "log", "--all", "--format=%H%n%s%n%an%n%ai%n---DELIM---"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=repo_path,
+        )
+        if result.returncode != 0:
+            return []
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+    entries: list[dict] = []
+    seen: set[str] = set()
+    blocks = (
+        result.stdout.strip().split("\n---DELIM---\n") if result.stdout.strip() else []
+    )
+    for block in blocks:
+        lines = [ln.strip() for ln in block.strip().split("\n") if ln.strip()]
+        if len(lines) < 4:
+            continue
+        commit_hash, subject, author, date = lines[0], lines[1], lines[2], lines[3]
+        cve_ids = _CVE_ID_RE.findall(subject + " " + " ".join(lines[4:]))
+        if not cve_ids:
+            continue
+        commit_msg = (
+            subject + "\n" + "\n".join(lines[4:]) if len(lines) > 4 else subject
+        )
+        for cve in set(cve_ids):
+            upper = cve.upper()
+            if upper in seen:
+                continue
+            seen.add(upper)
+            diff = _extract_commit_diff(repo_path, commit_hash)
+            entries.append(
+                {
+                    "cve_id": upper,
+                    "description": commit_msg[:200],
+                    "class": "",
+                    "file": "",
+                    "function": "",
+                    "severity": "UNKNOWN",
+                    "ecosystem": "",
+                    "package": "",
+                    "commit_hash": commit_hash,
+                    "commit_message": commit_msg,
+                    "commit_author": author,
+                    "commit_date": date,
+                    "branch": "",
+                    "diff": diff,
+                }
+            )
+    return entries
+
+
+def _extract_commit_diff(repo_path: Path, commit_hash: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "show", commit_hash, "--format=", "--stat", "--patch"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            cwd=repo_path,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return ""
+
+
+def _scan_git_branches(repo_path: Path) -> list[dict]:
+    try:
+        result = subprocess.run(
+            ["git", "branch", "-a"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=repo_path,
+        )
+        if result.returncode != 0:
+            return []
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for line in result.stdout.splitlines():
+        branch = line.strip().lstrip("* ").strip()
+        cve_ids = _CVE_ID_RE.findall(branch)
+        for cve in set(cve_ids):
+            upper = cve.upper()
+            if upper in seen:
+                continue
+            seen.add(upper)
+            entries.append(
+                {
+                    "cve_id": upper,
+                    "description": f"CVE referenced in branch name: {branch}",
+                    "class": "",
+                    "file": "",
+                    "function": "",
+                    "severity": "UNKNOWN",
+                    "ecosystem": "",
+                    "package": "",
+                    "commit_hash": "",
+                    "commit_message": "",
+                    "branch": branch,
+                    "diff": "",
+                }
+            )
+    return entries
+
+
+def _collect_git_cves(repo_path: Path) -> list[dict]:
+    entries: list[dict] = []
+    head = _get_head_commit(repo_path)
+    if head is None:
+        return entries
+    entries.extend(_scan_git_commits(repo_path))
+    entries.extend(_scan_git_branches(repo_path))
+    return entries
+
+
 def build_cve_corpus(
     repo_path: Path,
     snippets: list[dict],
     cache: JsonCache | None = None,
     user_corpus_path: Path | None = None,
     no_fetch: bool = False,
+    no_scan_git: bool = False,
 ) -> list[dict]:
     from .cve_corpus import load_cve_corpus as load_user_corpus
 
@@ -425,21 +571,33 @@ def build_cve_corpus(
         except Exception:
             pass
 
+    if not no_scan_git:
+        entries.extend(_collect_git_cves(repo_path))
+
     if no_fetch:
         return entries
 
-    cached = cache.get("cve_fetcher_entries") if cache else []
-    if isinstance(cached, list) and cached:
-        entries.extend(cached)
-        return entries
-
     queries = _collect_cve_queries(repo_path, snippets)
+    fingerprint = _queries_fingerprint(queries) if queries else ""
+    corpus_key = f"cve_corpus:{fingerprint}:{user_corpus_path or 'builtin'}"
+
+    if cache:
+        cached = cache.get(corpus_key)
+        if isinstance(cached, dict):
+            ts = cached.get("timestamp", 0)
+            if isinstance(ts, (int, float)) and (time.time() - ts) < _CVE_CACHE_TTL:
+                return list(cached.get("entries", []))
+
     if queries:
         osv_results = _osv_batch_query(queries)
         fetched = _extract_cve_entries(osv_results)
-        if fetched and cache is not None:
-            cache.put("cve_fetcher_entries", fetched)
         entries.extend(fetched)
+
+    if cache and fingerprint:
+        cache.put(
+            corpus_key,
+            {"entries": entries, "timestamp": time.time(), "fingerprint": fingerprint},
+        )
 
     return entries
 
@@ -476,3 +634,8 @@ def _collect_cve_queries(
                 seen_pkg.add(key)
 
     return queries
+
+
+def _queries_fingerprint(queries: list[tuple[str, str]]) -> str:
+    serialised = json.dumps(sorted(queries), sort_keys=True)
+    return hashlib.sha256(serialised.encode()).hexdigest()[:16]
