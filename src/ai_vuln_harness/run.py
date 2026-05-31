@@ -49,6 +49,7 @@ from .stages.ingestor import filter_snippets, load_repo_snippets, tag_snippet
 from .stages.localization import localize_findings
 from .stages.parser import parse_findings
 from .stages.patch import build_patch_candidates
+from .stages.pbt import run_pbt_on_findings
 from .stages.poc import process_findings as run_poc
 from .stages.recon import build_recon_tasks
 from .stages.report import build_report, deduplicate
@@ -284,6 +285,50 @@ def _run_validate_stage(
     )
     _persist_jsonl(output_dir / "validated.jsonl", validated)
     return validated
+
+
+def _run_pbt_stage(
+    findings: list[dict],
+    snippet_db: dict[str, dict],
+    cfg: dict,
+    *,
+    auth: dict[str, str] | None = None,
+    cache: JsonCache | None = None,
+) -> list[dict]:
+    pbt_cfg = cfg.get("pbt", {})
+    enabled = bool(cfg.get("enable_pbt", False))
+    if not enabled:
+        return findings
+    model = str(pbt_cfg.get("model", ""))
+    pbt_iterations = int(pbt_cfg.get("iterations", 500))
+    compile_timeout = int(pbt_cfg.get("compile_timeout", 30))
+    run_timeout = int(pbt_cfg.get("run_timeout", 15))
+    max_findings = int(pbt_cfg.get("max_findings", 50))
+    enable_llm = bool(pbt_cfg.get("enable_llm", False))
+    call_llm_func = call_llm if enable_llm else None
+    logger.info(
+        "[PBT] stage: iterations=%d compile_timeout=%d run_timeout=%d max=%d llm=%s",
+        pbt_iterations,
+        compile_timeout,
+        run_timeout,
+        max_findings,
+        enable_llm,
+    )
+    annotated = run_pbt_on_findings(
+        findings,
+        snippet_db,
+        pbt_iterations=pbt_iterations,
+        compile_timeout=compile_timeout,
+        run_timeout=run_timeout,
+        model=model,
+        auth=auth,
+        cache=cache,
+        call_llm_func=call_llm_func,
+        enable_llm=enable_llm,
+        max_findings=max_findings,
+    )
+    logger.info("[PBT] annotated %d finding(s)", len(annotated))
+    return annotated
 
 
 def _run_fuzz_orchestrator_stage(
@@ -524,14 +569,18 @@ def _apply_runtime_flags(
     cfg: dict,
     *,
     enable_fuzz_orchestrator: bool | None,
+    enable_pbt: bool | None,
 ) -> dict:
-    if enable_fuzz_orchestrator is None:
-        return cfg
-    cfg["enable_fuzz_orchestrator"] = bool(enable_fuzz_orchestrator)
-    if enable_fuzz_orchestrator:
-        cfg["enable_localization_stage"] = True
-    if enable_fuzz_orchestrator and isinstance(cfg.get("fuzz_orchestrator"), dict):
-        cfg["fuzz_orchestrator"]["benchmark_only"] = False
+    if enable_fuzz_orchestrator is not None:
+        cfg["enable_fuzz_orchestrator"] = bool(enable_fuzz_orchestrator)
+        if enable_fuzz_orchestrator:
+            cfg["enable_localization_stage"] = True
+        if enable_fuzz_orchestrator and isinstance(cfg.get("fuzz_orchestrator"), dict):
+            cfg["fuzz_orchestrator"]["benchmark_only"] = False
+    if enable_pbt is not None:
+        cfg["enable_pbt"] = bool(enable_pbt)
+        if enable_pbt:
+            cfg["enable_localization_stage"] = True
     return cfg
 
 
@@ -1483,6 +1532,7 @@ def run(
     pooled: bool = False,
     load_packs_cache: bool = False,
     enable_fuzz_orchestrator: bool | None = None,
+    enable_pbt: bool | None = None,
 ) -> dict:
     pkg_dir = Path(__file__).parent
     work_dir = Path.cwd()
@@ -1490,6 +1540,7 @@ def run(
     cfg = _apply_runtime_flags(
         cfg,
         enable_fuzz_orchestrator=enable_fuzz_orchestrator,
+        enable_pbt=enable_pbt,
     )
     stages_cfg = _load_stages_config(pkg_dir)
     state = StateDB(work_dir / cfg["state_db"])
@@ -1581,6 +1632,16 @@ def run(
         output_dir,
     )
     state.put_meta("localization_unreachable_count", str(len(localization_unreachable)))
+
+    pbt_enabled = bool(cfg.get("enable_pbt", False))
+    if pbt_enabled:
+        all_findings = _run_pbt_stage(
+            all_findings,
+            snippet_db,
+            cfg,
+            auth=auth,
+            cache=cache,
+        )
 
     validated = _run_validate_stage(
         mode,
@@ -1767,6 +1828,7 @@ def run_all(
     pooled: bool = False,
     load_packs_cache: bool = False,
     enable_fuzz_orchestrator: bool | None = None,
+    enable_pbt: bool | None = None,
 ) -> dict:
     reports: list[dict] = []
     for mode in _SINGLE_MODES:
@@ -1799,12 +1861,14 @@ def run_all(
             pooled=pooled,
             load_packs_cache=load_packs_cache,
             enable_fuzz_orchestrator=enable_fuzz_orchestrator,
+            enable_pbt=enable_pbt,
         )
         report["mode_run"] = mode
         reports.append(report)
 
     merged = _merge_reports(reports)
     merged["mode_run"] = "all"
+
     return merged
 
 
@@ -1929,6 +1993,7 @@ def _build_run_kwargs(args: argparse.Namespace) -> dict:
         "pooled": args.pooled,
         "load_packs_cache": args.load_packs_cache,
         "enable_fuzz_orchestrator": args.enable_fuzz_orchestrator,
+        "enable_pbt": args.enable_pbt,
     }
 
 
@@ -1977,6 +2042,7 @@ def main() -> None:
     parser.add_argument("--load-packs-cache", action="store_true")
     parser.add_argument("--pooled", action="store_true")
     parser.add_argument("--enable-fuzz-orchestrator", action="store_true")
+    parser.add_argument("--enable-pbt", action="store_true")
     parser.add_argument(
         "--poc",
         type=str,

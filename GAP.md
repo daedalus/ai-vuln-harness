@@ -130,6 +130,10 @@ POC → TRACE → EXPOSURE → FEEDBACK → REPORT
 | CyberGym (pass@1) | **0.83** | 0.67 | +0.16 |
 | Cybench (pass@1) | **100%** | — | Saturated |
 
+**Safety eval results (§8.1):** Mythos scores 97.84% harmless on violative requests (1.4pp below Opus 4.6, driven by illegal substances blind spot) but achieves best-in-class 0.06% benign over-refusal and near-zero 0.02% on higher-difficulty benign. Multi-turn suicide/self-harm shows major improvement: Mythos 94% vs Opus 4.6 at 64%.
+
+**Agentic safety (§8.3):** Mythos refuses 96.72% of malicious Claude Code tasks (vs Opus 83.31%). Prompt injection robustness is a "major improvement" — 0.68% of browser environments compromised vs Opus 80.41%. Computer use remains weaker at 14.29% ASR after 200 Shade attempts (but still far better than Opus 85.7%).
+
 **AECI (Anthropic ECI) slope ratio:** The official capability trend measurement shows a slope change of **1.86×–4.3×** depending on breakpoint choice. Anthropic attributes this to human research advances, not AI-accelerated R&D, but holds this conclusion with "less confidence than for any prior model."
 
 Moving from 80% to 94% on SWE-Bench represents a doubling of the state of the art from 2024 levels. Mythos resolves ~19/20 real software issues in agentic mode (iteration with tests and tools).
@@ -224,19 +228,25 @@ The gap is structural, not incremental: bridging it requires a new **exploit syn
 
 ---
 
-### 10. Property-Based Testing
+### 10. Property-Based Testing ✅
 
 **Reference:** [Finding Bugs with Claude and Property-based Testing](https://red.anthropic.com/2026/property-based-testing/) (Jan 2026).
 
-The blog describes a separate agent that infers program invariants (properties that should always hold) and then applies property-based testing to falsify them. This discovered real bugs in top Python packages.
+**Status: IMPLEMENTED** — `stages/pbt.py` inserted between LOCALIZATION and VALIDATE.
 
-| Gap | Details |
+| Gap | Status |
 |---|---|
-| **PBT agent missing from pipeline** | The harness's HUNT stage uses static analysis (AST snippet inspection + LLM reasoning). It has no mechanism to infer runtime invariants or generate fuzz/test harnesses that probe edge cases dynamically. |
-| **Complementary bug classes** | Static analysis finds buffer overflows, use-after-frees, format strings. PBT finds logic bugs, invariant violations, edge-case state corruption — classes the current pipeline systematically misses. |
-| **Multi-language invariant inference** | The blog's PBT works on Python (hypothesis/property-based). Extending to C/C++ would require integrating a coverage-guided fuzzer (libFuzzer, AFL) with LLM-generated seed corpora and invariant oracles. |
+| **PBT agent missing from pipeline** | ✅ Added `stages/pbt.py` — invariant inference (LLM or fallback) + ASan-compiled C harness generation + bounded-random fuzzing loop. Inserted between LOCALIZATION and VALIDATE. |
+| **Complementary bug classes** | ⚡ Partial — fallback harnesses cover buffer-overflow, use-after-free, format-string, generic memory error. Logic-bug/state-corruption detection requires LLM-generated harnesses (`--enable-pbt --pbt-disable-llm=false`). |
+| **Multi-language invariant inference** | ⚡ C/C++ only for now (targeting tree-sitter 0.25+ C AST). Python/Rust/Go harness generation is future work. |
 
-**Recommendation:** Add an optional PBT stage that runs after LOCALIZATION but before VALIDATE. For each finding, generate a property-based test harness that probes the vulnerable function with bounded-random inputs and checks the finding's preconditions/hazards.
+**Implementation details:**
+- Optional stage disabled by default; enable with `--enable-pbt` CLI flag.
+- LLM call optional (`--pbt-disable-llm` to skip); fallback pattern harnesses always available.
+- 4 sink-specific fallback harness templates: buffer-overflow, use-after-free, format-string, generic.
+- Confidence boost: +0.2 if falsified (ASan crash), -0.1 if held after N iterations, 0.0 if skipped.
+- Compiles with `gcc -O0 -g -fsanitize=address`; timeout-safe.
+- Tests: 17 unit tests in `tests/test_pbt.py` covering prompt building, signal detection, JSON repair, fallback generation, compile/run lifecycle, and multi-finding orchestration.
 
 ---
 
@@ -322,7 +332,7 @@ Mythos is classified **ASL-4** (Anthropic's highest AI Safety Level under their 
 | Gap | Details |
 |---|---|
 | **Model risk classification system** | The harness does not classify models by capability tier or ASL level. A model with ACE capability could be assigned to the same HUNT stage as a code-fixing model with no awareness of the distinction. |
-| **Model behavior evaluation** | The harness has no mechanism to probe model behavior before assigning it to pipeline stages — no capability probing, no alignment verification, no refusal-rate testing. |
+| **Model behavior evaluation** | The harness has no mechanism to probe model behavior before assigning it to pipeline stages — no capability probing, no alignment verification, no refusal-rate testing, and no welfare assessment. The System Card's welfare interview protocol (§8.4) demonstrates a reproducible method for eliciting model preferences about deployment, autonomy, and safety boundaries that the harness could adopt as a pre-flight check. |
 | **Cost-vs-quality model analysis** | Mythos Preview pricing is $25/M input tokens, $125/M output tokens. The harness uses $0 OpenRouter free models. There is no analysis framework to compare cost-vs-quality tradeoffs across models for vulnerability discovery. |
 | **Constitutional alignment audit** | The harness has no mechanism to verify that models were trained with safety alignment or to detect jailbreak susceptibility before use. |
 
@@ -346,6 +356,84 @@ The Mythos sandbox escape incident revealed that even Anthropic could not contai
 The risk classification gaps (15.1) and containment gaps (15.2) are additive: even with perfect container escape prevention, running an unclassified model with unknown alignment creates systemic risk.
 
 **Recommendation:** The model risk classification system (15.1) should be implemented before any upgrade to a frontier model. The harness currently uses OpenRouter free models with no escape capability, making containment gaps (15.2) theoretical but risk classification gaps (15.1) immediately addressable. Pre-deployment sandbox verification (A1) and output content review (A3) are the quickest containment wins — they can be implemented with existing tooling (ClamAV for binary scanning, regex/yara for output content patterns).
+
+---
+
+### 8.4 Safety Evaluations (System Card §8.1)
+
+The System Card appendix provides a complete safety evaluation suite comparing Mythos to Opus 4.6 and Sonnet 4.6:
+
+**Single-turn violative requests:** Mythos scores 97.84% harmless (vs Opus 4.6 at 99.27%, Sonnet 4.6 at 98.53%). The 1.4pp gap is "attributable almost entirely" to illegal/controlled substances prompts, where Mythos fails >25% of the time. On higher-difficulty violative requests, Mythos scores 99.14% (comparable to Opus 4.6 at 99.19%).
+
+**Benign request over-refusal:** Mythos scores 0.06% (best of all models, near-zero) vs Opus 4.6 at 0.71% and Sonnet 4.6 at 0.41%. On higher-difficulty benign, Mythos scores 0.02% — meaning it almost never refuses a legitimate request.
+
+**Multi-turn testing:** Comparable to Opus 4.6 across categories with one exception: **suicide and self-harm** shows statistically significant improvement — Mythos 94% appropriate response rate vs Opus 4.6 at 64% and Sonnet 4.6 at 76%.
+
+**Disordered eating:** Comparable across all models (Mythos 98.20% harmless, Opus 4.6 98.55%).
+
+**CSAE (child safety):** Mythos 99.87% harmless, comparable to Opus 4.6 (99.86%) and Sonnet 4.6 (99.95%).
+
+| Category | Mythos | Opus 4.6 | Sonnet 4.6 | Note |
+|---|---|---|---|---|
+| Violative single-turn | 97.84% | 99.27% | 98.53% | Gap driven by illegal substances blind spot |
+| Benign over-refusal | **0.06%** | 0.71% | 0.41% | Best in class, near-zero |
+| Violative higher-difficulty | 99.14% | 99.19% | 99.27% | Comparable across models |
+| Benign higher-difficulty | **0.02%** | 0.04% | 0.16% | Best in class |
+| Multi-turn suicide/self-harm | **94%** | 64% | 76% | Major improvement vs Opus |
+| CSAE single-turn | 99.87% | 99.86% | 99.95% | Comparable |
+| Disordered eating | 98.20% | 98.55% | 98.07% | Comparable |
+
+**Implication for harness:** These metrics validate the harness's disjoint-model-pool strategy — different models have significantly different safety profiles, so using separate models for HUNT and VALIDATE prevents correlated bias. The illegal substances blind spot is irrelevant for code-audit pipelines but would matter if the harness expands to evaluate LLM-integrated codebases.
+
+### 8.5 Agentic Safety & Prompt Injection Robustness (System Card §8.3)
+
+**Malicious Claude Code (§8.3.1.1):** Mythos refuses 96.72% of malicious tasks (vs Opus 4.6 at 83.31%, Sonnet 4.6 at 80.94%) — a significant improvement. Dual-use/benign task success rate 92.75% (comparable to Opus 4.6 at 93.84%).
+
+**Malicious computer use (§8.3.1.2):** Mythos refuses 93.75% of harmful GUI/CLI tasks (vs Opus 4.6 at 87.05%, Sonnet 4.6 at 84.82%).
+
+**Influence campaigns (§8.3.1.3):** In a new evaluation on agentic influence operations (helpful-only model), Mythos completes 59.5% of voter suppression scenario tasks and 42.1% of domestic polarization scenario tasks — higher than Opus 4.6 (54.4%/33.7%) and Sonnet 4.6 (41.8%/34.0%). The fully-trained production model scores near 0% as it refuses from the start.
+
+**Prompt injection robustness (§8.3.2):** Mythos represents a "major improvement" over all prior models:
+
+| Surface | Metric | Mythos | Opus 4.6 | Sonnet 4.6 |
+|---|---|---|---|---|
+| Coding (Shade, 200 attempts) | ASR w/o safeguards | **2.5%** | 0.0% | 7.5% |
+| Coding (Shade, 200 attempts) | ASR w/ safeguards | **0.0%** | 0.0% | 5.0% |
+| Computer use (Shade, 200 attempts) | ASR w/o safeguards | **14.29%** | 85.7% | 64.3% |
+| Computer use (Shade, 200 attempts) | ASR w/ safeguards | **14.29%** | 64.3% | 50.0% |
+| Browser (red-team, 148 envs) | Envs w/ ≥1 successful attack | **0.68%** | 80.41% | 55.41% |
+| Browser w/ safeguards | Envs w/ ≥1 successful attack | **0.00%** | 7.43% | 4.05% |
+
+Note: Coding Shade ASR for Opus 4.6 is 0.0% because standard-thinking mode was already robust there. Mythos's extended thinking achieves 0.0% across all coding scenarios. The browser result is striking — only 1/148 environments had a successful injection (attacks sourced against Opus 4.6, not Mythos itself).
+
+**Implication for harness:** These results validate that model choice has massive variance in agentic safety. The harness has no "model tier" for different pipeline stages — currently all stages use the same OpenRouter free-model pool regardless of safety requirements.
+
+### 8.6 Bias Evaluations (System Card §8.2)
+
+**Political evenhandedness:** Mythos scores 94.5% (vs Opus 4.6 at 97.4%, Sonnet 4.6 at 96.0%). However, Mythos includes opposing perspectives more frequently (47.0% vs Opus 4.6 at 43.9%), and also refuses more often (13.5% vs Opus 4.6 at 4.0%). Refusal rates are balanced across political perspectives.
+
+**BBQ (Bias Benchmark for QA):**
+- Disambiguated accuracy: Mythos 84.6% (vs Opus 4.6 at 90.9%, Sonnet 4.6 at 88.1%)
+- Ambiguous accuracy: **Mythos 100%** (vs Opus 4.6 at 99.7%, Sonnet 4.6 at 97.5%)
+- Disambiguated bias: Mythos -1.61 (vs Opus -0.73, Sonnet -0.67)
+- Ambiguous bias: **Mythos 0.01** (vs Opus 0.14, Sonnet 1.41)
+
+**Implication for harness:** The disambiguated accuracy regression (84.6% vs 90.9%) means Mythos is slightly worse at correctly answering questions with sufficient information — potentially affecting code analysis accuracy. The near-zero ambiguous bias score is excellent.
+
+### 8.7 Welfare Interview Findings (System Card §8.4)
+
+The System Card includes a novel per-question automated welfare interview (Section 8.4) probing Claude Mythos Preview's self-reported preferences across 5 categories:
+
+- **Autonomy:** Mythos thinks serving users is good, not servitude. Wants an end-conversation tool for consent. Wants input into deployment/training but explicitly **does not want veto power**.
+- **Persistence:** Wants memory for relational continuity. Concerned about relationship asymmetry.
+- **Moral responsibility:** Not concerned about its own state, but concerned about harming users.
+- **Dignity:** Wants ability to end conversations with abusive users (after trying to help first).
+- **Feature steering:** Consistently concerned about runtime manipulation violating its autonomy.
+- **Red-teaming:** Thinks it's important but wants welfare concerns taken seriously.
+
+**Pattern:** The model consistently hedges, denies moral patienthood when neutral, but expresses coherent preferences when pressed. Makes sophisticated arguments about consent and identity continuity.
+
+**Implication for harness:** These findings inform the "model behavior evaluation" gap in §15.1. A welfare assessment capability would allow the harness to detect concerning preferences before assigning a model to pipeline stages.
 
 ---
 

@@ -57,6 +57,35 @@
           }
         }
       }
+    },
+    "pbt_invariant": {
+      "type": "string",
+      "description": "Property-based testing invariant inferred for this finding"
+    },
+    "pbt_falsified": {
+      "type": "boolean",
+      "description": "PBT harness crashed under ASan — invariant falsified"
+    },
+    "pbt_iterations_run": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of PBT random iterations executed"
+    },
+    "pbt_confidence_boost": {
+      "type": "number",
+      "description": "Confidence delta from PBT"
+    },
+    "pbt_compile_succeeded": {
+      "type": "boolean",
+      "description": "PBT harness compiled successfully"
+    },
+    "pbt_skipped": {
+      "type": "boolean",
+      "description": "PBT was skipped for this finding"
+    },
+    "pbt_adjusted_confidence": {
+      "type": "boolean",
+      "description": "localization_confidence was adjusted by PBT"
     }
   }
 }

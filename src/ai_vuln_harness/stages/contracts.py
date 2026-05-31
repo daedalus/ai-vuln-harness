@@ -24,6 +24,7 @@ PIPELINE_STAGES = [
     "coordinator",
     "hunt",
     "localization",
+    "pbt",
     "validate",
     "fuzz_orchestrator",
     "gapfill",

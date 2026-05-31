@@ -4,6 +4,7 @@
   "allow_full_db_fallback": false,
   "enable_localization_stage": false,
   "enable_fuzz_orchestrator": false,
+  "enable_pbt": false,
   "sync_default": true,
   "max_workers": 3,
   "cache_file": "output/cache.json",
@@ -27,6 +28,13 @@
     "max_chain_targets": 10,
     "high_confidence_threshold": 0.75,
     "timeout_seconds": 10
+  },
+  "pbt": {
+    "llm": false,
+    "iterations": 500,
+    "compile_timeout": 30,
+    "run_timeout": 15,
+    "max_findings": 50
   },
   "kpis": [
     "precision_at_top_n",

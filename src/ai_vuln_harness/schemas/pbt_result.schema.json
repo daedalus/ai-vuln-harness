@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PBTResult",
+  "type": "object",
+  "required": [
+    "pbt_invariant",
+    "pbt_falsified",
+    "pbt_iterations_run",
+    "pbt_confidence_boost"
+  ],
+  "properties": {
+    "pbt_invariant": {
+      "type": "string",
+      "description": "The invariant being tested"
+    },
+    "pbt_falsified": {
+      "type": "boolean",
+      "description": "True if the harness crashed under ASan"
+    },
+    "pbt_iterations_run": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of random iterations executed"
+    },
+    "pbt_confidence_boost": {
+      "type": "number",
+      "description": "Confidence delta: +0.2 if falsified, -0.1 if held, 0 if skipped/failed"
+    },
+    "pbt_compile_succeeded": {
+      "type": "boolean",
+      "description": "Whether the harness compiled successfully"
+    },
+    "pbt_skipped": {
+      "type": "boolean",
+      "description": "True if PBT was skipped (missing snippet or no valid suspicious points)"
+    },
+    "pbt_adjusted_confidence": {
+      "type": "boolean",
+      "description": "True if localization_confidence was adjusted by PBT"
+    },
+    "pbt_exit_code": {
+      "type": ["integer", "null"],
+      "description": "Exit code from the harness run"
+    }
+  }
+}
