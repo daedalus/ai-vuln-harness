@@ -229,6 +229,8 @@ class TestBuildRunKwargs:
         ns.enable_localization_stage = False
         ns.enable_fuzz_orchestrator = False
         ns.enable_pbt = False
+        ns.cve_corpus = None
+        ns.no_fetch_cves = False
         return ns
 
     def test_returns_dict(self, args):

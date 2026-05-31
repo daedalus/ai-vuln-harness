@@ -1592,6 +1592,8 @@ def run(
     load_packs_cache: bool = False,
     enable_fuzz_orchestrator: bool | None = None,
     enable_pbt: bool | None = None,
+    cve_corpus: Path | None = None,
+    no_fetch_cves: bool = False,
 ) -> dict:
     pkg_dir = Path(__file__).parent
     work_dir = Path.cwd()
@@ -1607,14 +1609,7 @@ def run(
 
     run_id = f"{mode}:{repo!s}"
     state.create_run(repo_path=str(repo), run_id=run_id)
-    if max_cost_usd is not None:
-        spent = state.total_cost(run_id)
-        if spent >= max_cost_usd:
-            state.finish_run(run_id, "cost_limit")
-            msg = f"Cost limit ${max_cost_usd:.2f} reached (${spent:.2f} already spent)"
-            raise RuntimeError(
-                msg,
-            )
+    _enforce_cost_limit(state, run_id, max_cost_usd)
 
     auth = load_auth_config(explicit_path=auth_path, script_dir=pkg_dir)
     state.put_meta("auth_providers", json.dumps(sorted(auth.keys())))
@@ -1637,10 +1632,7 @@ def run(
         mode,
         cache,
     )
-    if refresh_models:
-        p = pkg_dir / "config/model_limits.json"
-        if p.exists():
-            p.unlink()
+    _clear_model_limits_cache(pkg_dir, refresh_models)
     model_limits = fetch_model_limits(model_chain, pkg_dir)
     budget_tokens = int(min(model_limits.values()) * budget_ratio)
 
@@ -1660,6 +1652,8 @@ def run(
         allow_full_db_fallback,
         load_packs_cache,
     )
+
+    _inject_cve_entries(packs, repo, snippets, cache, cve_corpus, no_fetch_cves)
     state.put_meta("pack_count", str(len(packs)))
     domain_map = _build_domain_map(packs)
     _persist_jsonl(output_dir / "context_packs.json", packs)
@@ -1790,14 +1784,92 @@ def run(
     )
     state.put_meta("feedback_task_count", str(len(feedback_tasks)))
 
-    report = build_report(
+    report = _assemble_report(
         repo=str(repo),
+        findings=findings,
+        chains=chains,
+        gapfill_tasks=gapfill_tasks,
+        trace_required=cfg["is_library_target"],
+        exposure_metrics=exposure_metrics,
+        pocs=pocs,
+        patch_candidates=patch_candidates,
+        fuzz_artifacts=fuzz_artifacts,
+    )
+
+    state.put_meta("last_mode", mode)
+    state.finish_run(run_id)
+    cache.put("last_report", report)
+    return report
+
+
+def _enforce_cost_limit(
+    state: StateDB, run_id: str, max_cost_usd: float | None
+) -> None:
+    if max_cost_usd is None:
+        return
+    spent = state.total_cost(run_id)
+    if spent >= max_cost_usd:
+        state.finish_run(run_id, "cost_limit")
+        msg = f"Cost limit ${max_cost_usd:.2f} reached (${spent:.2f} already spent)"
+        raise RuntimeError(msg)
+
+
+def _clear_model_limits_cache(pkg_dir: Path, refresh_models: bool) -> None:
+    if not refresh_models:
+        return
+    p = pkg_dir / "config/model_limits.json"
+    if p.exists():
+        p.unlink()
+
+
+def _inject_cve_entries(
+    packs: list[dict],
+    repo: Path,
+    snippets: list[dict],
+    cache: JsonCache,
+    cve_corpus: Path | None,
+    no_fetch_cves: bool,
+) -> None:
+    from .stages.cve_corpus import filter_cves_by_domain
+    from .stages.cve_fetcher import build_cve_corpus
+
+    cve_entries = build_cve_corpus(
+        repo,
+        snippets,
+        cache=cache,
+        user_corpus_path=cve_corpus,
+        no_fetch=no_fetch_cves,
+    )
+    if not cve_entries:
+        return
+    for pack in packs:
+        domain = pack.get("agent", "")
+        relevant = filter_cves_by_domain(cve_entries, domain)
+        if relevant:
+            pack["known_entries"] = relevant
+    logger.info("injected %d CVE entries across %d packs", len(cve_entries), len(packs))
+
+
+def _assemble_report(
+    *,
+    repo: str,
+    findings: list[dict],
+    chains: list[dict],
+    gapfill_tasks: list[dict],
+    trace_required: bool,
+    exposure_metrics: list[dict],
+    pocs: list[dict],
+    patch_candidates: list[dict],
+    fuzz_artifacts: list[dict],
+) -> dict:
+    report = build_report(
+        repo=repo,
         findings=findings,
         chains=chains,
         gaps=[
             {"domain": t["domain"], "files": t["target_files"]} for t in gapfill_tasks
         ],
-        trace_required=cfg["is_library_target"],
+        trace_required=trace_required,
         exposure_metrics=exposure_metrics,
     )
     if pocs:
@@ -1806,10 +1878,6 @@ def run(
         report["patch_candidates"] = patch_candidates
     if fuzz_artifacts:
         report["fuzz_artifacts"] = fuzz_artifacts
-
-    state.put_meta("last_mode", mode)
-    state.finish_run(run_id)
-    cache.put("last_report", report)
     return report
 
 
@@ -1888,6 +1956,8 @@ def run_all(
     load_packs_cache: bool = False,
     enable_fuzz_orchestrator: bool | None = None,
     enable_pbt: bool | None = None,
+    cve_corpus: Path | None = None,
+    no_fetch_cves: bool = False,
 ) -> dict:
     reports: list[dict] = []
     for mode in _SINGLE_MODES:
@@ -1921,6 +1991,8 @@ def run_all(
             load_packs_cache=load_packs_cache,
             enable_fuzz_orchestrator=enable_fuzz_orchestrator,
             enable_pbt=enable_pbt,
+            cve_corpus=cve_corpus,
+            no_fetch_cves=no_fetch_cves,
         )
         report["mode_run"] = mode
         reports.append(report)
@@ -2053,6 +2125,8 @@ def _build_run_kwargs(args: argparse.Namespace) -> dict:
         "load_packs_cache": args.load_packs_cache,
         "enable_fuzz_orchestrator": args.enable_fuzz_orchestrator,
         "enable_pbt": args.enable_pbt,
+        "cve_corpus": args.cve_corpus,
+        "no_fetch_cves": args.no_fetch_cves,
     }
 
 
@@ -2102,6 +2176,17 @@ def main() -> None:
     parser.add_argument("--pooled", action="store_true")
     parser.add_argument("--enable-fuzz-orchestrator", action="store_true")
     parser.add_argument("--enable-pbt", action="store_true")
+    parser.add_argument(
+        "--cve-corpus",
+        type=Path,
+        default=None,
+        help="Path to CVE corpus JSON (known CVEs to exclude as negative examples).",
+    )
+    parser.add_argument(
+        "--no-fetch-cves",
+        action="store_true",
+        help="Skip auto-fetching CVEs from OSV.dev; only use --cve-corpus if provided.",
+    )
     parser.add_argument(
         "--poc",
         type=str,
