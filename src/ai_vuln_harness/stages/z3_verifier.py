@@ -8,12 +8,14 @@ Contract:
 
 from __future__ import annotations
 
-from typing import Any
+import importlib
+import importlib.util
+from typing import Protocol
 
-try:
-    import z3  # type: ignore[import-not-found]
-except Exception:  # pragma: no cover - optional dependency
-    z3 = None  # type: ignore[assignment]
+if importlib.util.find_spec("z3") is not None:
+    z3 = importlib.import_module("z3")
+else:  # pragma: no cover - optional dependency
+    z3 = None
 
 _CONTRADICTION_KEYWORDS = (
     "safe wrapper",
@@ -29,7 +31,9 @@ _UNSAT = "unsat"
 _UNKNOWN = "unknown"
 
 
-def _extract_constraints(finding: dict, snippet: dict) -> dict[str, object]:
+def _extract_constraints(
+    finding: dict, snippet: dict
+) -> dict[str, bool | float | int | None]:
     call_path = finding.get("call_path")
     has_call_path = isinstance(call_path, list)
     call_path_reachable = has_call_path and bool(call_path)
@@ -64,7 +68,7 @@ def _extract_constraints(finding: dict, snippet: dict) -> dict[str, object]:
             1 if contradiction_hint else 0,
         ),
     )
-    return {
+    constraints: dict[str, bool | float | int | None] = {
         "call_path_reachable": call_path_reachable,
         "has_localization": has_localization,
         "runtime_observed": runtime_observed,
@@ -72,17 +76,37 @@ def _extract_constraints(finding: dict, snippet: dict) -> dict[str, object]:
         "contradiction_hint": contradiction_hint,
         "known_signal_count": known_signal_count,
     }
+    return constraints
 
 
-def _check_with_assumption(solver: Any, expr: Any) -> tuple[str, str]:
+class _SolverLike(Protocol):
+    def push(self) -> None:
+        ...
+
+    def add(self, *args: object) -> None:
+        ...
+
+    def check(self) -> object:
+        ...
+
+    def reason_unknown(self) -> str:
+        ...
+
+    def pop(self) -> None:
+        ...
+
+
+def _check_with_assumption(solver: _SolverLike, expr: object) -> tuple[str, str]:
+    if z3 is None:
+        return _UNKNOWN, "z3_unavailable"
     solver.push()
     solver.add(expr)
     result = solver.check()
     reason = ""
-    if result == z3.unknown:  # type: ignore[union-attr]
+    if result == z3.unknown:
         reason = str(solver.reason_unknown())
         status = _UNKNOWN
-    elif result == z3.sat:  # type: ignore[union-attr]
+    elif result == z3.sat:
         status = _SAT
     else:
         status = _UNSAT
@@ -101,7 +125,8 @@ def verify_validate_feasibility(
     if z3 is None:
         return _UNKNOWN, "z3_unavailable"
 
-    if int(constraints["known_signal_count"]) == 0:
+    known_signal_count = constraints["known_signal_count"]
+    if not isinstance(known_signal_count, int) or known_signal_count == 0:
         return _UNKNOWN, "incomplete_constraints"
 
     solver = z3.Solver()
@@ -116,9 +141,7 @@ def verify_validate_feasibility(
     solver.add(call_path_reachable == z3.BoolVal(bool(constraints["call_path_reachable"])))
     solver.add(has_localization == z3.BoolVal(bool(constraints["has_localization"])))
     solver.add(contradiction_hint == z3.BoolVal(bool(constraints["contradiction_hint"])))
-    if constraints["runtime_observed"] is None:
-        solver.add(z3.Or(runtime_observed, z3.Not(runtime_observed)))
-    else:
+    if constraints["runtime_observed"] is not None:
         solver.add(runtime_observed == z3.BoolVal(bool(constraints["runtime_observed"])))
     if constraints["confidence"] is None:
         solver.add(confidence >= 0.0, confidence <= 1.0)
