@@ -90,6 +90,19 @@ _SIMPLE_VALUE_RE = re.compile(r'^\s*"(.*?)"\s*$|^\s*\'(.*?)\'\s*$|^\s*([^#]+?)\s
 _FOLDED_SCALAR_RE = re.compile(r"^>\s*$")  # folded block scalar marker
 
 
+def _collect_folded_scalar(fm_lines: list[str], start: int) -> tuple[str, int]:
+    parts: list[str] = []
+    i = start
+    while i < len(fm_lines):
+        cont = fm_lines[i]
+        if cont and cont[0] in (" ", "\t"):
+            parts.append(cont.strip())
+            i += 1
+        else:
+            break
+    return " ".join(parts), i
+
+
 def _parse_front_matter(text: str) -> tuple[dict[str, Any], str]:
     """Split YAML front matter from Markdown body.
 
@@ -122,16 +135,8 @@ def _parse_front_matter(text: str) -> tuple[dict[str, Any], str]:
         key = key.strip()
         rest = rest.strip()
         if _FOLDED_SCALAR_RE.match(rest):
-            # collect continuation lines (indented)
-            parts: list[str] = []
-            while i < len(fm_lines):
-                cont = fm_lines[i]
-                if cont and cont[0] in (" ", "\t"):
-                    parts.append(cont.strip())
-                    i += 1
-                else:
-                    break
-            meta[key] = " ".join(parts)
+            value, i = _collect_folded_scalar(fm_lines, i)
+            meta[key] = value
         else:
             m = _SIMPLE_VALUE_RE.match(rest)
             if m:
