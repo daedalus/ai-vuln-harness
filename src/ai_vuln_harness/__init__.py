@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .mcp_client import InProcessMCPClient, MCPClient, MCPError
-from .mcp_server import serve as mcp_serve
+from .mcp_server import main as mcp_serve
 from .run import main, run, run_all
 from .skill_loader import load_skill_metadata, skill_description, skill_name
 

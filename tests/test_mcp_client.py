@@ -175,17 +175,6 @@ class TestInProcessMCPClient:
                 data = json.loads(result["content"][0]["text"])
                 assert "modes" in data
 
-    def test_initialize_increments_id(self):
-        client = InProcessMCPClient()
-        client.start()
-        assert client._req_id > 0
-
-    def test_rpc_increments_id(self):
-        with InProcessMCPClient() as client:
-            before = client._req_id
-            client.call_tool("list_run_modes", {})
-            assert client._req_id > before
-
 
 # ---------------------------------------------------------------------------
 # MCPClient (subprocess) — unit test with mocked subprocess

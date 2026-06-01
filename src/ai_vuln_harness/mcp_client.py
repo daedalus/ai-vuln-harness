@@ -20,7 +20,7 @@ Usage::
         modes = client.call_tool("list_run_modes", {})
         print(modes)
 
-    # Or use InProcessMCPClient to test against the in-process server
+    # Or use InProcessMCPClient to test against the in-process FastMCP server
     # without spawning a subprocess (useful in tests).
     from ai_vuln_harness.mcp_client import InProcessMCPClient
     with InProcessMCPClient() as client:
@@ -29,14 +29,17 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import threading
 
-from .mcp_server import _TOOLS, _dispatch
+from fastmcp.client import Client as FastMCPClient
+
+from .mcp_server import mcp
 
 # ---------------------------------------------------------------------------
-# JSON-RPC helpers
+# JSON-RPC helpers (used by the subprocess-based MCPClient)
 # ---------------------------------------------------------------------------
 
 _JSONRPC = "2.0"
@@ -206,10 +209,11 @@ class MCPClient:
 
 
 class InProcessMCPClient:
-    """In-process MCP client that dispatches directly to the server module.
+    """In-process MCP client that communicates directly with the FastMCP server.
 
-    Useful in unit tests — no subprocess is spawned.  Uses the same
-    :func:`~ai_vuln_harness.mcp_server._dispatch` function as the real server.
+    Useful in unit tests — no subprocess is spawned.  Uses
+    :mod:`fastmcp.client.Client` connected directly to the :data:`mcp` server
+    instance, so the full FastMCP tool dispatch path is exercised.
 
     Example::
 
@@ -219,54 +223,64 @@ class InProcessMCPClient:
     """
 
     def __init__(self) -> None:
-        self._req_id = 0
         self._initialized = False
 
-    def _next_id(self) -> int:
-        self._req_id += 1
-        return self._req_id
-
-    def _rpc(self, method: str, params: object = None) -> object:
-        req_id = self._next_id()
-        request: dict[str, object] = {"jsonrpc": "2.0", "id": req_id, "method": method}
-        if params is not None:
-            request["params"] = params
-        response = _dispatch(request)
-        if response is None:
-            return None
-        if "error" in response:
-            err = response["error"]
-            if isinstance(err, dict):
-                raise MCPError(
-                    int(err.get("code", -1)),
-                    str(err.get("message", "unknown")),
-                    err.get("data"),
-                )
-        return response.get("result")
-
     def start(self) -> None:
-        """Perform the in-process MCP handshake."""
-        self._rpc(
-            "initialize",
-            {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "ai-vuln-harness-client", "version": "1.0.0"},
-            },
-        )
-        _dispatch({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        """Mark the client as ready (FastMCP handles initialization per call)."""
         self._initialized = True
 
     def stop(self) -> None:
         """No-op for in-process client."""
 
     def list_tools(self) -> list[dict[str, object]]:
-        """Return the tools registered in the in-process server."""
-        return list(_TOOLS)  # type: ignore[return-value]
+        """Return the tools registered on the FastMCP server as plain dicts."""
 
-    def call_tool(self, name: str, arguments: dict[str, object]) -> object:
-        """Call a named tool via the in-process dispatcher."""
-        return self._rpc("tools/call", {"name": name, "arguments": arguments})
+        async def _list() -> list[dict[str, object]]:
+            async with FastMCPClient(mcp) as client:
+                tools = await client.list_tools()
+                return [
+                    {
+                        "name": t.name,
+                        "description": t.description or "",
+                        "inputSchema": t.inputSchema,
+                    }
+                    for t in tools
+                ]
+
+        return asyncio.run(_list())
+
+    def call_tool(self, name: str, arguments: dict[str, object]) -> dict[str, object]:
+        """Call a named tool on the FastMCP server.
+
+        Args:
+            name: Tool name (e.g. ``"list_run_modes"``).
+            arguments: Dict of arguments matching the tool's input schema.
+
+        Returns:
+            A dict with a ``"content"`` key (list of ``{"type", "text"}`` dicts)
+            and an optional ``"isError": True`` key when the tool reported an
+            error.
+
+        Raises:
+            MCPError: If the tool is unknown (not registered on the server).
+        """
+
+        async def _call() -> dict[str, object]:
+            async with FastMCPClient(mcp) as client:
+                result = await client.session.call_tool(name, arguments)
+                content = [
+                    {"type": item.type, "text": item.text}
+                    for item in result.content
+                    if hasattr(item, "text")
+                ]
+                if result.isError:
+                    text = content[0]["text"] if content else ""
+                    if "Unknown tool" in text:
+                        raise MCPError(-32601, text)
+                    return {"content": content, "isError": True}
+                return {"content": content}
+
+        return asyncio.run(_call())
 
     def __enter__(self) -> InProcessMCPClient:
         self.start()
