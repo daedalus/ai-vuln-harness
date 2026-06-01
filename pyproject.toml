@@ -12,7 +12,7 @@ license = {text = "MIT"}
 authors = [
     {name = "Darío Clavijo", email = "clavijodario@gmail.com"}
 ]
-dependencies = []
+dependencies = ["fastmcp"]
 
 [project.optional-dependencies]
 dev = [
@@ -37,6 +37,7 @@ all = ["ai-vuln-harness[dev,test,lint]"]
 
 [project.scripts]
 ai-vuln-harness = "ai_vuln_harness.__main__:main"
+ai-vuln-harness-mcp = "ai_vuln_harness.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ai_vuln_harness"]
