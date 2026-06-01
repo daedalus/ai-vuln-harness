@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from ai_vuln_harness.skill_loader import (
     _parse_front_matter,
     discover_skills,
@@ -157,12 +159,8 @@ class TestLoadSkillMetadata:
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text(_SAMPLE_SKILL_MD)
 
-        try:
+        with pytest.raises(ValueError, match="either skill_path or name"):
             load_skill_metadata(skill_file, name="test-skill")
-        except ValueError as exc:
-            assert "either skill_path or name" in str(exc)
-        else:
-            raise AssertionError("Expected ValueError")
 
 
 class TestDiscoverSkills:

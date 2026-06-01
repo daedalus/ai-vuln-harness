@@ -145,11 +145,12 @@ def _load_skill_file(path: Path) -> dict[str, Any]:
     """Load one SKILL.md file and normalize metadata fields."""
     text = path.read_text(encoding="utf-8")
     meta, body = _parse_front_matter(text)
+    normalized = dict(meta)
     resolved = path.resolve()
-    meta["body"] = body
-    meta["skill_path"] = str(resolved)
-    meta["skill_dir"] = str(resolved.parent)
-    return meta
+    normalized["body"] = body
+    normalized["skill_path"] = str(resolved)
+    normalized["skill_dir"] = str(resolved.parent)
+    return normalized
 
 
 def _find_skill_by_name(name: str, skills_dir: Path | None = None) -> Path | None:
