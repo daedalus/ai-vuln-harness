@@ -13,9 +13,10 @@ that identifies this package as an AI coding skill:
     ---
 
 ``load_skill_metadata()`` parses that block without an external YAML dependency
-(stdlib only) and returns it as a plain dict.  The body text (everything after
+(stdlib only) and returns it as a plain dict. The body text (everything after
 the closing ``---``) is returned under the ``"body"`` key so callers can render
-the documentation section if needed.
+the documentation section if needed. User-provided skills can also be
+discovered dynamically from ``~/.ai-vuln-harness/skills/``.
 """
 
 from __future__ import annotations
@@ -25,15 +26,27 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+USER_SKILLS_DIR = Path.home() / ".ai-vuln-harness" / "skills"
+
+
+def _default_skill_metadata() -> dict[str, Any]:
+    """Return fallback metadata when no skill file is available."""
+    return {
+        "name": "ai-vuln-harness",
+        "description": "Multi-agent vulnerability research harness",
+        "skill_path": None,
+        "skill_dir": None,
+        "body": "",
+    }
+
+
 # ---------------------------------------------------------------------------
-# Locate SKILL.md — search the package root, then walk up the filesystem
-# tree from the package directory until we find it (handles editable installs,
-# wheel installs, and arbitrary directory layouts).
+# Locate builtin and user-provided SKILL.md files.
 # ---------------------------------------------------------------------------
 
 
-def _find_skill_md() -> Path | None:
-    """Return the first existing SKILL.md by searching upward from the package."""
+def _find_builtin_skill_md() -> Path | None:
+    """Return the bundled SKILL.md by searching upward from the package."""
     # Try importlib.resources first (works in both editable and installed layouts)
     try:
         pkg_files = resources.files("ai_vuln_harness")
@@ -54,6 +67,19 @@ def _find_skill_md() -> Path | None:
         if candidate.is_file():
             return candidate
     return None
+
+
+def _list_discovered_skill_mds(skills_dir: Path | None = None) -> list[Path]:
+    """Return discovered user skill files under the configured skills directory."""
+    root = (skills_dir or USER_SKILLS_DIR).expanduser()
+    if not root.is_dir():
+        return []
+
+    return sorted(
+        candidate.resolve()
+        for candidate in root.rglob("SKILL.md")
+        if candidate.is_file()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -115,17 +141,76 @@ def _parse_front_matter(text: str) -> tuple[dict[str, Any], str]:
     return meta, body
 
 
+def _load_skill_file(path: Path) -> dict[str, Any]:
+    """Load one SKILL.md file and normalize metadata fields."""
+    text = path.read_text(encoding="utf-8")
+    meta, body = _parse_front_matter(text)
+    normalized = dict(meta)
+    resolved = path.resolve()
+    normalized["body"] = body
+    normalized["skill_path"] = str(resolved)
+    normalized["skill_dir"] = str(resolved.parent)
+    return normalized
+
+
+def _find_skill_by_name(name: str, skills_dir: Path | None = None) -> Path | None:
+    """Return a user or builtin skill file matching the requested skill name."""
+    for candidate in _list_discovered_skill_mds(skills_dir):
+        meta, _ = _parse_front_matter(candidate.read_text(encoding="utf-8"))
+        if str(meta.get("name", "")).strip() == name:
+            return candidate
+
+    builtin = _find_builtin_skill_md()
+    if builtin is None:
+        return None
+    meta, _ = _parse_front_matter(builtin.read_text(encoding="utf-8"))
+    if str(meta.get("name", "")).strip() == name:
+        return builtin
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 
-def load_skill_metadata(skill_path: Path | None = None) -> dict[str, Any]:
+def discover_skills(
+    skills_dir: Path | None = None, *, include_builtin: bool = True
+) -> list[dict[str, Any]]:
+    """Return metadata for builtin and discovered user skills."""
+    seen_paths: set[Path] = set()
+    discovered: list[dict[str, Any]] = []
+
+    if include_builtin:
+        builtin = _find_builtin_skill_md()
+        if builtin is not None:
+            resolved = builtin.resolve()
+            seen_paths.add(resolved)
+            discovered.append(_load_skill_file(resolved))
+
+    for candidate in _list_discovered_skill_mds(skills_dir):
+        if candidate in seen_paths:
+            continue
+        seen_paths.add(candidate)
+        discovered.append(_load_skill_file(candidate))
+
+    return discovered
+
+
+def load_skill_metadata(
+    skill_path: Path | None = None,
+    *,
+    name: str | None = None,
+    skills_dir: Path | None = None,
+) -> dict[str, Any]:
     """Return the parsed SKILL.md front matter as a dict.
 
     Args:
         skill_path: Explicit path to a SKILL.md file.  When *None* (default)
-            the function searches the repository root relative to this module.
+            the function loads the bundled skill metadata.
+        name: Optional discovered skill name to load from ``skills_dir`` or the
+            bundled skill metadata.
+        skills_dir: Optional override for the user skills discovery directory.
 
     Returns:
         A dict containing at minimum ``name`` and ``description`` keys from
@@ -140,31 +225,46 @@ def load_skill_metadata(skill_path: Path | None = None) -> dict[str, Any]:
         >>> meta["name"]
         'ai-vuln-harness'
     """
-    path = skill_path or _find_skill_md()
+    if skill_path is not None and name is not None:
+        msg = "Specify either skill_path or name, not both."
+        raise ValueError(msg)
+
+    if skill_path is not None:
+        path = skill_path
+    elif name is not None:
+        path = _find_skill_by_name(name, skills_dir)
+    else:
+        path = _find_builtin_skill_md()
+
     if path is None or not path.exists():
-        return {
-            "name": "ai-vuln-harness",
-            "description": "Multi-agent vulnerability research harness",
-            "skill_path": None,
-            "body": "",
-        }
+        return _default_skill_metadata()
 
-    text = path.read_text(encoding="utf-8")
-    meta, body = _parse_front_matter(text)
-    meta["body"] = body
-    meta["skill_path"] = str(path.resolve())
-    return meta
+    return _load_skill_file(path)
 
 
-def skill_name(skill_path: Path | None = None) -> str:
+def skill_name(
+    skill_path: Path | None = None,
+    *,
+    name: str | None = None,
+    skills_dir: Path | None = None,
+) -> str:
     """Return the skill name from SKILL.md front matter."""
-    return str(load_skill_metadata(skill_path).get("name", "ai-vuln-harness"))
+    return str(
+        load_skill_metadata(skill_path, name=name, skills_dir=skills_dir).get(
+            "name", "ai-vuln-harness"
+        )
+    )
 
 
-def skill_description(skill_path: Path | None = None) -> str:
+def skill_description(
+    skill_path: Path | None = None,
+    *,
+    name: str | None = None,
+    skills_dir: Path | None = None,
+) -> str:
     """Return the skill description from SKILL.md front matter."""
     return str(
-        load_skill_metadata(skill_path).get(
+        load_skill_metadata(skill_path, name=name, skills_dir=skills_dir).get(
             "description", "Multi-agent vulnerability research harness"
         )
     )
