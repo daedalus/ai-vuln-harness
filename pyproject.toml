@@ -33,7 +33,10 @@ lint = [
     "vulture",
     "mdformat",
 ]
-all = ["ai-vuln-harness[dev,test,lint]"]
+solver = [
+    "z3-solver",
+]
+all = ["ai-vuln-harness[dev,test,lint,solver]"]
 
 [project.scripts]
 ai-vuln-harness = "ai_vuln_harness.__main__:main"

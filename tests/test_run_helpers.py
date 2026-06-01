@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ai_vuln_harness.run import (
+    _apply_validate_z3_verdict,
     _apply_diff_filter,
     _build_run_kwargs,
     _ingest_snippets,
@@ -229,6 +230,8 @@ class TestBuildRunKwargs:
         ns.enable_localization_stage = False
         ns.enable_fuzz_orchestrator = False
         ns.enable_pbt = False
+        ns.enable_z3_validate = False
+        ns.z3_timeout_ms = 50
         ns.enable_exploit_synthesis = False
         ns.cve_corpus = None
         ns.no_fetch_cves = False
@@ -265,6 +268,41 @@ class TestBuildRunKwargs:
         args.poc_finding = "finding:007"
         result = _build_run_kwargs(args)
         assert result["poc_finding_id"] == "finding:007"
+
+    def test_includes_z3_validate_flags(self, args):
+        args.enable_z3_validate = True
+        args.z3_timeout_ms = 99
+        result = _build_run_kwargs(args)
+        assert result["enable_z3_validate"] is True
+        assert result["z3_timeout_ms"] == 99
+
+
+class TestApplyValidateZ3Verdict:
+    def test_disabled_passthrough(self):
+        finding = {"validate_status": "confirmed", "validate_reason": "llm"}
+        out = _apply_validate_z3_verdict(
+            finding,
+            {},
+            enable_z3_verifier=False,
+            z3_timeout_ms=50,
+        )
+        assert out == finding
+
+    def test_unsat_forces_rejection(self):
+        finding = {"validate_status": "confirmed", "validate_reason": "llm"}
+        with patch(
+            "ai_vuln_harness.run.verify_validate_feasibility",
+            return_value=("unsat", "infeasible_constraints"),
+        ):
+            out = _apply_validate_z3_verdict(
+                finding,
+                {},
+                enable_z3_verifier=True,
+                z3_timeout_ms=50,
+            )
+        assert out["validate_status"] == "rejected"
+        assert out["z3_validate_status"] == "unsat"
+        assert "z3_unsat:infeasible_constraints" in out["validate_reason"]
 
 
 class TestIngestSnippets:

@@ -12,6 +12,13 @@ Multi-agent vulnerability research harness — 15-stage pipeline from repo inges
 pip install ai-vuln-harness
 ```
 
+Optional solver pilot (VALIDATE stage):
+
+```bash
+pip install "ai-vuln-harness[solver]"
+python -m ai_vuln_harness --mode full --repo /path/to/repo --enable-z3-validate --z3-timeout-ms 50
+```
+
 ## Usage
 
 ```bash

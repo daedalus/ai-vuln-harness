@@ -36,6 +36,10 @@
     "run_timeout": 15,
     "max_findings": 50
   },
+  "validate": {
+    "enable_z3_verifier": false,
+    "z3_timeout_ms": 50
+  },
   "kpis": [
     "precision_at_top_n",
     "reject_rate",
