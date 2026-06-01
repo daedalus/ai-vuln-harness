@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import select
 import subprocess
 import threading
 
@@ -113,7 +114,19 @@ class MCPClient:
     def _recv(self) -> dict[str, object]:
         assert self._proc is not None
         assert self._proc.stdout is not None
+        fd: int | None = None
+        try:
+            raw_fd = self._proc.stdout.fileno()
+            fd = raw_fd if isinstance(raw_fd, int) else None
+        except (ValueError, TypeError):
+            pass
         while True:
+            if fd is not None:
+                readable, _, _ = select.select([fd], [], [], self._timeout)
+                if not readable:
+                    raise TimeoutError(
+                        f"MCP server did not respond within {self._timeout}s"
+                    )
             raw = self._proc.stdout.readline()
             if not raw:
                 raise EOFError("MCP server closed stdout unexpectedly")
@@ -137,6 +150,10 @@ class MCPClient:
 
     def start(self) -> None:
         """Start the server subprocess and perform the MCP handshake."""
+        if not isinstance(self._cmd, list) or not self._cmd:
+            raise ValueError(f"cmd must be a non-empty list, got {self._cmd!r}")
+        # nosem: Popen with a list arg avoids shell injection (no shell=True);
+        # the caller provides the MCP server command explicitly.
         self._proc = subprocess.Popen(
             self._cmd,
             stdin=subprocess.PIPE,
@@ -223,11 +240,10 @@ class InProcessMCPClient:
     """
 
     def __init__(self) -> None:
-        self._initialized = False
+        """In-process client — FastMCP handles initialization per call."""
 
     def start(self) -> None:
-        """Mark the client as ready (FastMCP handles initialization per call)."""
-        self._initialized = True
+        """FastMCP handles initialization per call, so start is a no-op."""
 
     def stop(self) -> None:
         """No-op for in-process client."""

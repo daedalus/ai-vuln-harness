@@ -69,9 +69,9 @@ from .stages.runtime import (
     fetch_model_limits,
     health_check_models,
     load_auth_config,
-    load_packs_pickle,
+    load_packs_json,
     repair_json_output,
-    save_packs_pickle,
+    save_packs_json,
     split_model_pools,
 )
 from .stages.shield import (
@@ -417,14 +417,14 @@ def _build_coordinator_packs(
 ) -> list[dict]:
     packs_pkl = output_dir / "context_packs.pkl"
     if load_packs_cache and packs_pkl.exists():
-        return load_packs_pickle(packs_pkl)
+        return load_packs_json(packs_pkl)
     packs = build_context_packs(
         snippets,
         recon_tasks=recon_tasks,
         allow_full_db_fallback=allow_full_db_fallback,
         budget_tokens=budget_tokens,
     )
-    save_packs_pickle(packs, packs_pkl)
+    save_packs_json(packs, packs_pkl)
     return packs
 
 
@@ -652,8 +652,12 @@ def _run_exploit_synthesis_stage(
     for poc in pocs or []:
         if not isinstance(poc, dict):
             continue
-        fid = str(poc.get("finding_id") or (poc.get("finding") or {}).get("snippet_id") or "")
-        sid = str(poc.get("snippet_id") or (poc.get("finding") or {}).get("snippet_id") or "")
+        fid = str(
+            poc.get("finding_id") or (poc.get("finding") or {}).get("snippet_id") or ""
+        )
+        sid = str(
+            poc.get("snippet_id") or (poc.get("finding") or {}).get("snippet_id") or ""
+        )
         if fid:
             poc_index[fid] = poc
         if sid and sid not in poc_index:

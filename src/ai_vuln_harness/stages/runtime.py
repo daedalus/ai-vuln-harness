@@ -23,18 +23,17 @@ call_llm retry strategy:
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import logging
 import math
 import os
-import pickle
 import re as _re
 import sqlite3
 import ssl
 import threading
 import time
 import urllib.request
+from urllib.parse import urlparse
 from collections import Counter
 from pathlib import Path
 
@@ -167,6 +166,13 @@ def _strip_provider(model_id: str) -> str:
     return rest if prov in _KNOWN_PROVIDERS and sep else model_id
 
 
+def _validate_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError(f"unsupported URL scheme: {parsed.scheme}")
+    return url
+
+
 def _fetch_provider_limits(
     provider: str,
     provider_models: list[str],
@@ -177,8 +183,10 @@ def _fetch_provider_limits(
         return {}
     limits: dict[str, int] = {}
     try:
-        req = urllib.request.Request(f"{base}/models")
-        resp = urllib.request.urlopen(req, context=ctx, timeout=15)
+        req = urllib.request.Request(_validate_url(f"{base}/models"))
+        resp = urllib.request.urlopen(
+            req, context=ctx, timeout=15
+        )  # nosem: URL validated via _validate_url above
         data = json.loads(resp.read().decode())
         for entry in data.get("data", []):
             eid = entry.get("id", "")
@@ -283,38 +291,13 @@ class JsonCache:
         self.path.write_text(json.dumps(self.data, indent=2))
 
 
-class _SafeUnpickler(pickle.Unpickler):
-    _SAFE_TYPES = frozenset(
-        {
-            dict,
-            list,
-            tuple,
-            set,
-            str,
-            int,
-            float,
-            bool,
-            bytes,
-            type(None),
-        },
-    )
-
-    def find_class(self, module: str, name: str) -> type:
-        if module == "builtins":
-            for t in self._SAFE_TYPES:
-                if t.__name__ == name:
-                    return t
-        msg = f"sanitized pickle rejected {module}.{name}"
-        raise pickle.UnpicklingError(msg)
-
-
-def save_packs_pickle(packs: list[dict], path: Path) -> None:
+def save_packs_json(packs: list[dict], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(pickle.dumps(packs))
+    path.write_text(json.dumps(packs))
 
 
-def load_packs_pickle(path: Path) -> list[dict]:
-    return _SafeUnpickler(io.BytesIO(path.read_bytes())).load()
+def load_packs_json(path: Path) -> list[dict]:
+    return json.loads(path.read_text())
 
 
 class StateDB:
@@ -631,7 +614,10 @@ def _call_llm_once(
     provider: str,
 ) -> str:
     log = logging.getLogger("vuln-harness")
-    resp = urllib.request.urlopen(req, context=ctx, timeout=timeout)
+    _validate_url(req.full_url)
+    resp = urllib.request.urlopen(
+        req, context=ctx, timeout=timeout
+    )  # nosem: URL validated above
     result = json.loads(resp.read().decode())
     choices = result.get("choices")
     if not choices:
@@ -644,7 +630,7 @@ def _call_llm_once(
         log.debug("reasoning model: using message.reasoning as content")
         content = reasoning
     completion_tokens = result.get("usage", {}).get("completion_tokens", 0)
-    log.info(
+    log.info(  # nosem: logs token count, provider, model — no secrets
         "Got %d completion tokens from %s %s",
         completion_tokens,
         provider,

@@ -39,16 +39,20 @@ import fastmcp
 
 logger = logging.getLogger(__name__)
 
-_RUN_MODES = [
-    "full",
-    "max-run",
-    "validate-only",
-    "resume",
-    "diff",
-    "all",
-    "poc-only",
-    "benchmark",
-]
+
+def _get_run_modes() -> list[str]:
+    """Return all supported pipeline run modes.
+
+    Derives from the single-mode list defined in ``run`` to prevent mode drift
+    between the CLI and the MCP server, then appends meta-modes that orchestrate
+    multiple sub-runs.
+    """
+    from ai_vuln_harness.run import _SINGLE_MODES  # lazy import — heavy module
+
+    return _SINGLE_MODES + ["all", "benchmark"]
+
+
+_RUN_MODES = _get_run_modes()
 
 mcp = fastmcp.FastMCP("ai-vuln-harness", version="1.0.0")
 
@@ -132,14 +136,15 @@ def scan_repo(
 @mcp.tool(  # type: ignore[untyped-decorator]
     description=(
         "Read structured vulnerability findings from a completed pipeline run. "
-        "Returns a JSON array of finding objects, each with fields: id, class, "
+        'Returns a JSON object {"error": string | null, "findings": [...]} where '
+        '"findings" is an array of finding objects with fields: id, class, '
         "severity, desc, status, poc_confirmed, snippet_id, call_path."
     )
 )
 def get_findings(
     output_dir: str,
     status_filter: str | None = None,
-) -> list[object] | dict[str, object]:
+) -> dict[str, object]:
     """Read findings JSONL from output_dir.
 
     Args:
@@ -148,14 +153,18 @@ def get_findings(
             (e.g. 'confirmed', 'rejected', 'raw'). Omit for all.
 
     Returns:
-        A list of finding dicts, or an error dict if the file is missing.
+        A dict with the standardized shape:
+        {
+            "error": str | None,      # None on success, error message on failure
+            "findings": list[object], # List of finding objects (possibly empty)
+        }
     """
     out_path = Path(output_dir)
     findings_path = out_path / "findings.jsonl"
     if not findings_path.exists():
         return {"error": f"findings.jsonl not found in {out_path}", "findings": []}
 
-    findings: list[object] = []
+    raw_findings: list[object] = []
     for raw_line in findings_path.read_text().splitlines():
         raw_line = raw_line.strip()
         if not raw_line:
@@ -166,9 +175,9 @@ def get_findings(
             continue
         if status_filter and finding.get("status") != status_filter:
             continue
-        findings.append(finding)
+        raw_findings.append(finding)
 
-    return findings
+    return {"error": None, "findings": raw_findings}
 
 
 @mcp.tool(  # type: ignore[untyped-decorator]

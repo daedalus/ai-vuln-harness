@@ -123,8 +123,9 @@ class TestGetFindings:
             + "\n"
         )
         result = _call("get_findings", {"output_dir": str(tmp_path)})
-        findings = json.loads(result.content[0].text)
-        assert len(findings) == 2
+        data = json.loads(result.content[0].text)
+        assert data["error"] is None
+        assert len(data["findings"]) == 2
 
     def test_status_filter(self, tmp_path):
         (tmp_path / "findings.jsonl").write_text(
@@ -137,25 +138,28 @@ class TestGetFindings:
             "get_findings",
             {"output_dir": str(tmp_path), "status_filter": "confirmed"},
         )
-        findings = json.loads(result.content[0].text)
-        assert len(findings) == 1
-        assert findings[0]["id"] == "f1"
+        data = json.loads(result.content[0].text)
+        assert data["error"] is None
+        assert len(data["findings"]) == 1
+        assert data["findings"][0]["id"] == "f1"
 
     def test_skips_blank_lines(self, tmp_path):
         (tmp_path / "findings.jsonl").write_text(
             "\n" + json.dumps({"id": "f1", "status": "raw"}) + "\n\n"
         )
         result = _call("get_findings", {"output_dir": str(tmp_path)})
-        findings = json.loads(result.content[0].text)
-        assert len(findings) == 1
+        data = json.loads(result.content[0].text)
+        assert data["error"] is None
+        assert len(data["findings"]) == 1
 
     def test_skips_invalid_json_lines(self, tmp_path):
         (tmp_path / "findings.jsonl").write_text(
             "not-json\n" + json.dumps({"id": "f1"}) + "\n"
         )
         result = _call("get_findings", {"output_dir": str(tmp_path)})
-        findings = json.loads(result.content[0].text)
-        assert len(findings) == 1
+        data = json.loads(result.content[0].text)
+        assert data["error"] is None
+        assert len(data["findings"]) == 1
 
 
 # ---------------------------------------------------------------------------

@@ -91,7 +91,7 @@ class TestMCPError:
 class TestInProcessMCPClient:
     def test_context_manager(self):
         with InProcessMCPClient() as client:
-            assert client._initialized is True
+            assert isinstance(client, InProcessMCPClient)
 
     def test_list_tools_returns_list(self):
         with InProcessMCPClient() as client:
@@ -145,9 +145,10 @@ class TestInProcessMCPClient:
         )
         with InProcessMCPClient() as client:
             result = client.call_tool("get_findings", {"output_dir": str(tmp_path)})
-            findings = json.loads(result["content"][0]["text"])
-            assert len(findings) == 1
-            assert findings[0]["id"] == "f1"
+            data = json.loads(result["content"][0]["text"])
+            assert data["error"] is None
+            assert len(data["findings"]) == 1
+            assert data["findings"][0]["id"] == "f1"
 
     def test_call_tool_get_report_with_data(self, tmp_path):
         report = {"total": 3, "critical": 1}
@@ -212,8 +213,7 @@ class TestMCPClientSubprocess:
             client.start()
             # stdin.write should have been called with initialize request
             calls = [
-                call_args[0][0]
-                for call_args in mock_proc.stdin.write.call_args_list
+                call_args[0][0] for call_args in mock_proc.stdin.write.call_args_list
             ]
             assert any("initialize" in c for c in calls)
             client.stop()
@@ -229,7 +229,11 @@ class TestMCPClientSubprocess:
         )
         tools_resp = _make_response(
             2,
-            {"tools": [{"name": "scan_repo", "description": "desc", "inputSchema": {}}]},
+            {
+                "tools": [
+                    {"name": "scan_repo", "description": "desc", "inputSchema": {}}
+                ]
+            },
         )
         mock_proc = self._build_mock_proc([init_resp, tools_resp])
         with patch("subprocess.Popen", return_value=mock_proc):

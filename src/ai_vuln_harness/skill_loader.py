@@ -22,7 +22,7 @@ discovered dynamically from ``~/.ai-vuln-harness/skills/``.
 from __future__ import annotations
 
 import re
-from importlib import resources
+from importlib import resources  # nosem: project requires Python >=3.11
 from pathlib import Path
 from typing import Any
 
@@ -86,7 +86,7 @@ def _list_discovered_skill_mds(skills_dir: Path | None = None) -> list[Path]:
 # Minimal YAML front-matter parser (stdlib only, no PyYAML dependency).
 # ---------------------------------------------------------------------------
 
-_SIMPLE_VALUE_RE = re.compile(r'^"(.*)"|^\'(.*)\'|^(.+)$')
+_SIMPLE_VALUE_RE = re.compile(r'^\s*"(.*?)"\s*$|^\s*\'(.*?)\'\s*$|^\s*([^#]+?)\s*$')
 _FOLDED_SCALAR_RE = re.compile(r"^>\s*$")  # folded block scalar marker
 
 

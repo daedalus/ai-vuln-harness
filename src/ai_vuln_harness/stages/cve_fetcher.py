@@ -7,6 +7,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -223,9 +224,16 @@ def infer_ecosystem(
     return None
 
 
+def _validate_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError(f"unsupported URL scheme: {parsed.scheme}")
+    return url
+
+
 def _osv_query(pkg_name: str, ecosystem: str) -> list[dict]:
     req = urllib.request.Request(
-        _OSV_BATCH_URL,
+        _validate_url(_OSV_BATCH_URL),
         data=json.dumps(
             {"queries": [{"package": {"name": pkg_name, "ecosystem": ecosystem}}]}
         ).encode(),
@@ -233,7 +241,9 @@ def _osv_query(pkg_name: str, ecosystem: str) -> list[dict]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(
+            req, timeout=15
+        ) as resp:  # nosem: URL validated via _validate_url above
             data = json.loads(resp.read().decode())
     except (urllib.error.URLError, OSError, json.JSONDecodeError):
         return []
@@ -261,13 +271,15 @@ def _osv_batch_query(
     }
     body = json.dumps(payload).encode()
     req = urllib.request.Request(
-        _OSV_BATCH_URL,
+        _validate_url(_OSV_BATCH_URL),
         data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(
+            req, timeout=30
+        ) as resp:  # nosem: URL validated via _validate_url above
             data = json.loads(resp.read().decode())
     except (urllib.error.URLError, OSError, json.JSONDecodeError):
         return {}
