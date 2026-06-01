@@ -6,6 +6,9 @@ description: >
   or improving Hunt/Validate/Dedupe/Trace security pipelines, reducing false
   positives in AI vuln scanning, or operationalizing large-scale LLM-assisted
   code audit workflows.
+version: "1.0.0"
+entry_point: "src/ai_vuln_harness"
+mcp_server: "ai-vuln-harness-mcp"
 ---
 
 # AI Vulnerability Research Harness
@@ -19,6 +22,7 @@ High-level guide for building a production-style AI vulnerability harness.
 - Reachability-driven triage and exploit chaining
 - Hardening AI scanner signal-to-noise
 - Turning one-off prompts into reproducible security operations
+- MCP-native integration with AI IDEs (Cursor, VS Code Claude extension)
 
 ## Canonical pipeline stages
 
@@ -34,19 +38,54 @@ The harness's INGESTOR and RECON stages handle this. Pre-reading the target
 contaminates the eval by leaking context that should only flow through
 the pipeline.
 
-## Runnable scaffold (v1)
+## Installation
 
-Template root: `/home/dclavijo/.opencode/skills/ai-vuln-harness/templates/v1/`
-
-**IMPORTANT: Never edit the template in place.** Before making changes,
-copy the entire `templates/v1/` directory to your working directory first:
-
-```
-cp -a /home/dclavijo/.opencode/skills/ai-vuln-harness/templates/v1/ ./my-harness/
+```bash
+pip install -e ".[all]"
 ```
 
-Then edit the copy. The template includes `run.py`, `stages/`, `prompts/`,
-`schemas/`, `tests/`, and `config/`. See `run.py` docstring for CLI flags.
+## CLI usage
+
+```bash
+# Full pipeline
+python run.py --mode full --target /path/to/repo
+
+# Run tests
+python -m pytest tests/ -q
+
+# Format
+ruff format src/ai_vuln_harness/ tests/
+
+# Lint + type check
+prospector --with-tool ruff --with-tool mypy --with-tool pylint src/ai_vuln_harness/
+```
+
+## MCP server
+
+The harness ships an MCP (Model Context Protocol) stdio server that exposes
+the pipeline as tools consumable from any MCP-compatible IDE or agent framework
+(Cursor, VS Code Claude extension, Claude Desktop, etc.):
+
+```bash
+# Start the MCP server (reads JSON-RPC 2.0 from stdin, writes to stdout)
+ai-vuln-harness-mcp
+
+# Or directly
+python -m ai_vuln_harness.mcp_server
+```
+
+Exposed tools: `scan_repo`, `get_findings`, `get_report`, `list_run_modes`.
+
+Configure in your IDE's MCP settings as a stdio server with command
+`ai-vuln-harness-mcp` (no arguments needed).
+
+## Programmatic skill metadata
+
+```python
+from ai_vuln_harness.skill_loader import load_skill_metadata
+meta = load_skill_metadata()
+# {'name': 'ai-vuln-harness', 'description': '...', 'version': '1.0.0', ...}
+```
 
 ## Dependency checking
 
