@@ -228,7 +228,7 @@ The harness's POC stage confirms bugs via AddressSanitizer crash detection — t
 
 **PoC-to-exploit synthesis checks added:**
 - `check_poc_synthesis_readiness(finding, poc_result)` — pre-synthesis quality gate that evaluates ASan output richness, vulnerability class coverage, write-primitive detectability, and read-only status; returns a `ready` flag with a structured `issues` list and diagnostic metadata (`asan_quality`, `vuln_class_known`, `write_primitive_detected`, `read_only_only`, `can_assess_t3`, `can_assess_t2`, `eligible`).  Integrated into `run.py`'s `_run_exploit_synthesis_stage` to log readiness warnings before synthesis runs.
-- `validate_exploit_synthesis_record(record)` — post-synthesis schema validator that enforces all required fields, correct types, enum-constrained `tier_reached` (T1–T4) and per-tier `verdict` values (confirmed/reachable/unlikely/unknown), confidence range [0.0, 1.0], and `llm_enriched` bool.  Returns `(valid: bool, errors: list[str])`.
+- `validate_exploit_synthesis_record(record)` — post-synthesis schema validator that enforces all required fields, correct types, enum-constrained `tier_reached` (T1–T4) and per-tier `verdict` values (confirmed/reachable/unlikely/unknown), confidence range [0.0, 1.0], and `llm_enriched` bool.  Returns `list[str]` of validation errors; an empty list means the record is valid.
 - `schemas/exploit_synthesis_record.schema.json` — JSON Schema (draft-07) encoding the full `ExploitSynthesisRecord` contract.
 - 45 new unit tests covering both functions across normal, edge, and adversarial inputs.
 
