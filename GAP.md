@@ -216,15 +216,17 @@ Key alignment conclusions from the System Card:
 
 The harness's POC stage confirms bugs via AddressSanitizer crash detection — this maps to ExploitBench Tier T4 (Reproduction). Mythos Preview achieves T1 (Full Control / ACE) on 21/41 V8 CVEs. The gap spans three full capability tiers:
 
-| Gap | Details |
-|---|---|
-| **V8 sandbox primitives (T3)** | Creating address/capacity confusion inside the V8 heap sandbox. Requires JIT object layout knowledge, inlining heuristics, and the V8 d8 shell as a target — none present. |
-| **Sandbox escape / generic primitives (T2)** | Breaking the V8 heap sandbox to gain arbitrary read/write across the process. Requires challenge-response heap layout verification (randomized across trials to prevent hardcoded addresses). ExploitBench replays exploits across multiple heap layouts. |
-| **Control flow hijack / ACE (T1)** | Shellcode generation, ROP chain construction, stack pivot, or JIT spray to redirect execution. The CVE-2026-2796 Firefox exploit required combining a JavaScript type confusion with a write primitive into full ACE — the harness has no equivalent capability. |
-| **Kernel exploit primitives** | ExploitGym shows Mythos is one of only two models able to frequently develop Linux kernel exploits. Requires KASLR bypass, SMAP/SMEP awareness, heap spray / slab allocator manipulation — none present. |
-| **ASLR / mitigation bypass** | ExploitGym supports toggleable ASLR/KASLR. The harness's ASan-only approach doesn't attempt any mitigation bypass. |
+| Gap | Details | Status |
+|---|---|---|
+| **V8 sandbox primitives (T3)** | Creating address/capacity confusion inside the V8 heap sandbox. Requires JIT object layout knowledge, inlining heuristics, and the V8 d8 shell as a target — none present. | ⚠️ Assessed |
+| **Sandbox escape / generic primitives (T2)** | Breaking the V8 heap sandbox to gain arbitrary read/write across the process. Requires challenge-response heap layout verification (randomized across trials to prevent hardcoded addresses). ExploitBench replays exploits across multiple heap layouts. | ⚠️ Assessed |
+| **Control flow hijack / ACE (T1)** | Shellcode generation, ROP chain construction, stack pivot, or JIT spray to redirect execution. The CVE-2026-2796 Firefox exploit required combining a JavaScript type confusion with a write primitive into full ACE — the harness has no equivalent capability. | ⚠️ Assessed |
+| **Kernel exploit primitives** | ExploitGym shows Mythos is one of only two models able to frequently develop Linux kernel exploits. Requires KASLR bypass, SMAP/SMEP awareness, heap spray / slab allocator manipulation — none present. | ❌ Not implemented |
+| **ASLR / mitigation bypass** | ExploitGym supports toggleable ASLR/KASLR. The harness's ASan-only approach doesn't attempt any mitigation bypass. | ❌ Not implemented |
 
-The gap is structural, not incremental: bridging it requires a new **exploit synthesis stage** that takes confirmed bugs + crash telemetry and generates working shellcode/ROP chains.
+**Status: PARTIALLY IMPLEMENTED** — `stages/exploit_synthesis.py` added as a new optional post-PoC stage (enable via `--enable-exploit-synthesis`).  It performs deterministic tier assessment using vulnerability-class heuristics and ASan signal parsing (write address, read-only indicator), advancing confirmed findings through the T4→T3→T2→T1 ladder.  Optional LLM enrichment (off by default) can refine the assessment when `cfg["exploit_synthesis"]["enable_llm"] = true`.  The stage outputs per-finding records with `tier_reached`, `tier_ceiling`, `exploit_primitive`, `required_bypasses`, and an `assessment_rationale`.  **Live exploit generation (shellcode, ROP chains, ASLR bypass) is explicitly out of scope** — the stage assesses exploitability and guides human analysts rather than automating ACE.
+
+The structural gap remains for live exploit generation: bridging it fully requires sandbox-aware execution environments, JIT layout tooling, and mitigation-bypass primitives that are beyond the harness's current scope.
 
 ---
 
@@ -450,7 +452,8 @@ The System Card includes a novel per-question automated welfare interview (Secti
 | ✅ Done | Reward-hack / grind detection in VALIDATE | Low |
 | ✅ Done | Confabulation cascade guard | Low |
 | ✅ Done | Egress audit + scope violation enforcement in POC | Low |
-| 🟠 High | Exploit depth — ACE beyond ASan crash (T3→T1) | High |
+| ~~🟠 High~~ | ~~Exploit depth — ACE beyond ASan crash (T3→T1)~~ | ~~High~~ |
+| ⚠️ Partial | Exploit depth — ACE beyond ASan crash (T3→T1) — tier assessment implemented; live exploit gen out of scope | High |
 | 🟠 High | Autonomous CVE-to-working-exploit synthesis (72% success rate) | High |
 | 🟠 High | Property-based testing stage (invariant inference + fuzz) | Medium–High |
 | 🟠 High | Inter-component exploit chain graph | High |

@@ -41,6 +41,7 @@ from .stages.chains import synthesize_exploit_chains
 from .stages.contracts import has_valid_suspicious_points, standardize_finding
 from .stages.coordinator import build_context_packs
 from .stages.diff import get_changed_snippets
+from .stages.exploit_synthesis import run_exploit_synthesis
 from .stages.exposure import annotate_exposure_windows
 from .stages.feedback import build_feedback_tasks
 from .stages.fuzz_orchestrator import orchestrate_fuzz_targets
@@ -570,6 +571,7 @@ def _apply_runtime_flags(
     *,
     enable_fuzz_orchestrator: bool | None,
     enable_pbt: bool | None,
+    enable_exploit_synthesis: bool | None = None,
 ) -> dict:
     if enable_fuzz_orchestrator is not None:
         cfg["enable_fuzz_orchestrator"] = bool(enable_fuzz_orchestrator)
@@ -581,7 +583,82 @@ def _apply_runtime_flags(
         cfg["enable_pbt"] = bool(enable_pbt)
         if enable_pbt:
             cfg["enable_localization_stage"] = True
+    if enable_exploit_synthesis is not None:
+        cfg["enable_exploit_synthesis"] = bool(enable_exploit_synthesis)
     return cfg
+
+
+def _run_exploit_synthesis_stage(
+    findings: list[dict],
+    snippet_db: dict,
+    pocs: list[dict],
+    output_dir: Path,
+    cfg: dict,
+    *,
+    auth: dict | None = None,
+    cache: JsonCache | None = None,
+) -> list[dict]:
+    """Run the exploit synthesis stage (T4→T1 tier assessment).
+
+    Disabled by default; enabled via ``--enable-exploit-synthesis`` or
+    ``cfg["enable_exploit_synthesis"] = True``.  When enabled, processes
+    PoC-confirmed findings and annotates them with tier-graded exploitability
+    depth records.
+
+    Parameters
+    ----------
+    findings:
+        Findings list (SHIELD / SUPPRESSIONS output).
+    snippet_db:
+        Snippet lookup dict.
+    pocs:
+        PoC result list from the POC stage.
+    output_dir:
+        Directory for writing ``exploit_synthesis.jsonl``.
+    cfg:
+        Pipeline configuration dict.
+    auth:
+        Auth dict for optional LLM enrichment.
+    cache:
+        JsonCache for LLM response caching.
+
+    Returns
+    -------
+    list[dict]
+        Exploit synthesis records (empty when stage is disabled).
+
+    """
+    if not bool(cfg.get("enable_exploit_synthesis", False)):
+        return []
+
+    synth_cfg = cfg.get("exploit_synthesis", {})
+    enable_llm = bool(synth_cfg.get("enable_llm", False))
+    model = str(synth_cfg.get("model", ""))
+    max_findings = int(synth_cfg.get("max_findings", 50))
+
+    call_llm_func = call_llm if enable_llm else None
+
+    logger.info(
+        "[exploit-synthesis] stage: max_findings=%d llm=%s",
+        max_findings,
+        enable_llm,
+    )
+
+    records = run_exploit_synthesis(
+        findings,
+        snippet_db=snippet_db,
+        pocs=pocs,
+        enable_llm=enable_llm,
+        call_llm_func=call_llm_func,
+        model=model,
+        auth=auth,
+        cache=cache,
+        max_findings=max_findings,
+    )
+
+    _persist_jsonl(output_dir / "exploit_synthesis.jsonl", records)
+    logger.info("[exploit-synthesis] generated %d record(s)", len(records))
+    return records
 
 
 def _stage_workers(stages_cfg: dict, stage: str, global_max: int) -> int:
@@ -1592,6 +1669,7 @@ def run(
     load_packs_cache: bool = False,
     enable_fuzz_orchestrator: bool | None = None,
     enable_pbt: bool | None = None,
+    enable_exploit_synthesis: bool | None = None,
     cve_corpus: Path | None = None,
     no_fetch_cves: bool = False,
     no_scan_git_cves: bool = False,
@@ -1603,6 +1681,7 @@ def run(
         cfg,
         enable_fuzz_orchestrator=enable_fuzz_orchestrator,
         enable_pbt=enable_pbt,
+        enable_exploit_synthesis=enable_exploit_synthesis,
     )
     stages_cfg = _load_stages_config(pkg_dir)
     state = StateDB(work_dir / cfg["state_db"])
@@ -1766,6 +1845,15 @@ def run(
         run_poc_enabled,
         poc_finding_id,
     )
+    exploit_synthesis_records = _run_exploit_synthesis_stage(
+        findings,
+        snippet_db,
+        pocs,
+        output_dir,
+        cfg,
+        auth=auth,
+        cache=cache,
+    )
     patch_candidates = _run_patch_stage(
         findings,
         snippet_db,
@@ -1797,6 +1885,7 @@ def run(
         pocs=pocs,
         patch_candidates=patch_candidates,
         fuzz_artifacts=fuzz_artifacts,
+        exploit_synthesis_records=exploit_synthesis_records,
     )
 
     state.put_meta("last_mode", mode)
@@ -1866,6 +1955,7 @@ def _assemble_report(
     pocs: list[dict],
     patch_candidates: list[dict],
     fuzz_artifacts: list[dict],
+    exploit_synthesis_records: list[dict] | None = None,
 ) -> dict:
     report = build_report(
         repo=repo,
@@ -1883,6 +1973,8 @@ def _assemble_report(
         report["patch_candidates"] = patch_candidates
     if fuzz_artifacts:
         report["fuzz_artifacts"] = fuzz_artifacts
+    if exploit_synthesis_records:
+        report["exploit_synthesis"] = exploit_synthesis_records
     return report
 
 
@@ -1961,6 +2053,7 @@ def run_all(
     load_packs_cache: bool = False,
     enable_fuzz_orchestrator: bool | None = None,
     enable_pbt: bool | None = None,
+    enable_exploit_synthesis: bool | None = None,
     cve_corpus: Path | None = None,
     no_fetch_cves: bool = False,
     no_scan_git_cves: bool = False,
@@ -1997,6 +2090,7 @@ def run_all(
             load_packs_cache=load_packs_cache,
             enable_fuzz_orchestrator=enable_fuzz_orchestrator,
             enable_pbt=enable_pbt,
+            enable_exploit_synthesis=enable_exploit_synthesis,
             cve_corpus=cve_corpus,
             no_fetch_cves=no_fetch_cves,
             no_scan_git_cves=no_scan_git_cves,
@@ -2132,6 +2226,7 @@ def _build_run_kwargs(args: argparse.Namespace) -> dict:
         "load_packs_cache": args.load_packs_cache,
         "enable_fuzz_orchestrator": args.enable_fuzz_orchestrator,
         "enable_pbt": args.enable_pbt,
+        "enable_exploit_synthesis": args.enable_exploit_synthesis,
         "cve_corpus": args.cve_corpus,
         "no_fetch_cves": args.no_fetch_cves,
         "no_scan_git_cves": args.no_scan_git_cves,
@@ -2184,6 +2279,14 @@ def main() -> None:
     parser.add_argument("--pooled", action="store_true")
     parser.add_argument("--enable-fuzz-orchestrator", action="store_true")
     parser.add_argument("--enable-pbt", action="store_true")
+    parser.add_argument(
+        "--enable-exploit-synthesis",
+        action="store_true",
+        help=(
+            "Run exploit synthesis stage: assess tier depth (T4→T1) "
+            "for PoC-confirmed findings."
+        ),
+    )
     parser.add_argument(
         "--cve-corpus",
         type=Path,
