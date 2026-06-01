@@ -159,7 +159,9 @@ class TestLoadSkillMetadata:
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text(_SAMPLE_SKILL_MD)
 
-        with pytest.raises(ValueError, match="either skill_path or name"):
+        with pytest.raises(
+            ValueError, match=r"^Specify either skill_path or name, not both\.$"
+        ):
             load_skill_metadata(skill_file, name="test-skill")
 
 

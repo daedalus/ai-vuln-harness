@@ -229,10 +229,12 @@ def load_skill_metadata(
         msg = "Specify either skill_path or name, not both."
         raise ValueError(msg)
 
-    if name is not None:
+    if skill_path is not None:
+        path = skill_path
+    elif name is not None:
         path = _find_skill_by_name(name, skills_dir)
     else:
-        path = skill_path or _find_builtin_skill_md()
+        path = _find_builtin_skill_md()
 
     if path is None or not path.exists():
         return _default_skill_metadata()
