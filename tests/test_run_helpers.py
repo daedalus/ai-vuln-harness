@@ -229,6 +229,7 @@ class TestBuildRunKwargs:
         ns.enable_localization_stage = False
         ns.enable_fuzz_orchestrator = False
         ns.enable_pbt = False
+        ns.enable_exploit_synthesis = False
         ns.cve_corpus = None
         ns.no_fetch_cves = False
         ns.no_scan_git_cves = False
