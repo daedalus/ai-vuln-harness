@@ -41,7 +41,10 @@ from .stages.chains import synthesize_exploit_chains
 from .stages.contracts import has_valid_suspicious_points, standardize_finding
 from .stages.coordinator import build_context_packs
 from .stages.diff import get_changed_snippets
-from .stages.exploit_synthesis import run_exploit_synthesis
+from .stages.exploit_synthesis import (
+    check_poc_synthesis_readiness,
+    run_exploit_synthesis,
+)
 from .stages.exposure import annotate_exposure_windows
 from .stages.feedback import build_feedback_tasks
 from .stages.fuzz_orchestrator import orchestrate_fuzz_targets
@@ -643,6 +646,41 @@ def _run_exploit_synthesis_stage(
         max_findings,
         enable_llm,
     )
+
+    # PoC-to-exploit synthesis readiness check: log quality issues before synthesis
+    poc_index: dict[str, dict] = {}
+    for poc in pocs or []:
+        if not isinstance(poc, dict):
+            continue
+        fid = str(poc.get("finding_id") or (poc.get("finding") or {}).get("snippet_id") or "")
+        sid = str(poc.get("snippet_id") or (poc.get("finding") or {}).get("snippet_id") or "")
+        if fid:
+            poc_index[fid] = poc
+        if sid and sid not in poc_index:
+            poc_index[sid] = poc
+
+    not_ready = 0
+    for finding in findings:
+        fid = str(finding.get("id") or finding.get("finding_id") or "")
+        sid = str(finding.get("snippet_id") or "")
+        poc = poc_index.get(fid) or poc_index.get(sid)
+        readiness = check_poc_synthesis_readiness(finding, poc)
+        if not readiness["ready"]:
+            not_ready += 1
+        if readiness["issues"]:
+            logger.debug(
+                "[exploit-synthesis] readiness issues for finding %s: %s",
+                fid or sid,
+                "; ".join(readiness["issues"]),
+            )
+
+    if not_ready:
+        logger.info(
+            "[exploit-synthesis] %d/%d finding(s) have limited synthesis readiness "
+            "(check debug logs for details)",
+            not_ready,
+            len(findings),
+        )
 
     records = run_exploit_synthesis(
         findings,
