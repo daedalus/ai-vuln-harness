@@ -116,6 +116,20 @@ vulture --min-confidence 90 src/ai_vuln_harness/ --exclude src/ai_vuln_harness/.
 | `run_all(repo, **kwargs)` | Run all modes and merge reports |
 | `main()` | CLI entry point |
 
+## Skill metadata discovery
+
+```python
+from ai_vuln_harness.skill_loader import discover_skills, load_skill_metadata
+
+meta = load_skill_metadata()
+skills = discover_skills()
+custom = load_skill_metadata(name="my-skill")
+```
+
+`discover_skills()` returns the bundled skill plus any user-defined skills found
+under `~/.ai-vuln-harness/skills/**/SKILL.md`. `load_skill_metadata(name=...)`
+loads a discovered skill by its front matter `name`.
+
 ## CLI
 
 ```bash

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ai_vuln_harness.skill_loader import (
     _parse_front_matter,
+    discover_skills,
     load_skill_metadata,
     skill_description,
     skill_name,
@@ -129,6 +130,70 @@ class TestLoadSkillMetadata:
         meta = load_skill_metadata()
         assert meta["body"].strip()
 
+    def test_loads_discovered_skill_by_name(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        skill_dir = skills_dir / "custom-skill"
+        skill_dir.mkdir(parents=True)
+        skill_file = skill_dir / "SKILL.md"
+        skill_file.write_text(_SAMPLE_SKILL_MD)
+
+        meta = load_skill_metadata(name="test-skill", skills_dir=skills_dir)
+
+        assert meta["name"] == "test-skill"
+        assert meta["skill_path"] == str(skill_file.resolve())
+        assert meta["skill_dir"] == str(skill_dir.resolve())
+
+    def test_missing_discovered_skill_returns_sentinel(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        meta = load_skill_metadata(name="missing-skill", skills_dir=skills_dir)
+
+        assert meta["name"] == "ai-vuln-harness"
+        assert meta["skill_path"] is None
+        assert meta["skill_dir"] is None
+
+    def test_rejects_path_and_name_together(self, tmp_path):
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text(_SAMPLE_SKILL_MD)
+
+        try:
+            load_skill_metadata(skill_file, name="test-skill")
+        except ValueError as exc:
+            assert "either skill_path or name" in str(exc)
+        else:
+            raise AssertionError("Expected ValueError")
+
+
+class TestDiscoverSkills:
+    def test_discovers_user_skills(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        alpha_dir = skills_dir / "alpha"
+        beta_dir = skills_dir / "nested" / "beta"
+        alpha_dir.mkdir(parents=True)
+        beta_dir.mkdir(parents=True)
+        (alpha_dir / "SKILL.md").write_text(_SAMPLE_SKILL_MD)
+        (beta_dir / "SKILL.md").write_text(
+            _SAMPLE_SKILL_MD.replace("test-skill", "beta-skill")
+        )
+
+        skills = discover_skills(skills_dir, include_builtin=False)
+        names = {skill["name"] for skill in skills}
+
+        assert names == {"test-skill", "beta-skill"}
+
+    def test_discovery_includes_builtin_skill_by_default(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        skill_dir = skills_dir / "custom"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(_SAMPLE_SKILL_MD)
+
+        skills = discover_skills(skills_dir)
+        names = {skill["name"] for skill in skills}
+
+        assert "ai-vuln-harness" in names
+        assert "test-skill" in names
+
 
 class TestSkillNameDescription:
     def test_skill_name_from_file(self, tmp_path):
@@ -155,3 +220,21 @@ class TestSkillNameDescription:
     def test_skill_description_fallback_when_missing(self, tmp_path):
         missing = tmp_path / "SKILL.md"
         assert "harness" in skill_description(missing).lower()
+
+    def test_skill_name_from_discovered_skill(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        skill_dir = skills_dir / "custom"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(_SAMPLE_SKILL_MD)
+
+        assert skill_name(name="test-skill", skills_dir=skills_dir) == "test-skill"
+
+    def test_skill_description_from_discovered_skill(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        skill_dir = skills_dir / "custom"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(_SAMPLE_SKILL_MD)
+
+        assert "A test skill" in skill_description(
+            name="test-skill", skills_dir=skills_dir
+        )
