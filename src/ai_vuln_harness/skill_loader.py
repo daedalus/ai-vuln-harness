@@ -69,7 +69,7 @@ def _find_builtin_skill_md() -> Path | None:
     return None
 
 
-def _iter_discovered_skill_mds(skills_dir: Path | None = None) -> list[Path]:
+def _list_discovered_skill_mds(skills_dir: Path | None = None) -> list[Path]:
     """Return discovered user skill files under the configured skills directory."""
     root = (skills_dir or USER_SKILLS_DIR).expanduser()
     if not root.is_dir():
@@ -154,7 +154,7 @@ def _load_skill_file(path: Path) -> dict[str, Any]:
 
 def _find_skill_by_name(name: str, skills_dir: Path | None = None) -> Path | None:
     """Return a user or builtin skill file matching the requested skill name."""
-    for candidate in _iter_discovered_skill_mds(skills_dir):
+    for candidate in _list_discovered_skill_mds(skills_dir):
         meta, _ = _parse_front_matter(candidate.read_text(encoding="utf-8"))
         if str(meta.get("name", "")).strip() == name:
             return candidate
@@ -187,7 +187,7 @@ def discover_skills(
             seen_paths.add(resolved)
             discovered.append(_load_skill_file(resolved))
 
-    for candidate in _iter_discovered_skill_mds(skills_dir):
+    for candidate in _list_discovered_skill_mds(skills_dir):
         if candidate in seen_paths:
             continue
         seen_paths.add(candidate)
