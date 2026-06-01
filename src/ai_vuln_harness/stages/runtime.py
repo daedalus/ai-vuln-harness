@@ -33,9 +33,9 @@ import ssl
 import threading
 import time
 import urllib.request
-from urllib.parse import urlparse
 from collections import Counter
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 def _preferred_by_keyword(models: list[str], keywords: tuple[str, ...]) -> list[str]:

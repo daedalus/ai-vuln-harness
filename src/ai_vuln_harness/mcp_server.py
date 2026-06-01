@@ -113,8 +113,8 @@ def scan_repo(
         mode,
         target_path,
         output_dir=out_path,
-        auth_json=auth_path,
-        max_workers=max_workers,
+        auth_path=auth_path,
+        max_concurrency=max_workers,
     )
 
     summary: dict[str, object] = {

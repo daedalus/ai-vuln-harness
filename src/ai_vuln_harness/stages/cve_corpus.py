@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _CVE_CLASS_TO_DOMAIN: dict[str, str] = {
     "buffer-overflow": "mem-safety",

@@ -7,11 +7,12 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import urlparse
-from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from .runtime import JsonCache
 
 _OSV_BATCH_URL = "https://api.osv.dev/v1/querybatch"

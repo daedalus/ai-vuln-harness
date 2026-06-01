@@ -132,7 +132,7 @@ class MCPClient:
                 raise EOFError("MCP server closed stdout unexpectedly")
             raw = raw.strip()
             if raw:
-                return json.loads(raw)  # type: ignore[no-any-return]
+                return json.loads(raw)
 
     def _rpc(self, method: str, params: object = None) -> object:
         req_id = self._next_id()
@@ -193,7 +193,7 @@ class MCPClient:
         if isinstance(result, dict):
             tools = result.get("tools", [])
             if isinstance(tools, list):
-                return tools  # type: ignore[return-value]
+                return tools
         return []
 
     def call_tool(self, name: str, arguments: dict[str, object]) -> object:

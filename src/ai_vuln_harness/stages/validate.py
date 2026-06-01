@@ -325,9 +325,9 @@ def detect_reward_hack(call_history: list[dict]) -> bool:
 
     # Count how many call pairs are structurally identical
     identical_count = 0
-    for i in range(len(bigrams)):
+    for i, b_i in enumerate(bigrams):
         for j in range(i + 1, len(bigrams)):
-            if _cosine_similarity(bigrams[i], bigrams[j]) > _SIMILARITY_THRESHOLD:
+            if _cosine_similarity(b_i, bigrams[j]) > _SIMILARITY_THRESHOLD:
                 identical_count += 1
 
     # Need at least C(min_identical, 2) pairs for min_identical identical calls

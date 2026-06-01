@@ -53,7 +53,9 @@ def standardize_finding(finding: dict) -> dict:
     return out
 
 
-def _check_field(value: object, typ: type | tuple, validator: object = None) -> bool:
+def _check_field(
+    value: object, typ: type | tuple, validator: Callable[[object], bool] | None = None
+) -> bool:
     if not isinstance(value, typ):
         return False
     if validator is not None and not validator(value):

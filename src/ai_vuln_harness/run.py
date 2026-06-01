@@ -1684,11 +1684,12 @@ def run_benchmark_gate(
     return artifact
 
 
-def run(
+def run(  # noqa: PLR0913
     mode: str,
     repo: Path,
     *,
     auth_path: Path | None = None,
+    output_dir: Path | None = None,
     kl_threshold: float = 5.0,
     cosine_threshold: float = 0.85,
     allow_full_db_fallback: bool = False,
@@ -1739,7 +1740,7 @@ def run(
     global_max = max_concurrency or cfg.get("max_workers", 3)
     hunt_workers = _stage_workers(stages_cfg, "hunt", global_max)
     validate_workers = _stage_workers(stages_cfg, "validate", global_max)
-    output_dir = work_dir / "output"
+    output_dir = output_dir if output_dir else work_dir / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
     state.put_meta("hunt_workers", str(hunt_workers))
     state.put_meta("validate_workers", str(validate_workers))
@@ -2069,7 +2070,7 @@ def _merge_reports(reports: list[dict]) -> dict:
     return merged
 
 
-def run_all(
+def run_all(  # noqa: PLR0913
     repo: Path,
     *,
     auth_path: Path | None = None,

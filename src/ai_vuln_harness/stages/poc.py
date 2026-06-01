@@ -125,7 +125,7 @@ def EgressAuditContext(  # noqa: N802 — CamelCase matches the exported public 
 
     original_run = subprocess.run
 
-    def _audited_run(cmd: object, **kwargs: object) -> object:  # type: ignore[return]
+    def _audited_run(cmd: object, **kwargs: object) -> object:
         tokens: list[str] = []
         if isinstance(cmd, (list, tuple)):
             tokens = [str(t) for t in cmd]
@@ -160,7 +160,7 @@ def EgressAuditContext(  # noqa: N802 — CamelCase matches the exported public 
                     resolved = candidate
                 try:
                     resolved.relative_to(resolved_output)
-                except ValueError:
+                except ValueError as exc:
                     msg = (
                         f"EgressAuditContext: blocked out-of-scope path "
                         f"'{tok}' (resolved: {resolved}) outside "
@@ -168,15 +168,15 @@ def EgressAuditContext(  # noqa: N802 — CamelCase matches the exported public 
                     )
                     logger.error("%s", msg)
                     print(msg, file=sys.stderr)
-                    raise ScopeViolationError(msg)
+                    raise ScopeViolationError(msg) from exc
 
-        return original_run(cmd, **kwargs)
+        return original_run(cmd, **kwargs)  # type: ignore[call-overload]
 
-    subprocess.run = _audited_run  # type: ignore[assignment]
+    subprocess.run = _audited_run
     try:
         yield
     finally:
-        subprocess.run = original_run  # type: ignore[assignment]
+        subprocess.run = original_run
 
 
 _C_FLAGS = ["-fsanitize=address", "-g", "-O0"]

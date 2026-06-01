@@ -114,7 +114,7 @@ def _call_llm_for_invariant(
     prompt = _build_pbt_prompt(finding, snippet)
     raw = ""
     if call_llm_func is not None:
-        raw = call_llm_func(
+        raw = call_llm_func(  # type: ignore[operator]
             model,
             prompt,
             system=_PBT_SYSTEM_PROMPT,
