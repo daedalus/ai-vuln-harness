@@ -36,6 +36,8 @@ from collections import defaultdict
 from collections.abc import Iterator  # noqa: TC003
 from pathlib import Path, PurePosixPath
 
+from ai_vuln_harness.cache import get_cache, is_cache_miss
+
 DEFAULT_EXCLUDE_DIRS = {"test", "tests", "examples", "example", "contrib"}
 
 SNIPPET_REQUIRED_FIELDS = {
@@ -211,6 +213,33 @@ def load_repo_snippets(repo: Path, is_library_target: bool = True) -> list[dict]
     return snippets
 
 
+_SNIPPET_CACHE = None
+
+
+def _snippet_cache() -> object:
+    global _SNIPPET_CACHE
+    if _SNIPPET_CACHE is None:
+        _SNIPPET_CACHE = get_cache()
+    return _SNIPPET_CACHE
+
+
+def _check_snippet_cache(text: str, relative: str) -> list[dict] | None:
+    content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    ck = f"snippet:file:{relative}:{content_hash}"
+    cached = _snippet_cache().get_or_sentinel(ck)
+    if not is_cache_miss(cached):
+        for s in cached:
+            s["file"] = relative
+        return cached
+    return None
+
+
+def _cache_snippet_result(text: str, relative: str, snippets: list[dict]) -> None:
+    content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    ck = f"snippet:file:{relative}:{content_hash}"
+    _snippet_cache().set(ck, snippets)
+
+
 def _extract_path_snippets(
     path: Path,
     repo: Path,
@@ -222,6 +251,11 @@ def _extract_path_snippets(
         return []
 
     relative = str(path.relative_to(repo))
+
+    cached = _check_snippet_cache(text, relative)
+    if cached is not None:
+        return cached
+
     if path.suffix.lower() in _CST_EXTENSIONS:
         snippets = _extract_cst_snippets(
             path,
@@ -230,6 +264,7 @@ def _extract_path_snippets(
             is_library_target=is_library_target,
         )
         if snippets:
+            _cache_snippet_result(text, relative, snippets)
             return snippets
     snippets = _extract_regex_function_snippets(
         path,
@@ -238,8 +273,9 @@ def _extract_path_snippets(
         is_library_target=is_library_target,
     )
     if snippets:
+        _cache_snippet_result(text, relative, snippets)
         return snippets
-    return [
+    result = [
         _build_file_snippet(
             relative,
             path.stem,
@@ -247,6 +283,8 @@ def _extract_path_snippets(
             is_library_target=is_library_target,
         ),
     ]
+    _cache_snippet_result(text, relative, result)
+    return result
 
 
 def _extract_cst_snippets(
