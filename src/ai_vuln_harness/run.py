@@ -85,6 +85,7 @@ from .stages.shield import (
 from .stages.suppressions import SuppressionRegistry
 from .stages.validate import build_validate_prompt, is_api_by_design
 from .stages.voting import merge_hunter_outputs
+from .stages.z3_verifier import verify_validate_feasibility
 
 logger = logging.getLogger("vuln-harness")
 
@@ -278,6 +279,15 @@ def _run_validate_stage(
             f.setdefault("validate_status", "needs-more-info")
             f.setdefault("validate_reason", "skipped")
         return validated
+    validate_cfg = cfg.get("validate", {})
+    enable_z3_verifier = bool(
+        isinstance(validate_cfg, dict) and validate_cfg.get("enable_z3_verifier", False)
+    )
+    z3_timeout_ms = (
+        max(1, int(validate_cfg.get("z3_timeout_ms", 50)))
+        if isinstance(validate_cfg, dict)
+        else 50
+    )
     validated = _run_validate_findings(
         prioritized,
         snippet_db,
@@ -286,6 +296,8 @@ def _run_validate_stage(
         cache=cache,
         parallel=validate_workers,
         model_pool=model_pool if pooled else None,
+        enable_z3_verifier=enable_z3_verifier,
+        z3_timeout_ms=z3_timeout_ms,
     )
     _persist_jsonl(output_dir / "validated.jsonl", validated)
     return validated
@@ -575,6 +587,8 @@ def _apply_runtime_flags(
     enable_fuzz_orchestrator: bool | None,
     enable_pbt: bool | None,
     enable_exploit_synthesis: bool | None = None,
+    enable_z3_validate: bool | None = None,
+    z3_timeout_ms: int | None = None,
 ) -> dict:
     if enable_fuzz_orchestrator is not None:
         cfg["enable_fuzz_orchestrator"] = bool(enable_fuzz_orchestrator)
@@ -588,6 +602,14 @@ def _apply_runtime_flags(
             cfg["enable_localization_stage"] = True
     if enable_exploit_synthesis is not None:
         cfg["enable_exploit_synthesis"] = bool(enable_exploit_synthesis)
+    if enable_z3_validate is not None:
+        validate_cfg = cfg.setdefault("validate", {})
+        if isinstance(validate_cfg, dict):
+            validate_cfg["enable_z3_verifier"] = bool(enable_z3_validate)
+    if z3_timeout_ms is not None:
+        validate_cfg = cfg.setdefault("validate", {})
+        if isinstance(validate_cfg, dict):
+            validate_cfg["z3_timeout_ms"] = max(1, int(z3_timeout_ms))
     return cfg
 
 
@@ -906,6 +928,8 @@ def _run_validate_finding(
     *,
     auth: dict[str, str],
     cache: JsonCache,
+    enable_z3_verifier: bool = False,
+    z3_timeout_ms: int = 50,
 ) -> dict:
     finding = standardize_finding(finding)
     if is_api_by_design(finding, snippet):
@@ -942,6 +966,12 @@ def _run_validate_finding(
             reason = f"unparseable LLM response: {raw[:200]}"
         logger.debug("validate result: status=%s reason=%s", status, reason[:80])
         result = {**finding, "validate_status": status, "validate_reason": reason}
+        result = _apply_validate_z3_verdict(
+            result,
+            snippet,
+            enable_z3_verifier=enable_z3_verifier,
+            z3_timeout_ms=z3_timeout_ms,
+        )
         return _enforce_localization_evidence(result)
     except Exception as e:
         logger.warning("validate exception for %s: %s", finding.get("title", "?"), e)
@@ -959,6 +989,8 @@ def _run_validate_finding_from_pool(
     *,
     auth: dict[str, str],
     cache: JsonCache,
+    enable_z3_verifier: bool = False,
+    z3_timeout_ms: int = 50,
 ) -> dict:
     finding = standardize_finding(finding)
     if is_api_by_design(finding, snippet):
@@ -984,6 +1016,12 @@ def _run_validate_finding_from_pool(
         if not parsed:
             reason = f"unparseable LLM response: {raw[:200]}"
         result = {**finding, "validate_status": status, "validate_reason": reason}
+        result = _apply_validate_z3_verdict(
+            result,
+            snippet,
+            enable_z3_verifier=enable_z3_verifier,
+            z3_timeout_ms=z3_timeout_ms,
+        )
         return _enforce_localization_evidence(result)
     except Exception as e:
         return {
@@ -1044,6 +1082,34 @@ def _enforce_localization_evidence(finding: dict) -> dict:
     return finding
 
 
+def _apply_validate_z3_verdict(
+    finding: dict,
+    snippet: dict,
+    *,
+    enable_z3_verifier: bool,
+    z3_timeout_ms: int,
+) -> dict:
+    if not enable_z3_verifier:
+        return finding
+    verdict, reason = verify_validate_feasibility(
+        finding,
+        snippet,
+        timeout_ms=z3_timeout_ms,
+    )
+    out = {
+        **finding,
+        "z3_validate_status": verdict,
+        "z3_validate_reason": reason,
+    }
+    if verdict == "unsat":
+        previous_reason = str(out.get("validate_reason", "")).strip()
+        out["validate_status"] = "rejected"
+        out["validate_reason"] = (
+            f"z3_unsat:{reason}; {previous_reason}" if previous_reason else f"z3_unsat:{reason}"
+        )
+    return out
+
+
 def _run_validate_findings(
     findings: list[dict],
     snippet_db: dict[str, dict],
@@ -1053,6 +1119,8 @@ def _run_validate_findings(
     cache: JsonCache,
     parallel: int = 3,
     model_pool: ModelPool | None = None,
+    enable_z3_verifier: bool = False,
+    z3_timeout_ms: int = 50,
 ) -> list[dict]:
     if not findings:
         return []
@@ -1081,6 +1149,8 @@ def _run_validate_findings(
                         model_pool,
                         auth=auth,
                         cache=cache,
+                        enable_z3_verifier=enable_z3_verifier,
+                        z3_timeout_ms=z3_timeout_ms,
                     )
                 ] = finding
             else:
@@ -1093,6 +1163,8 @@ def _run_validate_findings(
                         model,
                         auth=auth,
                         cache=cache,
+                        enable_z3_verifier=enable_z3_verifier,
+                        z3_timeout_ms=z3_timeout_ms,
                     )
                 ] = finding
 
@@ -1719,6 +1791,8 @@ def run(  # noqa: PLR0913
     enable_fuzz_orchestrator: bool | None = None,
     enable_pbt: bool | None = None,
     enable_exploit_synthesis: bool | None = None,
+    enable_z3_validate: bool | None = None,
+    z3_timeout_ms: int | None = None,
     cve_corpus: Path | None = None,
     no_fetch_cves: bool = False,
     no_scan_git_cves: bool = False,
@@ -1731,6 +1805,8 @@ def run(  # noqa: PLR0913
         enable_fuzz_orchestrator=enable_fuzz_orchestrator,
         enable_pbt=enable_pbt,
         enable_exploit_synthesis=enable_exploit_synthesis,
+        enable_z3_validate=enable_z3_validate,
+        z3_timeout_ms=z3_timeout_ms,
     )
     stages_cfg = _load_stages_config(pkg_dir)
     state = StateDB(work_dir / cfg["state_db"])
@@ -2103,6 +2179,8 @@ def run_all(  # noqa: PLR0913
     enable_fuzz_orchestrator: bool | None = None,
     enable_pbt: bool | None = None,
     enable_exploit_synthesis: bool | None = None,
+    enable_z3_validate: bool | None = None,
+    z3_timeout_ms: int | None = None,
     cve_corpus: Path | None = None,
     no_fetch_cves: bool = False,
     no_scan_git_cves: bool = False,
@@ -2140,6 +2218,8 @@ def run_all(  # noqa: PLR0913
             enable_fuzz_orchestrator=enable_fuzz_orchestrator,
             enable_pbt=enable_pbt,
             enable_exploit_synthesis=enable_exploit_synthesis,
+            enable_z3_validate=enable_z3_validate,
+            z3_timeout_ms=z3_timeout_ms,
             cve_corpus=cve_corpus,
             no_fetch_cves=no_fetch_cves,
             no_scan_git_cves=no_scan_git_cves,
@@ -2276,6 +2356,8 @@ def _build_run_kwargs(args: argparse.Namespace) -> dict:
         "enable_fuzz_orchestrator": args.enable_fuzz_orchestrator,
         "enable_pbt": args.enable_pbt,
         "enable_exploit_synthesis": args.enable_exploit_synthesis,
+        "enable_z3_validate": args.enable_z3_validate,
+        "z3_timeout_ms": args.z3_timeout_ms,
         "cve_corpus": args.cve_corpus,
         "no_fetch_cves": args.no_fetch_cves,
         "no_scan_git_cves": args.no_scan_git_cves,
@@ -2328,6 +2410,20 @@ def main() -> None:
     parser.add_argument("--pooled", action="store_true")
     parser.add_argument("--enable-fuzz-orchestrator", action="store_true")
     parser.add_argument("--enable-pbt", action="store_true")
+    parser.add_argument(
+        "--enable-z3-validate",
+        action="store_true",
+        help=(
+            "Enable optional Z3 feasibility verifier during VALIDATE stage "
+            "(pilot; default disabled)."
+        ),
+    )
+    parser.add_argument(
+        "--z3-timeout-ms",
+        type=int,
+        default=50,
+        help="Timeout in milliseconds for each Z3 validate check.",
+    )
     parser.add_argument(
         "--enable-exploit-synthesis",
         action="store_true",
