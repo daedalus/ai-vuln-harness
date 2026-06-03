@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .asan import asan_excerpt, crash_reason, project_frames, top_frame
 from .cache import (
     BloomFilter,
     Cache,
@@ -39,4 +40,8 @@ __all__ = [
     "is_cache_miss",
     "reset_cache_metrics",
     "SandboxManager",
+    "asan_excerpt",
+    "crash_reason",
+    "project_frames",
+    "top_frame",
 ]

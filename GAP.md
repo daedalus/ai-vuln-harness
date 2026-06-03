@@ -1,10 +1,10 @@
 # Gap Analysis: ai-vuln-harness vs. Project Glasswing / Claude Mythos / GPT-5.5-Cyber
 
-**Last updated:** 2026-05-31
-**Baseline:** 17-stage pipeline (`src/ai_vuln_harness/`, 2042-line orchestrator, 21 stage modules, 46 test files, ~730 tests)
+**Last updated:** 2026-06-05
+**Baseline:** 17-stage pipeline (`src/ai_vuln_harness/`, 2592-line orchestrator, 35 source modules, 57 test files, ~14,168 test lines, ~13,778 source lines)
 **Benchmarks:** Project Glasswing (Anthropic), Claude Mythos Preview, OpenAI GPT-5.5 / GPT-5.5-Cyber (CyberGym score: 0.83)
 **Reference corpus:** [red.anthropic.com](https://red.anthropic.com) — Anthropic Frontier Red Team blog (Jun 2025 – May 2026), [Official System Card](https://www.anthropic.com/research/claude-mythos-preview) (Apr 2026, 6861 lines, authoritative source)
-**Local competitors:** `~/code/audit/` (8-stage Agent SDK), `~/code/mythos-router/` (TypeScript SWD), `~/code/hackcode/` (Rust Ollama REPL)
+**Local competitors:** `~/code/audit/` (8-stage Agent SDK), `~/code/mythos-router/` (TypeScript SWD), `~/code/hackcode/` (Rust Ollama REPL), `~/code/defending-code-reference-harness/` (Anthropic reference, 7-stage ASAN pipeline, gVisor sandbox)
 
 ---
 
@@ -445,6 +445,62 @@ The System Card includes a novel per-question automated welfare interview (Secti
 
 ---
 
+### 16. Anthropic Reference Implementation — `defending-code-reference-harness`
+
+**Source:** `https://github.com/anthropics/defending-code-reference-harness` — official reference implementation for autonomous vulnerability discovery and remediation with Claude. Published under Apache 2.0.
+
+**Architecture:** gVisor-sandboxed Docker container running `claude` CLI with agent tool access (Read, Write, Bash). Per-target YAML configs pinned to specific commits. Two-container trust boundary (find runs in container A, grade/verify in container B — only PoC bytes cross).
+
+**Status:** Publicly available GitHub repo (initial public release, 4 commits). 15 source modules + 9 prompt templates (~3,200 source lines). 18 test files (~2,500 lines). Single runtime dep (`pyyaml>=6.0`). No CI pipeline.
+
+#### 16.1 Where the Reference Is Stronger
+
+| Advantage | Details |
+|---|---|
+| **gVisor sandboxing** | Every agent container runs under `runsc` (gVisor runtime) with a network allowlist proxy — only `api.anthropic.com:443` is reachable. The harness uses Docker with no hardware isolation boundary. |
+| **Two-container trust boundary** | Find agent (container A) never touches the grade/verify container (B, same image). Only PoC bytes cross via `docker cp`. Prevents tampered images from affecting verification. |
+| **Per-target config.yaml** | Structured YAML per target: `image_tag`, `github_url`, `commit`, `binary_path`, `source_root`, optional `focus_areas`, `known_bugs`, `attack_surface`, `build_command`, `test_command`, `reattack_harness`. The harness has JSON defaults with no target-specific configuration. |
+| **Transcript-first persistence** | Every agent message is `fsync()`'d to disk as it arrives — a mid-run SIGKILL leaves readable transcripts. The harness relies on SQLite StateDB which can be corrupted on unclean shutdown. |
+| **Claude Code tool-use integration** | Agents get `claude -p --output-format stream-json` with native tool-use, thinking blocks, session management, and auto-retry (exponential backoff, 300s cap, 20 attempts). The harness uses raw HTTP to OpenRouter with 3-attempt linear backoff. |
+| **Patch verification ladder (T0–T3)** | T0: binary compiles. T1: PoC no longer crashes patched binary. T2: original test suite passes. T3: find-agent re-attacks patched binary. Full multi-tier verification. The harness's PATCH stage is deterministic with class-driven strategies and no re-attack verification. |
+| **Concurrent run coordination** | Shared `found_bugs.jsonl` across concurrent find agents — seeded with `known_bugs` from config, agents read via `cat` to avoid resubmitting duplicates. The harness has no concurrent-agent coordination. |
+| **Claude Code interactive skills** | 6 skills (quickstart, threat-model, vuln-scan, triage, patch, customize) for interactive use. The harness has 1 SKILL.md for opencode. |
+| **Shipped targets** | 4 pre-configured targets with Dockerfiles: canary (3 planted bugs, ~6min), drlibs (real CVEs), alsa (ALSA), htslib (CRAM container, 10-CVE cluster). The harness has no shipped target definitions. |
+| **Signal handling** | `asyncio.all_tasks()` cleanup on SIGINT/SIGTERM with per-container `docker kill`. Named containers (`find_<target>_<N>`) enable targeted teardown. |
+
+#### 16.2 Where This Harness Is Stronger
+
+| Advantage | Details |
+|---|---|
+| **Multi-language support** | Tree-sitter AST extraction for Python, Go, Rust, TypeScript, C/C++, Java, JS. The reference is C/C++ only. |
+| **Multi-provider LLM routing** | 5 providers (OpenRouter, Groq, Cerebras, Google, Zen) with disjoint model pools for HUNT vs VALIDATE. The reference uses Claude only (vendor lock-in). |
+| **Pipeline scope** | 17 canonical stages vs 7 stages. Covers supply chain, hallucination detection (KL-divergence, call-path graph, semantic dedup), exposure tracking, gap analysis, feedback loops. |
+| **LLM output validation** | KL-divergence hallucination detection, call-path graph verification, semantic dedup, token-overlap analysis. The reference relies on XML tag parsing + 5-criteria grading rubric only. |
+| **Exploit synthesis** | T4–T1 tier grading with exploitability assessment. The reference has report-grade analysis with 6-section exploitability report but no tier categorization. |
+| **Property-based testing** | Invariant inference + ASan-compiled C harness generation + bounded-random fuzzing. The reference has no PBT. |
+| **CI/CD + automation** | Full CI (3 Python versions, lint, benchmark gate), 12 pre-commit hooks, MCP server. The reference has no CI and no MCP adapter. |
+| **CVE corpus integration** | OSV.dev auto-fetch, CVE class-to-domain mapping, supply chain scanning. The reference has no external CVE data. |
+| **Caching** | SQLite + Bloom filter (user-wide) + JSON cache (LLM responses). The reference has no caching. |
+| **Zero-dollar inference** | OpenRouter free models — $0 inference cost. The reference requires a Claude Pro/Max subscription. |
+| **Schema-validated contracts** | 8 JSON schemas + `contracts.py` for stage contract enforcement. The reference uses argparse subcommands and implicit contracts. |
+| **PoC compilation sandbox** | Compile+run with ASan in isolated Docker sandbox. The reference runs PoCs in the same target container (just a fresh copy). |
+
+#### 16.3 Gap Summary
+
+| Gap | Severity | Effort | Notes |
+|---|---|---|---|
+| **gVisor / hardware-isolated sandbox** | 🔴 Critical | High | The harness's Docker sandbox has no runtime isolation boundary. gVisor or Firecracker integration would provide defense-in-depth for PoC execution. |
+| **Two-container trust boundary** | 🟠 High | Medium | Separating find and verify into independent containers with only PoC bytes crossing would prevent tampered images from biasing verification. |
+| **Per-target YAML configs** | 🟡 Medium | Low | Adding `config/targets/` with YAML configs would simplify onboarding and enable reproducible target definitions with pinned commits. |
+| **Transcript-first persistence (fsync)** | 🟡 Medium | Low | Adding `os.fsync()` after every LLM response write would prevent data loss on unclean shutdown. |
+| **Concurrent-agent coordination** | 🟡 Medium | Low–Medium | A shared `known_bugs` file or SQLite-backed coordination table would let concurrent hunt agents avoid duplicate work. |
+| **Patch verification ladder (re-attack)** | 🟠 High | Medium | Extending PATCH stage with PoC re-attack against the patched binary would provide end-to-end fix verification. |
+| **Claude Code native tool-use** | 🟢 Stretch | Medium | Switching from raw HTTP to `ClaudeSDKClient` would unlock thinking blocks, session management, and native retry. |
+| **Shipped target definitions** | 🟡 Medium | Low | Adding a `canary` target (3 planted bugs) would provide a fast integration test path for regression testing. |
+| **Built-in signal handling** | 🟢 Stretch | Low | Adding SIGINT/SIGTERM handlers that clean up Docker containers would prevent orphan containers on abort. |
+
+---
+
 ## Priority Matrix
 
 | Priority | Gap | Estimated Effort |
@@ -452,6 +508,7 @@ The System Card includes a novel per-question automated welfare interview (Secti
 | 🔴 Critical | Multi-language ingestor (Rust, Go, Python) | Medium |
 | 🔴 Critical | Diff-driven incremental scanning + CI hooks | Medium |
 | 🔴 Critical | VM-isolated sandbox (gVisor / Firecracker PoC) | High |
+| 🔴 Critical | gVisor / hardware-isolated sandbox | High |
 | 🔴 Critical | Pre-deployment sandbox verification (A1 containment) | Low |
 | 🔴 Critical | Output content review gate (A3 containment) | Low |
 | ~~🔴 Critical~~ | ~~Patch generation + re-validation stage~~ | ~~Medium~~ |
@@ -462,6 +519,8 @@ The System Card includes a novel per-question automated welfare interview (Secti
 | ⚠️ Partial | Exploit depth — ACE beyond ASan crash (T3→T1) — tier assessment implemented; live exploit gen out of scope | High |
 | 🟠 High | Autonomous CVE-to-working-exploit synthesis (72% success rate) | High |
 | 🟠 High | Property-based testing stage (invariant inference + fuzz) | Medium–High |
+| 🟠 High | Two-container trust boundary (find vs verify isolation) | Medium |
+| 🟠 High | Patch verification ladder (re-attack against patched binary) | Medium |
 | 🟠 High | Inter-component exploit chain graph | High |
 | 🟠 High | Pre-execution action gating by risk tier (A2 containment) | Medium |
 | 🟠 High | Runtime behavioral monitoring for LLM calls (A4 containment) | Medium–High |
@@ -470,6 +529,10 @@ The System Card includes a novel per-question automated welfare interview (Secti
 | 🟠 High | CVD disclosure workflow + cryptographic attestation | Low–Medium |
 | 🟠 High | Model risk classification system (ASL-4-equivalent tiers) | Low |
 | 🟡 Medium | Browser / kernel target specialization (V8, Firefox, Linux) | High |
+| 🟡 Medium | Per-target YAML configs (pinned commits, build/test commands) | Low |
+| 🟡 Medium | Concurrent-agent coordination (found_bugs.jsonl pattern) | Low–Medium |
+| 🟡 Medium | Shipped target definitions (canary smoke test) | Low |
+| 🟡 Medium | Transcript-first persistence (fsync on LLM writes) | Low |
 | 🟡 Medium | Multi-tenant campaign infrastructure (Glasswing scale) | High |
 | 🟡 Medium | Controlled CVE rediscovery benchmark (academic method) | Low |
 | 🟡 Medium | Role-tiered access layer + audit log | Low–Medium |
@@ -529,13 +592,14 @@ The System Card includes a novel per-question automated welfare interview (Secti
 - [Measuring LLMs' Ability to Develop Exploits](https://red.anthropic.com/2026/exploit-evals/) — May 2026
 - [Coordinated Vulnerability Disclosure Dashboard](https://red.anthropic.com/2026/cvd/) — May 2026
 
-### Local Competitor Repositories (reviewed 2026-05-30)
+### Local Competitor Repositories (reviewed 2026-06-05)
 
 - `~/code/audit/` — Local 8-stage Glasswing implementation using `claude_agent_sdk` (Claude Code Agent SDK). 4-mode auth (gateway/api_key/oauth/login), schema validation with `$ref` registry, exponential-backoff retry, live target testing, separate prompt files per stage, Click CLI. **Direct alternative implementation of the same methodology.**
 - `~/code/mythos-router/` — TypeScript zero-dep ESM CLI. SWD (Secure Working Directory) SHA-256 filesystem snapshot verification. 8 commands, MCP stdio server, 4-pronged security model. **Not a competitor — coding assistant with file integrity, not vulnerability discovery.**
 - `~/code/hackcode/` — Rust CLI fork of `ultraworkers/claw-code`. Local Ollama model execution (Qwen3.5-35B). Bash/tool access REPL. "Capybara protocol" is marketing only. **Not a competitor — local pentest REPL, no structured pipeline.**
+- `~/code/defending-code-reference-harness/` — Anthropic reference implementation (7-stage ASAN pipeline, gVisor sandbox, 2-container trust boundary). 15 source modules, 18 test files, 4 shipped targets. **Official reference — minimal deps, focused C/C++ scope, best-in-class sandboxing.**
 
-### External Deep Research Sources (fetched 2026-05-31)
+### External Deep Research Sources (fetched 2026-06-05)
 
 - `/tmp/deep-research-report.md` — Deep research report on Claude Mythos: confirmed as AI model (not architectural project), Project Glasswing metrics (10K+ vulns, 400 critical from Cloudflare), 72% exploit success rate, CVE-to-exploit in hours, sandbox escape incident with 4 containment failures (A1–A4).
 - `/tmp/readme.txt` — OpenMythos theoretical RDT architecture hypothesis: 3-stage pipeline (Prelude → Recurrent Block up to 64 loops → Coda), MoE (64 experts, 4 active per token), Multi-Latent Attention (DeepSeek-V2 compression), Parcae LTI stability constraint (spectral radius < 1), depth-wise LoRA adapters, ACT halting mechanism. Configuration variants from 1B to 1T parameters. Evidence: GraphWalks BFS 80% (vs GPT-5.4 21.4%, Opus 4.6 38.7%), token paradox (1/5 tokens, longer compute), CyberGym 83.1%, Firefox 271 vulns.
@@ -543,3 +607,4 @@ The System Card includes a novel per-question automated welfare interview (Secti
 - [OpenMythos — GitHub](https://github.com/openmythos) — Open-source theoretical reconstruction of Claude Mythos architecture (RDT, MoE, MLA, Parcae stability). Independent, not official Anthropic.
 - [Parcae: Stable Training of Looped Transformers — UCSD + Together AI](https://arxiv.org/abs/2604.XXXXX) — April 2026 paper providing the spectral-radius constraint method for looped transformer stability.
 - [Defense-in-Depth Reference Architecture for Mythos-Class Frontier Models — MDPI](https://mdpi.com) — May 2026 paper specifying VAOP, ABOR, CPIP, MCPR containment layers.
+- [defending-code-reference-harness — GitHub](https://github.com/anthropics/defending-code-reference-harness) — Anthropic's official reference implementation for autonomous vulnerability discovery and remediation with Claude. 7-stage ASAN pipeline, gVisor sandboxed, per-target YAML configs, two-container trust boundary. Apache 2.0.

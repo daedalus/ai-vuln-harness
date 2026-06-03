@@ -14,6 +14,8 @@ Multi-agent vulnerability research harness following the Project Glasswing / Clo
 | `prospector --with-tool ruff --with-tool mypy --with-tool pylint src/ai_vuln_harness/` | Lint + type check |
 | `semgrep --config=auto --severity=ERROR src/` | Security scanning |
 | `vulture --min-confidence 90 src/` | Dead code detection |
+| `lizard src/ --CCN=15` | Code complexity analysis |
+
 
 ## Development
 
