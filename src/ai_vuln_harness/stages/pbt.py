@@ -1248,7 +1248,13 @@ def _generate_fallback_harness(finding: dict, snippet: dict, language: str) -> s
 # ── Compilation ──
 
 
-def _compile_harness(harness_source: str, timeout: int, language: str) -> dict:
+def _compile_harness(
+    harness_source: str,
+    timeout: int,
+    language: str,
+    *,
+    sandbox_manager: object | None = None,
+) -> dict:
     rt = _PBT_LANGUAGE_RUNTIME.get(language, _PBT_LANGUAGE_RUNTIME["c"])
     ext = rt["source_ext"]
     bin_ext = rt["binary_ext"]
@@ -1279,16 +1285,29 @@ def _compile_harness(harness_source: str, timeout: int, language: str) -> dict:
             for part in rt["compile"]
         ]
 
-        compile_proc = subprocess.run(
-            cmd,
-            cwd=tmp,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
+        _run_compile_in_sandbox = (
+            sandbox_manager is not None
+            and getattr(sandbox_manager, "available", lambda: False)()
         )
-        result["compile_succeeded"] = compile_proc.returncode == 0
-        result["stderr"] = compile_proc.stderr
+        if _run_compile_in_sandbox:
+            compile_result = sandbox_manager.execute(
+                cmd,
+                timeout=timeout,
+                language=language,
+            )
+            result["compile_succeeded"] = compile_result["returncode"] == 0
+            result["stderr"] = compile_result["stderr"]
+        else:
+            compile_proc = subprocess.run(
+                cmd,
+                cwd=tmp,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+            result["compile_succeeded"] = compile_proc.returncode == 0
+            result["stderr"] = compile_proc.stderr
         if result["compile_succeeded"]:
             result["binary_path"] = str(binary)
             return result
@@ -1306,6 +1325,7 @@ def _run_harness(
     iterations: int,
     language: str,
     extra_env: dict[str, str] | None = None,
+    sandbox_manager: object | None = None,
 ) -> dict:
     result: dict = {
         "run_succeeded": False,
@@ -1327,19 +1347,38 @@ def _run_harness(
     if extra_env:
         env.update(extra_env)
     system_path = os.environ.get("PATH", "/usr/bin:/bin")
-    run_proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-        env={**env, **{"PATH": system_path}},
-    )
+    proc_env = {**env, **{"PATH": system_path}}
+
+    if (
+        sandbox_manager is not None
+        and getattr(sandbox_manager, "available", lambda: False)()
+    ):
+        sandbox_result = sandbox_manager.execute(
+            cmd,
+            timeout=timeout,
+            env=proc_env,
+            language=language,
+        )
+        run_proc_ret = sandbox_result["returncode"]
+        run_proc_stdout = sandbox_result["stdout"]
+        run_proc_stderr = sandbox_result["stderr"]
+    else:
+        run_proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=proc_env,
+        )
+        run_proc_ret = run_proc.returncode
+        run_proc_stdout = run_proc.stdout
+        run_proc_stderr = run_proc.stderr
     result["run_succeeded"] = True
-    result["exit_code"] = run_proc.returncode
-    result["stdout"] = run_proc.stdout
-    result["stderr"] = run_proc.stderr
-    combined = f"{run_proc.stdout}\n{run_proc.stderr}"
+    result["exit_code"] = run_proc_ret
+    result["stdout"] = run_proc_stdout
+    result["stderr"] = run_proc_stderr
+    combined = f"{run_proc_stdout}\n{run_proc_stderr}"
     result["vulnerability_observed"] = _contains_vuln_signal(
         combined,
         run_proc.returncode,
@@ -1462,6 +1501,8 @@ def run_pbt_on_finding(
     language: str = "",
     enable_hypothesis: bool = True,
     hypothesis_max_examples: int = 500,
+    sandbox_manager: object | None = None,
+    sandbox_compile: bool = False,
 ) -> dict:
     pbt_result: dict = {
         "pbt_invariant": "",
@@ -1496,8 +1537,12 @@ def run_pbt_on_finding(
         cache=cache,
     )
 
+    compile_sandbox = sandbox_manager if sandbox_compile else None
     compile_result = _compile_harness(
-        pbt_result["pbt_harness_source"], compile_timeout, lang
+        pbt_result["pbt_harness_source"],
+        compile_timeout,
+        lang,
+        sandbox_manager=compile_sandbox,
     )
     pbt_result["pbt_compile_succeeded"] = compile_result["compile_succeeded"]
     pbt_result["pbt_compile_error"] = compile_result["stderr"]
@@ -1511,6 +1556,7 @@ def run_pbt_on_finding(
         timeout=run_timeout,
         iterations=pbt_iterations,
         language=lang,
+        sandbox_manager=sandbox_manager,
     )
     pbt_result["pbt_run_succeeded"] = run_result["run_succeeded"]
     pbt_result["pbt_falsified"] = run_result["vulnerability_observed"]
@@ -1534,6 +1580,7 @@ def run_pbt_on_finding(
             run_timeout=run_timeout,
             pbt_iterations=pbt_iterations,
             hypothesis_max_examples=hypothesis_max_examples,
+            sandbox_manager=sandbox_manager,
         )
 
     return pbt_result
@@ -1548,11 +1595,17 @@ def _run_hypothesis_on_finding(
     run_timeout: int = 15,
     pbt_iterations: int = 500,
     hypothesis_max_examples: int = 500,
+    sandbox_manager: object | None = None,
 ) -> None:
     hyp_source = _generate_hypothesis_harness(finding, snippet)
     if not hyp_source.strip():
         return
-    hyp_compile = _compile_harness(hyp_source, compile_timeout, "python")
+    hyp_compile = _compile_harness(
+        hyp_source,
+        compile_timeout,
+        "python",
+        sandbox_manager=sandbox_manager,
+    )
     if not hyp_compile["compile_succeeded"]:
         return
     hyp_env = {"PBT_HYPOTHESIS_EXAMPLES": str(hypothesis_max_examples)}
@@ -1562,6 +1615,7 @@ def _run_hypothesis_on_finding(
         iterations=pbt_iterations,
         language="python",
         extra_env=hyp_env,
+        sandbox_manager=sandbox_manager,
     )
     pbt_result["pbt_hypothesis_falsified"] = hyp_result["vulnerability_observed"]
     if hyp_result["vulnerability_observed"]:
@@ -1637,6 +1691,8 @@ def run_pbt_on_findings(
     max_findings: int = 50,
     enable_hypothesis: bool = True,
     hypothesis_max_examples: int = 500,
+    sandbox_manager: object | None = None,
+    sandbox_compile: bool = False,
 ) -> list[dict]:
     valid = [f for f in findings if has_valid_suspicious_points(f)]
     if not valid:
@@ -1667,6 +1723,8 @@ def run_pbt_on_findings(
             enable_llm=enable_llm,
             enable_hypothesis=enable_hypothesis,
             hypothesis_max_examples=hypothesis_max_examples,
+            sandbox_manager=sandbox_manager,
+            sandbox_compile=sandbox_compile,
         )
         pbt_boost = _annotate_finding_from_pbt(finding, pbt_result)
         logger.info(

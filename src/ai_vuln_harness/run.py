@@ -37,6 +37,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .sandbox import SandboxManager
 from .stages.chains import synthesize_exploit_chains
 from .stages.contracts import has_valid_suspicious_points, standardize_finding
 from .stages.coordinator import build_context_packs
@@ -324,14 +325,22 @@ def _run_pbt_stage(
     enable_hypothesis = bool(pbt_cfg.get("enable_hypothesis", True))
     hypothesis_max_examples = int(pbt_cfg.get("hypothesis_max_examples", 500))
     call_llm_func = call_llm if enable_llm else None
+    sandbox_cfg = cfg.get("sandbox", {})
+    sandbox_manager: SandboxManager | None = None
+    if sandbox_cfg.get("enabled", False):
+        sandbox_manager = SandboxManager(
+            backend=str(sandbox_cfg.get("backend", "docker"))
+        )
+    sandbox_compile = bool(sandbox_cfg.get("sandbox_compile", False))
     logger.info(
-        "[PBT] stage: iterations=%d compile_timeout=%d run_timeout=%d max=%d llm=%s hypothesis=%s",
+        "[PBT] stage: iterations=%d compile_timeout=%d run_timeout=%d max=%d llm=%s hypothesis=%s sandbox=%s",
         pbt_iterations,
         compile_timeout,
         run_timeout,
         max_findings,
         enable_llm,
         enable_hypothesis,
+        sandbox_manager,
     )
     annotated = run_pbt_on_findings(
         findings,
@@ -347,6 +356,8 @@ def _run_pbt_stage(
         max_findings=max_findings,
         enable_hypothesis=enable_hypothesis,
         hypothesis_max_examples=hypothesis_max_examples,
+        sandbox_manager=sandbox_manager,
+        sandbox_compile=sandbox_compile,
     )
     logger.info("[PBT] annotated %d finding(s)", len(annotated))
     return annotated
@@ -593,6 +604,9 @@ def _apply_runtime_flags(
     enable_pbt: bool | None,
     pbt_enable_llm: bool | None = None,
     pbt_enable_hypothesis: bool | None = None,
+    sandbox: bool | None = None,
+    sandbox_backend: str | None = None,
+    sandbox_compile: bool | None = None,
     enable_exploit_synthesis: bool | None = None,
     enable_z3_validate: bool | None = None,
     z3_timeout_ms: int | None = None,
@@ -619,6 +633,13 @@ def _apply_runtime_flags(
         validate_cfg["enable_z3_verifier"] = bool(enable_z3_validate)
     if z3_timeout_ms is not None:
         validate_cfg["z3_timeout_ms"] = max(1, int(z3_timeout_ms))
+    sandbox_cfg = cfg.setdefault("sandbox", {})
+    if sandbox is not None:
+        sandbox_cfg["enabled"] = bool(sandbox)
+    if sandbox_backend is not None:
+        sandbox_cfg["backend"] = sandbox_backend
+    if sandbox_compile is not None:
+        sandbox_cfg["sandbox_compile"] = bool(sandbox_compile)
     return cfg
 
 
@@ -1805,9 +1826,13 @@ def run(  # noqa: PLR0913
     enable_exploit_synthesis: bool | None = None,
     enable_z3_validate: bool | None = None,
     z3_timeout_ms: int | None = None,
+    sandbox: bool = False,
+    sandbox_backend: str = "docker",
+    sandbox_compile: bool = False,
     cve_corpus: Path | None = None,
     no_fetch_cves: bool = False,
     no_scan_git_cves: bool = False,
+    no_cache: bool = False,
 ) -> dict:
     pkg_dir = Path(__file__).parent
     work_dir = Path.cwd()
@@ -1817,13 +1842,16 @@ def run(  # noqa: PLR0913
         enable_fuzz_orchestrator=enable_fuzz_orchestrator,
         enable_pbt=enable_pbt,
         pbt_enable_llm=pbt_enable_llm,
+        sandbox=sandbox,
+        sandbox_backend=sandbox_backend,
+        sandbox_compile=sandbox_compile,
         enable_exploit_synthesis=enable_exploit_synthesis,
         enable_z3_validate=enable_z3_validate,
         z3_timeout_ms=z3_timeout_ms,
     )
     stages_cfg = _load_stages_config(pkg_dir)
     state = StateDB(work_dir / cfg["state_db"])
-    cache = JsonCache(work_dir / cfg["cache_file"])
+    cache = None if no_cache else JsonCache(work_dir / cfg["cache_file"])
 
     run_id = f"{mode}:{repo!s}"
     state.create_run(repo_path=str(repo), run_id=run_id)
@@ -2195,9 +2223,13 @@ def run_all(  # noqa: PLR0913
     enable_exploit_synthesis: bool | None = None,
     enable_z3_validate: bool | None = None,
     z3_timeout_ms: int | None = None,
+    sandbox: bool = False,
+    sandbox_backend: str = "docker",
+    sandbox_compile: bool = False,
     cve_corpus: Path | None = None,
     no_fetch_cves: bool = False,
     no_scan_git_cves: bool = False,
+    no_cache: bool = False,
 ) -> dict:
     reports: list[dict] = []
     for mode in _SINGLE_MODES:
@@ -2232,12 +2264,16 @@ def run_all(  # noqa: PLR0913
             enable_fuzz_orchestrator=enable_fuzz_orchestrator,
             enable_pbt=enable_pbt,
             pbt_enable_llm=pbt_enable_llm,
+            sandbox=sandbox,
+            sandbox_backend=sandbox_backend,
+            sandbox_compile=sandbox_compile,
             enable_exploit_synthesis=enable_exploit_synthesis,
             enable_z3_validate=enable_z3_validate,
             z3_timeout_ms=z3_timeout_ms,
             cve_corpus=cve_corpus,
             no_fetch_cves=no_fetch_cves,
             no_scan_git_cves=no_scan_git_cves,
+            no_cache=no_cache,
         )
         report["mode_run"] = mode
         reports.append(report)
@@ -2377,6 +2413,10 @@ def _build_run_kwargs(args: argparse.Namespace) -> dict:
         "cve_corpus": args.cve_corpus,
         "no_fetch_cves": args.no_fetch_cves,
         "no_scan_git_cves": args.no_scan_git_cves,
+        "no_cache": args.no_cache,
+        "sandbox": args.sandbox,
+        "sandbox_backend": args.sandbox_backend,
+        "sandbox_compile": args.sandbox_compile,
     }
 
 
@@ -2427,6 +2467,25 @@ def main() -> None:
     parser.add_argument("--enable-fuzz-orchestrator", action="store_true")
     parser.add_argument("--enable-pbt", action="store_true")
     parser.add_argument("--pbt-enable-llm", action="store_true")
+    parser.add_argument(
+        "--sandbox",
+        action="store_true",
+        default=False,
+        help="Enable Docker-isolated sandbox for harness execution (pip install llm-sandbox[mcp-docker])",
+    )
+    parser.add_argument(
+        "--sandbox-backend",
+        type=str,
+        default="docker",
+        choices=["docker", "subprocess"],
+        help="Sandbox backend (default: docker when --sandbox is set)",
+    )
+    parser.add_argument(
+        "--sandbox-compile",
+        action="store_true",
+        default=False,
+        help="Also sandbox the compilation step (default: off)",
+    )
     parser.add_argument(
         "--enable-z3-validate",
         action="store_true",
@@ -2479,6 +2538,9 @@ def main() -> None:
         action="store_true",
         dest="run_patch",
         help="Generate patch candidates for confirmed findings (PATCH stage).",
+    )
+    parser.add_argument(
+        "--no-cache", action="store_true", help="Disable LLM response caching"
     )
     parser.add_argument("--log-file", type=Path, default=None)
     parser.add_argument("--benchmark-corpus", type=Path, default=None)

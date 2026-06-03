@@ -11,6 +11,7 @@ from .cache import (
 from .mcp_client import InProcessMCPClient, MCPClient, MCPError
 from .mcp_server import main as mcp_serve
 from .run import main, run, run_all
+from .sandbox import SandboxManager
 from .skill_loader import (
     discover_skills,
     load_skill_metadata,
@@ -37,4 +38,5 @@ __all__ = [
     "get_cache_metrics_snapshot",
     "is_cache_miss",
     "reset_cache_metrics",
+    "SandboxManager",
 ]

@@ -27,6 +27,9 @@ test = [
     "pytest-cov",
     "pytest-mock",
 ]
+sandbox = [
+    "llm-sandbox[mcp-docker]",
+]
 lint = [
     "prospector[with_ruff,with_mypy]",
     "semgrep",

@@ -237,6 +237,10 @@ class TestBuildRunKwargs:
         ns.cve_corpus = None
         ns.no_fetch_cves = False
         ns.no_scan_git_cves = False
+        ns.sandbox = False
+        ns.sandbox_backend = "docker"
+        ns.sandbox_compile = False
+        ns.no_cache = False
         return ns
 
     def test_returns_dict(self, args):

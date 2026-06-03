@@ -39,6 +39,11 @@
     "enable_hypothesis": true,
     "hypothesis_max_examples": 500
   },
+  "sandbox": {
+    "enabled": false,
+    "backend": "docker",
+    "sandbox_compile": false
+  },
   "validate": {
     "enable_z3_verifier": false,
     "z3_timeout_ms": 50
