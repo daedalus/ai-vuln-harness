@@ -586,6 +586,7 @@ def _apply_runtime_flags(
     *,
     enable_fuzz_orchestrator: bool | None,
     enable_pbt: bool | None,
+    pbt_enable_llm: bool | None = None,
     enable_exploit_synthesis: bool | None = None,
     enable_z3_validate: bool | None = None,
     z3_timeout_ms: int | None = None,
@@ -600,6 +601,10 @@ def _apply_runtime_flags(
         cfg["enable_pbt"] = bool(enable_pbt)
         if enable_pbt:
             cfg["enable_localization_stage"] = True
+    if pbt_enable_llm is not None:
+        pbt_cfg = cfg.setdefault("pbt", {})
+        if isinstance(pbt_cfg, dict):
+            pbt_cfg["enable_llm"] = bool(pbt_enable_llm)
     if enable_exploit_synthesis is not None:
         cfg["enable_exploit_synthesis"] = bool(enable_exploit_synthesis)
     if enable_z3_validate is not None:
@@ -1105,7 +1110,9 @@ def _apply_validate_z3_verdict(
         previous_reason = str(out.get("validate_reason", "")).strip()
         out["validate_status"] = "rejected"
         out["validate_reason"] = (
-            f"z3_unsat:{reason}; {previous_reason}" if previous_reason else f"z3_unsat:{reason}"
+            f"z3_unsat:{reason}; {previous_reason}"
+            if previous_reason
+            else f"z3_unsat:{reason}"
         )
     return out
 
@@ -1790,6 +1797,7 @@ def run(  # noqa: PLR0913
     load_packs_cache: bool = False,
     enable_fuzz_orchestrator: bool | None = None,
     enable_pbt: bool | None = None,
+    pbt_enable_llm: bool | None = None,
     enable_exploit_synthesis: bool | None = None,
     enable_z3_validate: bool | None = None,
     z3_timeout_ms: int | None = None,
@@ -1804,6 +1812,7 @@ def run(  # noqa: PLR0913
         cfg,
         enable_fuzz_orchestrator=enable_fuzz_orchestrator,
         enable_pbt=enable_pbt,
+        pbt_enable_llm=pbt_enable_llm,
         enable_exploit_synthesis=enable_exploit_synthesis,
         enable_z3_validate=enable_z3_validate,
         z3_timeout_ms=z3_timeout_ms,
@@ -2178,6 +2187,7 @@ def run_all(  # noqa: PLR0913
     load_packs_cache: bool = False,
     enable_fuzz_orchestrator: bool | None = None,
     enable_pbt: bool | None = None,
+    pbt_enable_llm: bool | None = None,
     enable_exploit_synthesis: bool | None = None,
     enable_z3_validate: bool | None = None,
     z3_timeout_ms: int | None = None,
@@ -2217,6 +2227,7 @@ def run_all(  # noqa: PLR0913
             load_packs_cache=load_packs_cache,
             enable_fuzz_orchestrator=enable_fuzz_orchestrator,
             enable_pbt=enable_pbt,
+            pbt_enable_llm=pbt_enable_llm,
             enable_exploit_synthesis=enable_exploit_synthesis,
             enable_z3_validate=enable_z3_validate,
             z3_timeout_ms=z3_timeout_ms,
@@ -2355,6 +2366,7 @@ def _build_run_kwargs(args: argparse.Namespace) -> dict:
         "load_packs_cache": args.load_packs_cache,
         "enable_fuzz_orchestrator": args.enable_fuzz_orchestrator,
         "enable_pbt": args.enable_pbt,
+        "pbt_enable_llm": args.pbt_enable_llm,
         "enable_exploit_synthesis": args.enable_exploit_synthesis,
         "enable_z3_validate": args.enable_z3_validate,
         "z3_timeout_ms": args.z3_timeout_ms,
@@ -2410,6 +2422,7 @@ def main() -> None:
     parser.add_argument("--pooled", action="store_true")
     parser.add_argument("--enable-fuzz-orchestrator", action="store_true")
     parser.add_argument("--enable-pbt", action="store_true")
+    parser.add_argument("--pbt-enable-llm", action="store_true")
     parser.add_argument(
         "--enable-z3-validate",
         action="store_true",

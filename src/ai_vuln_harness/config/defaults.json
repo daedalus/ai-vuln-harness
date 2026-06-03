@@ -30,11 +30,12 @@
     "timeout_seconds": 10
   },
   "pbt": {
-    "llm": false,
+    "enable_llm": false,
     "iterations": 500,
     "compile_timeout": 30,
     "run_timeout": 15,
-    "max_findings": 50
+    "max_findings": 50,
+    "enabled_languages": ["c", "cpp", "rust", "go", "python", "javascript", "typescript"]
   },
   "validate": {
     "enable_z3_verifier": false,

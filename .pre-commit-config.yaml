@@ -34,9 +34,9 @@ repos:
     stages:
       - pre-commit
       - manual
-  - id: semgrep
-    name: semgrep
-    entry: bash -c 'semgrep --config=auto --severity=ERROR src/ai_vuln_harness/'
+  - id: opengrep
+    name: opengrep
+    entry: bash -c 'opengrep --config=auto --severity=ERROR src/ai_vuln_harness/'
     language: system
     pass_filenames: false
     stages:
