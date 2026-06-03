@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -215,6 +216,7 @@ _VULN_MARKERS: dict[str, tuple[str, ...]] = {
         "attributeerror",
         "recursionerror",
         "systemexit",
+        "falsifying example",
     ),
     "javascript": (
         "typeerror",
@@ -831,6 +833,99 @@ if __name__ == "__main__":
 """
 
 
+# ── Python Hypothesis harness generators ──
+
+
+def _python_hypothesis_buffer_overflow(_finding: dict, _snippet: dict) -> str:
+    return r"""import os
+import sys
+from hypothesis import given, settings, strategies as st
+
+@settings(max_examples=int(os.environ.get("PBT_HYPOTHESIS_EXAMPLES", "500")), deadline=None, database=None)
+@given(st.integers(min_value=0, max_value=512))
+def test_buffer_overflow(write_sz):
+    sz = 256
+    buf = bytearray(sz + 1)
+    for j in range(write_sz):
+        if j < sz:
+            buf[j] = 0x41
+        else:
+            raise AssertionError("buffer overflow")
+
+if __name__ == "__main__":
+    try:
+        test_buffer_overflow()
+        print("PBT(H): no overflow detected")
+        sys.exit(0)
+    except (AssertionError, IndexError, MemoryError):
+        print("PBT(H): potential buffer overflow detected via Hypothesis")
+        sys.exit(1)
+"""
+
+
+def _python_hypothesis_null_pointer(_finding: dict, _snippet: dict) -> str:
+    return r"""import os
+import sys
+from hypothesis import given, settings, strategies as st
+
+class Container:
+    def __init__(self):
+        self.value = None
+
+@settings(max_examples=int(os.environ.get("PBT_HYPOTHESIS_EXAMPLES", "500")), deadline=None, database=None)
+@given(st.integers(min_value=0, max_value=4))
+def test_null_pointer(choice):
+    c = Container()
+    if choice == 0:
+        _ = c.value.some_attr
+        raise AssertionError("null dereference")
+
+if __name__ == "__main__":
+    try:
+        test_null_pointer()
+        print("PBT(H): no null pointer detected")
+        sys.exit(0)
+    except (AttributeError, TypeError):
+        print("PBT(H): potential null pointer detected via Hypothesis")
+        sys.exit(1)
+"""
+
+
+def _python_hypothesis_generic(_finding: dict, _snippet: dict) -> str:
+    return r"""import os
+import sys
+from hypothesis import given, settings, strategies as st
+
+@settings(max_examples=int(os.environ.get("PBT_HYPOTHESIS_EXAMPLES", "500")), deadline=None, database=None)
+@given(st.integers(min_value=0, max_value=512))
+def test_generic(idx):
+    sz = 256
+    buf = bytearray(sz + 1)
+    val = buf[idx]
+    if val is None:
+        raise AssertionError("index error")
+
+if __name__ == "__main__":
+    try:
+        test_generic()
+        print("PBT(H): no index error detected")
+        sys.exit(0)
+    except (IndexError, TypeError):
+        print("PBT(H): potential index error detected via Hypothesis")
+        sys.exit(1)
+"""
+
+
+_HYPOTHESIS_TEMPLATES: dict[str, dict[str, Callable]] = {
+    "python": {
+        "buffer-overflow": _python_hypothesis_buffer_overflow,
+        "memory-corruption": _python_hypothesis_buffer_overflow,
+        "nil-pointer": _python_hypothesis_null_pointer,
+        "__default__": _python_hypothesis_generic,
+    },
+}
+
+
 # ── JavaScript fallbacks ──
 
 
@@ -1210,6 +1305,7 @@ def _run_harness(
     timeout: int,
     iterations: int,
     language: str,
+    extra_env: dict[str, str] | None = None,
 ) -> dict:
     result: dict = {
         "run_succeeded": False,
@@ -1228,13 +1324,16 @@ def _run_harness(
     cmd = [part.replace("{bin}", str(target)) for part in rt["run"]]
 
     env = {"PBT_ITERATIONS": str(iterations)}
+    if extra_env:
+        env.update(extra_env)
+    system_path = os.environ.get("PATH", "/usr/bin:/bin")
     run_proc = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         timeout=timeout,
         check=False,
-        env={**env, **{"PATH": "/usr/bin:/bin"}},
+        env={**env, **{"PATH": system_path}},
     )
     result["run_succeeded"] = True
     result["exit_code"] = run_proc.returncode
@@ -1254,45 +1353,42 @@ def _run_harness(
 _SUPPORTED_LANGUAGES = {"c", "cpp", "rust", "go", "python", "javascript", "typescript"}
 
 
-def run_pbt_on_finding(
-    finding: dict,
-    snippet: dict,
-    *,
-    pbt_iterations: int = 500,
-    compile_timeout: int = 30,
-    run_timeout: int = 15,
-    model: str = "",
-    auth: dict[str, str] | None = None,
-    cache: object | None = None,
-    call_llm_func: Callable[..., str] | None = None,
-    enable_llm: bool = True,
-    language: str = "",
-) -> dict:
-    pbt_result: dict = {
-        "pbt_invariant": "",
-        "pbt_harness_source": "",
-        "pbt_compile_succeeded": False,
-        "pbt_compile_error": "",
-        "pbt_run_succeeded": False,
-        "pbt_falsified": False,
-        "pbt_iterations_run": pbt_iterations,
-        "pbt_exit_code": None,
-        "pbt_stdout": "",
-        "pbt_stderr": "",
-        "pbt_skipped": False,
-        "pbt_confidence_boost": 0.0,
-    }
+def _hypothesis_available() -> bool:
+    try:
+        import hypothesis  # noqa: F401
 
+        return True
+    except ImportError:
+        return False
+
+
+def _generate_hypothesis_harness(finding: dict, snippet: dict) -> str:
+    points = finding.get("suspicious_points") or []
+    point = points[0] if points else {}
+    sink = str(point.get("sink_source_type", finding.get("class", "unknown")))
+    lang_templates = _HYPOTHESIS_TEMPLATES.get("python", {})
+    generator = lang_templates.get(
+        sink, lang_templates.get("__default__", _python_hypothesis_generic)
+    )
+    return generator(finding, snippet)
+
+
+def _extract_falsifying_example(text: str) -> str:
+    for line in text.splitlines():
+        if "falsifying example:" in line.lower():
+            return line.strip()
+    return ""
+
+
+def _resolve_pbt_language(pbt_result: dict, snippet: dict, language: str) -> str | None:
     if not snippet.get("content"):
         pbt_result["pbt_skipped"] = True
         pbt_result["pbt_confidence_boost"] = 0.0
-        return pbt_result
-
+        return None
     lang = language or snippet.get("language", "c")
     if lang not in _SUPPORTED_LANGUAGES:
         logger.warning("[PBT] unsupported language '%s', falling back to 'c'", lang)
         lang = "c"
-
     available, msg = _toolchain_available(lang)
     if not available:
         if lang in ("rust",):
@@ -1301,7 +1397,7 @@ def run_pbt_on_finding(
                 lang,
                 msg,
             )
-            available_alt, msg_alt = _toolchain_available("rust_nightly")
+            available_alt, _msg_alt = _toolchain_available("rust_nightly")
             if available_alt:
                 lang = "rust_nightly"
                 available = True
@@ -1311,8 +1407,22 @@ def run_pbt_on_finding(
             )
             pbt_result["pbt_skipped"] = True
             pbt_result["pbt_confidence_boost"] = 0.0
-            return pbt_result
+            return None
+    return lang
 
+
+def _generate_pbt_harness(
+    pbt_result: dict,
+    finding: dict,
+    snippet: dict,
+    *,
+    lang: str,
+    enable_llm: bool,
+    call_llm_func: Callable[..., str] | None,
+    model: str,
+    auth: dict[str, str] | None,
+    cache: object | None,
+) -> None:
     if enable_llm and call_llm_func is not None and model:
         invariant, harness_source, _raw = _call_llm_for_invariant(
             finding,
@@ -1327,7 +1437,6 @@ def run_pbt_on_finding(
         pbt_result["pbt_harness_source"] = harness_source
     else:
         harness_source = ""
-
     if not harness_source.strip():
         harness_source = _generate_fallback_harness(finding, snippet, lang)
         pbt_result["pbt_harness_source"] = harness_source
@@ -1337,7 +1446,59 @@ def run_pbt_on_finding(
                 f"({finding.get('class', 'unknown')})"
             )
 
-    compile_result = _compile_harness(harness_source, compile_timeout, lang)
+
+def run_pbt_on_finding(
+    finding: dict,
+    snippet: dict,
+    *,
+    pbt_iterations: int = 500,
+    compile_timeout: int = 30,
+    run_timeout: int = 15,
+    model: str = "",
+    auth: dict[str, str] | None = None,
+    cache: object | None = None,
+    call_llm_func: Callable[..., str] | None = None,
+    enable_llm: bool = True,
+    language: str = "",
+    enable_hypothesis: bool = True,
+    hypothesis_max_examples: int = 500,
+) -> dict:
+    pbt_result: dict = {
+        "pbt_invariant": "",
+        "pbt_harness_source": "",
+        "pbt_compile_succeeded": False,
+        "pbt_compile_error": "",
+        "pbt_run_succeeded": False,
+        "pbt_falsified": False,
+        "pbt_iterations_run": pbt_iterations,
+        "pbt_exit_code": None,
+        "pbt_stdout": "",
+        "pbt_stderr": "",
+        "pbt_skipped": False,
+        "pbt_confidence_boost": 0.0,
+        "pbt_hypothesis_falsified": False,
+        "pbt_hypothesis_falsifying_example": "",
+    }
+
+    lang = _resolve_pbt_language(pbt_result, snippet, language)
+    if lang is None:
+        return pbt_result
+
+    _generate_pbt_harness(
+        pbt_result,
+        finding,
+        snippet,
+        lang=lang,
+        enable_llm=enable_llm,
+        call_llm_func=call_llm_func,
+        model=model,
+        auth=auth,
+        cache=cache,
+    )
+
+    compile_result = _compile_harness(
+        pbt_result["pbt_harness_source"], compile_timeout, lang
+    )
     pbt_result["pbt_compile_succeeded"] = compile_result["compile_succeeded"]
     pbt_result["pbt_compile_error"] = compile_result["stderr"]
 
@@ -1364,7 +1525,50 @@ def run_pbt_on_finding(
     else:
         pbt_result["pbt_confidence_boost"] = 0.0
 
+    if enable_hypothesis and lang == "python" and _hypothesis_available():
+        _run_hypothesis_on_finding(
+            pbt_result,
+            finding,
+            snippet,
+            compile_timeout=compile_timeout,
+            run_timeout=run_timeout,
+            pbt_iterations=pbt_iterations,
+            hypothesis_max_examples=hypothesis_max_examples,
+        )
+
     return pbt_result
+
+
+def _run_hypothesis_on_finding(
+    pbt_result: dict,
+    finding: dict,
+    snippet: dict,
+    *,
+    compile_timeout: int = 30,
+    run_timeout: int = 15,
+    pbt_iterations: int = 500,
+    hypothesis_max_examples: int = 500,
+) -> None:
+    hyp_source = _generate_hypothesis_harness(finding, snippet)
+    if not hyp_source.strip():
+        return
+    hyp_compile = _compile_harness(hyp_source, compile_timeout, "python")
+    if not hyp_compile["compile_succeeded"]:
+        return
+    hyp_env = {"PBT_HYPOTHESIS_EXAMPLES": str(hypothesis_max_examples)}
+    hyp_result = _run_harness(
+        hyp_compile["binary_path"],
+        timeout=run_timeout,
+        iterations=pbt_iterations,
+        language="python",
+        extra_env=hyp_env,
+    )
+    pbt_result["pbt_hypothesis_falsified"] = hyp_result["vulnerability_observed"]
+    if hyp_result["vulnerability_observed"]:
+        combined_output = f"{hyp_result['stdout']}\n{hyp_result['stderr']}"
+        pbt_result["pbt_hypothesis_falsifying_example"] = _extract_falsifying_example(
+            combined_output
+        )
 
 
 # ── Finding annotation ──
@@ -1378,6 +1582,12 @@ def _annotate_finding_from_pbt(finding: dict, pbt_result: dict) -> float:
     finding["pbt_confidence_boost"] = pbt_boost
     finding["pbt_compile_succeeded"] = pbt_result.get("pbt_compile_succeeded", False)
     finding["pbt_skipped"] = pbt_result.get("pbt_skipped", False)
+    finding["pbt_hypothesis_falsified"] = pbt_result.get(
+        "pbt_hypothesis_falsified", False
+    )
+    finding["pbt_hypothesis_falsifying_example"] = pbt_result.get(
+        "pbt_hypothesis_falsifying_example", ""
+    )
     if pbt_boost != 0.0:
         current_conf = float(finding.get("localization_confidence", 0.0))
         finding["localization_confidence"] = max(
@@ -1404,6 +1614,8 @@ def _append_skipped_findings(
             f["pbt_falsified"] = False
             f["pbt_confidence_boost"] = 0.0
             f["pbt_adjusted_confidence"] = False
+            f["pbt_hypothesis_falsified"] = False
+            f["pbt_hypothesis_falsifying_example"] = ""
             annotated.append(f)
 
 
@@ -1423,6 +1635,8 @@ def run_pbt_on_findings(
     call_llm_func: object = None,
     enable_llm: bool = True,
     max_findings: int = 50,
+    enable_hypothesis: bool = True,
+    hypothesis_max_examples: int = 500,
 ) -> list[dict]:
     valid = [f for f in findings if has_valid_suspicious_points(f)]
     if not valid:
@@ -1451,6 +1665,8 @@ def run_pbt_on_findings(
             cache=cache,
             call_llm_func=call_llm_func,
             enable_llm=enable_llm,
+            enable_hypothesis=enable_hypothesis,
+            hypothesis_max_examples=hypothesis_max_examples,
         )
         pbt_boost = _annotate_finding_from_pbt(finding, pbt_result)
         logger.info(

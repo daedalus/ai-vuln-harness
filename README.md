@@ -59,8 +59,8 @@ Only HUNT and VALIDATE call LLMs — all other stages are deterministic logic.
 The harness builds a corpus of known CVEs to serve as negative examples — the HUNT stage is instructed not to report them as new findings. Three sources feed into the corpus:
 
 1. **Manual corpus** — JSON file passed via `--cve-corpus path/to/cves.json`. Each entry requires a `cve_id` field; `class`, `description`, `file`, `function`, `severity` are optional.
-2. **OSV.dev auto-fetch** — enabled by default. Scans manifest files (`package.json`, `Cargo.toml`, `go.mod`, `requirements.txt`, `Gemfile`, etc.) and raw import statements for dependency names, queries the [OSV.dev batch API](https://osv.dev) for known vulnerabilities, and maps CVE classes to domains via a 31-class taxonomy.
-3. **Git history scan** — enabled by default in git repos. Scans all commits via `git log --all` and all branches via `git branch -a` for CVE references (e.g. `CVE-2024-1234`), extracts the full diff/patch for matching commits, and hydrates entries with `commit_hash`, `commit_message`, `commit_author`, `commit_date`, `branch`, and `diff` fields.
+1. **OSV.dev auto-fetch** — enabled by default. Scans manifest files (`package.json`, `Cargo.toml`, `go.mod`, `requirements.txt`, `Gemfile`, etc.) and raw import statements for dependency names, queries the [OSV.dev batch API](https://osv.dev) for known vulnerabilities, and maps CVE classes to domains via a 31-class taxonomy.
+1. **Git history scan** — enabled by default in git repos. Scans all commits via `git log --all` and all branches via `git branch -a` for CVE references (e.g. `CVE-2024-1234`), extracts the full diff/patch for matching commits, and hydrates entries with `commit_hash`, `commit_message`, `commit_author`, `commit_date`, `branch`, and `diff` fields.
 
 Control with CLI flags:
 

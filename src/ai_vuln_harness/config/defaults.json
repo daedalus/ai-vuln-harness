@@ -35,7 +35,9 @@
     "compile_timeout": 30,
     "run_timeout": 15,
     "max_findings": 50,
-    "enabled_languages": ["c", "cpp", "rust", "go", "python", "javascript", "typescript"]
+    "enabled_languages": ["c", "cpp", "rust", "go", "python", "javascript", "typescript"],
+    "enable_hypothesis": true,
+    "hypothesis_max_examples": 500
   },
   "validate": {
     "enable_z3_verifier": false,

@@ -230,6 +230,7 @@ class TestBuildRunKwargs:
         ns.enable_localization_stage = False
         ns.enable_fuzz_orchestrator = False
         ns.enable_pbt = False
+        ns.pbt_enable_llm = None
         ns.enable_z3_validate = False
         ns.z3_timeout_ms = 50
         ns.enable_exploit_synthesis = False

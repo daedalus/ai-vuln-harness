@@ -10,7 +10,10 @@ from ai_vuln_harness.stages.pbt import (
     _build_pbt_prompt,
     _compile_harness,
     _contains_vuln_signal,
+    _extract_falsifying_example,
     _generate_fallback_harness,
+    _generate_hypothesis_harness,
+    _hypothesis_available,
     _repair_json_output,
     _run_harness,
     _toolchain_available,
@@ -738,6 +741,194 @@ class RunPbtOnFindingsTests(unittest.TestCase):
         }
         result = run_pbt_on_findings(findings, snippet_db, enable_llm=False)
         self.assertEqual(len(result), 3)
+
+
+class HypothesisAvailableTests(unittest.TestCase):
+    def test_hypothesis_is_importable(self):
+        self.assertTrue(_hypothesis_available())
+
+
+class GenerateHypothesisHarnessTests(unittest.TestCase):
+    def test_generate_buffer_overflow(self):
+        finding = {
+            "class": "buffer-overflow",
+            "suspicious_points": [
+                {"sink_source_type": "buffer-overflow", "function": "f"}
+            ],
+        }
+        snippet = {"file": "x.py", "name": "f", "content": "def f(): pass"}
+        harness = _generate_hypothesis_harness(finding, snippet)
+        self.assertIn("hypothesis", harness)
+        self.assertIn("test_buffer_overflow", harness)
+        self.assertIn("PBT(H)", harness)
+
+    def test_generate_null_pointer(self):
+        finding = {
+            "class": "nil-pointer",
+            "suspicious_points": [{"sink_source_type": "nil-pointer", "function": "f"}],
+        }
+        snippet = {"file": "x.py", "name": "f", "content": "def f(): pass"}
+        harness = _generate_hypothesis_harness(finding, snippet)
+        self.assertIn("hypothesis", harness)
+        self.assertIn("test_null_pointer", harness)
+
+    def test_generate_generic_fallback(self):
+        finding = {
+            "class": "unknown",
+            "suspicious_points": [{"sink_source_type": "unknown", "function": "f"}],
+        }
+        snippet = {"file": "x.py", "name": "f", "content": "def f(): pass"}
+        harness = _generate_hypothesis_harness(finding, snippet)
+        self.assertIn("hypothesis", harness)
+        self.assertIn("test_generic", harness)
+
+    def test_hypothesis_harnesses_are_valid_syntax(self):
+        finding = {
+            "class": "buffer-overflow",
+            "suspicious_points": [
+                {"sink_source_type": "buffer-overflow", "function": "f"}
+            ],
+        }
+        snippet = {"file": "x.py", "name": "f", "content": "def f(): pass"}
+        harness = _generate_hypothesis_harness(finding, snippet)
+        compile(harness, "<test>", "exec")
+
+
+class ExtractFalsifyingExampleTests(unittest.TestCase):
+    def test_extract_hypothesis_output(self):
+        text = "some text\nFalsifying example: test_buffer_overflow(write_sz=257)\nmore"
+        self.assertEqual(
+            _extract_falsifying_example(text),
+            "Falsifying example: test_buffer_overflow(write_sz=257)",
+        )
+
+    def test_extract_case_insensitive(self):
+        text = "falsifying example: test(x=1)"
+        self.assertEqual(
+            _extract_falsifying_example(text), "falsifying example: test(x=1)"
+        )
+
+    def test_extract_not_found(self):
+        self.assertEqual(_extract_falsifying_example("no match here"), "")
+
+    def test_extract_empty_string(self):
+        self.assertEqual(_extract_falsifying_example(""), "")
+
+
+@patch("ai_vuln_harness.stages.pbt.subprocess.run")
+class HypothesisRunHarnessTests(unittest.TestCase):
+    def test_hypothesis_run_via_extra_env(self, run_mock):
+        run_mock.return_value = _Proc(
+            returncode=1,
+            stdout="",
+            stderr="Falsifying example: test_buffer_overflow(write_sz=257)",
+        )
+        tmpdir = Path("/tmp")
+        bin_path = tmpdir / "pbt_harness.py"
+        bin_path.write_text("")
+        try:
+            result = _run_harness(
+                str(bin_path),
+                timeout=10,
+                iterations=100,
+                language="python",
+                extra_env={"PBT_HYPOTHESIS_EXAMPLES": "500"},
+            )
+        finally:
+            bin_path.unlink(missing_ok=True)
+        self.assertTrue(result["vulnerability_observed"])
+        self.assertIn("falsifying example", result["stderr"].lower())
+
+    def test_hypothesis_run_clean(self, run_mock):
+        run_mock.return_value = _Proc(returncode=0, stdout="no overflow", stderr="")
+        tmpdir = Path("/tmp")
+        bin_path = tmpdir / "pbt_harness.py"
+        bin_path.write_text("")
+        try:
+            result = _run_harness(
+                str(bin_path),
+                timeout=10,
+                iterations=100,
+                language="python",
+                extra_env={"PBT_HYPOTHESIS_EXAMPLES": "500"},
+            )
+        finally:
+            bin_path.unlink(missing_ok=True)
+        self.assertFalse(result["vulnerability_observed"])
+
+
+@patch("ai_vuln_harness.stages.pbt.subprocess.run")
+class HypothesisPbtIntegrationTests(unittest.TestCase):
+    def test_hypothesis_enabled_field_in_result(self, run_mock):
+        run_mock.return_value = _Proc(returncode=0, stdout="ok", stderr="")
+        finding = {
+            "class": "buffer-overflow",
+            "suspicious_points": [
+                {
+                    "function": "f",
+                    "file": "x.py",
+                    "sink_source_type": "buffer-overflow",
+                    "confidence": 0.5,
+                    "rationale": "x",
+                    "evidence_links": [],
+                }
+            ],
+        }
+        snippet = {
+            "content": "def f(): pass",
+            "file": "x.py",
+            "name": "f",
+            "language": "python",
+        }
+        result = run_pbt_on_finding(
+            finding,
+            snippet,
+            enable_llm=False,
+            language="python",
+            enable_hypothesis=True,
+            hypothesis_max_examples=500,
+        )
+        self.assertIn("pbt_hypothesis_falsified", result)
+        self.assertIn("pbt_hypothesis_falsifying_example", result)
+        self.assertIsInstance(result["pbt_hypothesis_falsified"], bool)
+        self.assertIsInstance(result["pbt_hypothesis_falsifying_example"], str)
+
+    def test_hypothesis_disabled_skips_run(self, run_mock):
+        run_mock.return_value = _Proc(returncode=0, stdout="ok", stderr="")
+        finding = {
+            "class": "buffer-overflow",
+            "suspicious_points": [
+                {
+                    "function": "f",
+                    "file": "x.py",
+                    "sink_source_type": "buffer-overflow",
+                    "confidence": 0.5,
+                    "rationale": "x",
+                    "evidence_links": [],
+                }
+            ],
+        }
+        snippet = {
+            "content": "def f(): pass",
+            "file": "x.py",
+            "name": "f",
+            "language": "python",
+        }
+        result = run_pbt_on_finding(
+            finding,
+            snippet,
+            enable_llm=False,
+            language="python",
+            enable_hypothesis=False,
+        )
+        self.assertFalse(result["pbt_hypothesis_falsified"])
+        self.assertEqual(result["pbt_hypothesis_falsifying_example"], "")
+
+
+class VulnMarkersHypothesisTests(unittest.TestCase):
+    def test_falsifying_example_in_markers(self):
+        markers = _VULN_MARKERS.get("python", ())
+        self.assertIn("falsifying example", markers)
 
 
 if __name__ == "__main__":

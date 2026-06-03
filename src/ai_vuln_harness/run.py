@@ -321,14 +321,17 @@ def _run_pbt_stage(
     run_timeout = int(pbt_cfg.get("run_timeout", 15))
     max_findings = int(pbt_cfg.get("max_findings", 50))
     enable_llm = bool(pbt_cfg.get("enable_llm", False))
+    enable_hypothesis = bool(pbt_cfg.get("enable_hypothesis", True))
+    hypothesis_max_examples = int(pbt_cfg.get("hypothesis_max_examples", 500))
     call_llm_func = call_llm if enable_llm else None
     logger.info(
-        "[PBT] stage: iterations=%d compile_timeout=%d run_timeout=%d max=%d llm=%s",
+        "[PBT] stage: iterations=%d compile_timeout=%d run_timeout=%d max=%d llm=%s hypothesis=%s",
         pbt_iterations,
         compile_timeout,
         run_timeout,
         max_findings,
         enable_llm,
+        enable_hypothesis,
     )
     annotated = run_pbt_on_findings(
         findings,
@@ -342,6 +345,8 @@ def _run_pbt_stage(
         call_llm_func=call_llm_func,
         enable_llm=enable_llm,
         max_findings=max_findings,
+        enable_hypothesis=enable_hypothesis,
+        hypothesis_max_examples=hypothesis_max_examples,
     )
     logger.info("[PBT] annotated %d finding(s)", len(annotated))
     return annotated
@@ -587,6 +592,7 @@ def _apply_runtime_flags(
     enable_fuzz_orchestrator: bool | None,
     enable_pbt: bool | None,
     pbt_enable_llm: bool | None = None,
+    pbt_enable_hypothesis: bool | None = None,
     enable_exploit_synthesis: bool | None = None,
     enable_z3_validate: bool | None = None,
     z3_timeout_ms: int | None = None,
@@ -595,26 +601,24 @@ def _apply_runtime_flags(
         cfg["enable_fuzz_orchestrator"] = bool(enable_fuzz_orchestrator)
         if enable_fuzz_orchestrator:
             cfg["enable_localization_stage"] = True
-        if enable_fuzz_orchestrator and isinstance(cfg.get("fuzz_orchestrator"), dict):
-            cfg["fuzz_orchestrator"]["benchmark_only"] = False
+            if isinstance(cfg.get("fuzz_orchestrator"), dict):
+                cfg["fuzz_orchestrator"]["benchmark_only"] = False
     if enable_pbt is not None:
         cfg["enable_pbt"] = bool(enable_pbt)
         if enable_pbt:
             cfg["enable_localization_stage"] = True
+    pbt_cfg = cfg.setdefault("pbt", {})
     if pbt_enable_llm is not None:
-        pbt_cfg = cfg.setdefault("pbt", {})
-        if isinstance(pbt_cfg, dict):
-            pbt_cfg["enable_llm"] = bool(pbt_enable_llm)
+        pbt_cfg["enable_llm"] = bool(pbt_enable_llm)
+    if pbt_enable_hypothesis is not None:
+        pbt_cfg["enable_hypothesis"] = bool(pbt_enable_hypothesis)
     if enable_exploit_synthesis is not None:
         cfg["enable_exploit_synthesis"] = bool(enable_exploit_synthesis)
+    validate_cfg = cfg.setdefault("validate", {})
     if enable_z3_validate is not None:
-        validate_cfg = cfg.setdefault("validate", {})
-        if isinstance(validate_cfg, dict):
-            validate_cfg["enable_z3_verifier"] = bool(enable_z3_validate)
+        validate_cfg["enable_z3_verifier"] = bool(enable_z3_validate)
     if z3_timeout_ms is not None:
-        validate_cfg = cfg.setdefault("validate", {})
-        if isinstance(validate_cfg, dict):
-            validate_cfg["z3_timeout_ms"] = max(1, int(z3_timeout_ms))
+        validate_cfg["z3_timeout_ms"] = max(1, int(z3_timeout_ms))
     return cfg
 
 

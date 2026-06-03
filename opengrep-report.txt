@@ -1,0 +1,65 @@
+
+
+┌─────────────────┐
+│ 8 Code Findings │
+└─────────────────┘
+
+    src/ai_vuln_harness/skill_loader.py
+   ❯❯❱ python.lang.compatibility.python37.python37-compatibility-importlib2
+          Found 'importlib.resources', which is a module only available on Python 3.7+. This does not work in
+          lower versions, and therefore is not backwards compatible. Use importlib_resources instead for older
+          Python versions.
+          Details: https://sg.run/eL3y
+
+           24┆ from importlib import resources
+
+    src/ai_vuln_harness/stages/cve_fetcher.py
+    ❯❱ python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+          Detected a dynamic value being used with urllib. urllib supports 'file://' schemes, so a dynamic
+          value controlled by a malicious actor may allow them to read arbitrary files. Audit uses of urllib
+          calls to ensure user data cannot control the URLs, or consider using the 'requests' library instead.
+          Details: https://sg.run/dKZZ
+
+          236┆ with urllib.request.urlopen(req, timeout=15) as resp:
+            ⋮┆----------------------------------------
+          270┆ with urllib.request.urlopen(req, timeout=30) as resp:
+
+    src/ai_vuln_harness/stages/runtime.py
+    ❯❱ python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+          Detected a dynamic value being used with urllib. urllib supports 'file://' schemes, so a dynamic
+          value controlled by a malicious actor may allow them to read arbitrary files. Audit uses of urllib
+          calls to ensure user data cannot control the URLs, or consider using the 'requests' library instead.
+          Details: https://sg.run/dKZZ
+
+          181┆ resp = urllib.request.urlopen(req, context=ctx, timeout=15)
+
+    ❯❱ python.lang.security.deserialization.pickle.avoid-pickle
+          Avoid using `pickle`, which is known to lead to code execution vulnerabilities. When unpickling, the
+          serialized data could be manipulated to run arbitrary code. Instead, consider serializing the
+          relevant data as JSON or a similar text-based serialization format.
+          Details: https://sg.run/OPwB
+
+          308┆ raise pickle.UnpicklingError(msg)
+            ⋮┆----------------------------------------
+          313┆ path.write_bytes(pickle.dumps(packs))
+
+    ❯❱ python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+          Detected a dynamic value being used with urllib. urllib supports 'file://' schemes, so a dynamic
+          value controlled by a malicious actor may allow them to read arbitrary files. Audit uses of urllib
+          calls to ensure user data cannot control the URLs, or consider using the 'requests' library instead.
+          Details: https://sg.run/dKZZ
+
+          634┆ resp = urllib.request.urlopen(req, context=ctx, timeout=timeout)
+
+    ❯❱ python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+          Detected a python logger call with a potential hardcoded secret "Got %d completion tokens from %s
+          %s" being logged. This may lead to secret credentials being exposed. Make sure that the logger is
+          not logging  sensitive information.
+          Details: https://sg.run/ydNx
+
+          647┆ log.info(
+          648┆     "Got %d completion tokens from %s %s",
+          649┆     completion_tokens,
+          650┆     provider,
+          651┆     model_name,
+          652┆ )
