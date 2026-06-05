@@ -1,7 +1,7 @@
 # Gap Analysis: ai-vuln-harness vs. Project Glasswing / Claude Mythos / GPT-5.5-Cyber
 
 **Last updated:** 2026-06-05
-**Baseline:** 17-stage pipeline (`src/ai_vuln_harness/`, 2592-line orchestrator, 35 source modules, 57 test files, ~14,168 test lines, ~13,778 source lines)
+**Baseline:** 17-stage pipeline (`src/ai_vuln_harness/`, 2592-line orchestrator, 36 source modules, 58 test files, ~14,552 test lines, ~13,981 source lines)
 **Benchmarks:** Project Glasswing (Anthropic), Claude Mythos Preview, OpenAI GPT-5.5 / GPT-5.5-Cyber (CyberGym score: 0.83)
 **Reference corpus:** [red.anthropic.com](https://red.anthropic.com) — Anthropic Frontier Red Team blog (Jun 2025 – May 2026), [Official System Card](https://www.anthropic.com/research/claude-mythos-preview) (Apr 2026, 6861 lines, authoritative source)
 **Local competitors:** `~/code/audit/` (8-stage Agent SDK), `~/code/mythos-router/` (TypeScript SWD), `~/code/hackcode/` (Rust Ollama REPL), `~/code/defending-code-reference-harness/` (Anthropic reference, 7-stage ASAN pipeline, gVisor sandbox)
@@ -316,7 +316,7 @@ These areas are **explicitly out of scope** for a vulnerability discovery harnes
 | **Live target testing** | `audit/` | `--target-url` + `--target-creds` passes a URL and credentials through every pipeline stage so agents can probe live deployments. The harness validates findings against source code only and runs PoCs in an isolated compilation sandbox. **Impact:** Harness cannot detect runtime-only bugs (race conditions, config-dependent issues, auth bypass) that require interacting with a live system. |
 | **Exponential-backoff retry with error classification** | `audit/` | `audit/runner.py` classifies API errors into `QuotaExhaustedError` (terminal) vs. `TransientAgentError` (retry up to 3× with exponential backoff 30s–240s). The harness has no retry logic — API failures silently produce empty results. **Impact:** Transient failures (529 Overloaded, 5xx) cause false-negative gaps. |
 | **Rich Click-based CLI** | `audit/` | `audit/cli.py` has 4 commands (`auth-check`, `run`, `status`, `report`) with Rich tables, run listing, per-run detail with KPI counts, markdown report rendering. The harness uses argparse with a single `main()` function and no secondary commands. **Impact:** Users must read JSON files directly to inspect results; no `status` command exists for checking run progress. |
-| **Separate prompt files per stage** | `audit/` | `audit/prompts/01-recon.md` through `08-report.md` are separate markdown files. The harness embeds prompts inline as Python string constants (`runtime.py`). **Impact:** Harder to version-control prompt changes independently, harder to audit diff between prompt versions. |
+| **Separate prompt files per stage** | `audit/` | `audit/prompts/01-recon.md` through `08-report.md` are separate markdown files. The harness now also ships prompts in `src/ai_vuln_harness/prompts/` — separate `.md` files (`system.md`, `recon.md`, `hunt.md`, `validate.md`, `report.md`, etc.) loaded at runtime via `_load_prompt()`. Six prompt files are fully aligned with the reference harness's patterns (quality tiers, 5-criteria rubric, XML fallback, 6-section taxonomy). `runtime.py`'s `repair_json_output` handles the string-level JSON fallback for malformed LLM output; `validate.py` additionally has `parse_validate_xml()` as an XML-based parse-error fallback. **Impact:** Addressed — prompt changes can now be version-controlled and diffed independently. |
 | **SWD cryptographic filesystem snapshots** | `mythos-router` | `mythos-router` implements Secure Working Directory — SHA-256 snapshots of every file before and after agent actions, stored as receipts. The harness's POC stage has egress audit but no pre/post filesystem state comparison. **Impact:** Cannot prove that PoC execution did not modify the target repository (false-sense-of-security for read-only validation). |
 | **MCP adapter for tool exposure** | `mythos-router` | `mythos-router` exposes SWD check, integrity verify, and analyze commands via the Model Context Protocol (MCP) stdio server. **Status: ✅ Implemented** — `mcp_server.py` is a FastMCP-based stdio server exposing `scan_repo`, `get_findings`, `get_report`, and `list_run_modes` as MCP tools. `mcp_client.py` provides both a subprocess-based `MCPClient` and an `InProcessMCPClient` for testing. Entry point: `ai-vuln-harness-mcp`. |
 | **100% local execution** | `hackcode` | `hackcode` runs entirely via Ollama with no external API calls. The harness requires network access to OpenRouter or Anthropic API. **Impact:** Harness cannot operate in air-gapped environments without deploying a local inference server and rewriting the model routing layer. |
@@ -551,7 +551,7 @@ The System Card includes a novel per-question automated welfare interview (Secti
 | 🟢 Stretch | Repair turns inside SDK session | Medium |
 | 🟢 Stretch | Exponential-backoff retry with error classification | Low |
 | 🟢 Stretch | Rich Click-based CLI with status/report commands | Low |
-| 🟢 Stretch | Separate prompt files per stage | Low |
+| ✅ Done | Separate prompt files per stage (6/8 `.md` files in `src/ai_vuln_harness/prompts/`) | Low |
 | 🟢 Stretch | Live target testing (`--target-url`) | Medium |
 | 🟢 Stretch | SWD cryptographic filesystem snapshots in POC | Low |
 | ~~🟢 Stretch~~ | ~~MCP adapter for tool exposure~~ | ~~Medium~~ |
