@@ -594,6 +594,7 @@ def _load_prompt(name: str) -> str:
 SYSTEM_PROMPT = _load_prompt("system")
 HUNT_SYSTEM_PROMPT = _load_prompt("hunt")
 VALIDATE_SYSTEM_PROMPT = _load_prompt("validate")
+REPAIR_PROMPT = _load_prompt("repair")
 
 
 def format_prompt(template: str, **kwargs: object) -> str:
@@ -990,3 +991,44 @@ def repair_json_output(raw: str) -> tuple[dict | list | None, bool]:
                     break
 
     return None, False
+
+
+def repair_with_llm(
+    raw: str,
+    model_id: str,
+    *,
+    parse_error: str = "could not parse as valid JSON or XML",
+    max_tokens: int = 4096,
+    timeout: int = 120,
+    auth: dict[str, str] | None = None,
+    cache: JsonCache | None = None,
+) -> str | None:
+    """Try to repair malformed LLM output by calling the same model.
+
+    Sends the malformed output and a parse-error description to the same model
+    that produced it, asking it to fix only the formatting while preserving the
+    semantic assessment.  Returns the corrected raw text, or *None* if the
+    repair call itself fails.
+    """
+    log = logging.getLogger("vuln-harness")
+    repair_prompt = format_prompt(
+        REPAIR_PROMPT,
+        malformed_output=(raw[:3000] + "…" if len(raw) > 3000 else raw),
+        parse_error=parse_error,
+    )
+    log.debug("repair_with_llm: calling model=%s", model_id)
+    try:
+        corrected = call_llm(
+            model_id,
+            repair_prompt,
+            system="",
+            max_tokens=max_tokens,
+            timeout=timeout,
+            auth=auth,
+            cache=cache,
+        )
+        log.debug("repair_with_llm: got %d chars from model", len(corrected))
+        return corrected
+    except Exception as e:
+        log.warning("repair_with_llm: model %s failed: %s", model_id, e)
+        return None

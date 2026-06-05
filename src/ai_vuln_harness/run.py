@@ -74,6 +74,7 @@ from .stages.runtime import (
     load_auth_config,
     load_packs_json,
     repair_json_output,
+    repair_with_llm,
     save_packs_json,
     split_model_pools,
 )
@@ -1009,6 +1010,17 @@ def _run_validate_finding(
         if not parsed:
             parsed = parse_validate_xml(raw)
         if not parsed:
+            corrected = repair_with_llm(
+                raw,
+                model,
+                auth=auth,
+                cache=cache,
+            )
+            if corrected:
+                parsed, _repaired = repair_json_output(corrected)
+                if not parsed:
+                    parsed = parse_validate_xml(corrected)
+        if not parsed:
             parsed = {}
         status = parsed.get("status", "needs-more-info")
         reason = parsed.get("reason", "") or ""
@@ -1061,6 +1073,19 @@ def _run_validate_finding_from_pool(
         parsed, _repaired = repair_json_output(raw)
         if not parsed:
             parsed = parse_validate_xml(raw)
+        if not parsed:
+            repair_model = pool.pick()
+            if repair_model:
+                corrected = repair_with_llm(
+                    raw,
+                    repair_model,
+                    auth=auth,
+                    cache=cache,
+                )
+                if corrected:
+                    parsed, _repaired = repair_json_output(corrected)
+                    if not parsed:
+                        parsed = parse_validate_xml(corrected)
         if not parsed:
             parsed = {}
         status = parsed.get("status", "needs-more-info")

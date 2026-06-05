@@ -80,20 +80,15 @@ def _extract_constraints(
 
 
 class _SolverLike(Protocol):
-    def push(self) -> None:
-        ...
+    def push(self) -> None: ...
 
-    def add(self, *args: object) -> None:
-        ...
+    def add(self, *args: object) -> None: ...
 
-    def check(self) -> object:
-        ...
+    def check(self) -> object: ...
 
-    def reason_unknown(self) -> str:
-        ...
+    def reason_unknown(self) -> str: ...
 
-    def pop(self) -> None:
-        ...
+    def pop(self) -> None: ...
 
 
 def _check_with_assumption(solver: _SolverLike, expr: object) -> tuple[str, str]:
@@ -138,11 +133,17 @@ def verify_validate_feasibility(
     contradiction_hint = z3.Bool("contradiction_hint")
     confidence = z3.Real("confidence")
 
-    solver.add(call_path_reachable == z3.BoolVal(bool(constraints["call_path_reachable"])))
+    solver.add(
+        call_path_reachable == z3.BoolVal(bool(constraints["call_path_reachable"]))
+    )
     solver.add(has_localization == z3.BoolVal(bool(constraints["has_localization"])))
-    solver.add(contradiction_hint == z3.BoolVal(bool(constraints["contradiction_hint"])))
+    solver.add(
+        contradiction_hint == z3.BoolVal(bool(constraints["contradiction_hint"]))
+    )
     if constraints["runtime_observed"] is not None:
-        solver.add(runtime_observed == z3.BoolVal(bool(constraints["runtime_observed"])))
+        solver.add(
+            runtime_observed == z3.BoolVal(bool(constraints["runtime_observed"]))
+        )
     if constraints["confidence"] is None:
         solver.add(confidence >= 0.0, confidence <= 1.0)
     else:

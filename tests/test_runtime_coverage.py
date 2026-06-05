@@ -25,6 +25,7 @@ from ai_vuln_harness.run import (
 from ai_vuln_harness.stages.runtime import (
     HUNT_SYSTEM_PROMPT,
     JsonCache,
+    REPAIR_PROMPT,
     StateDB,
     SYSTEM_PROMPT,
     cache_key,
@@ -32,6 +33,7 @@ from ai_vuln_harness.stages.runtime import (
     fetch_model_limits,
     format_prompt,
     repair_json_output,
+    repair_with_llm,
     split_model_pools,
 )
 
@@ -630,6 +632,148 @@ class RepairJsonOutputTests(unittest.TestCase):
         parsed, repaired = repair_json_output("")
         self.assertIsNone(parsed)
         self.assertFalse(repaired)
+
+
+class RepairWithLlmTests(_MockedCallTests):
+    @patch("ai_vuln_harness.stages.runtime.call_llm")
+    def test_returns_corrected_output(self, mock_call_llm):
+        mock_call_llm.return_value = '{"status": "confirmed", "reason": "repaired"}'
+        result = repair_with_llm(
+            "not json at all garbage here",
+            "openrouter:test:free",
+            auth={"openrouter": "sk-test"},
+        )
+        self.assertEqual(result, '{"status": "confirmed", "reason": "repaired"}')
+
+    @patch("ai_vuln_harness.stages.runtime.call_llm")
+    def test_returns_none_on_model_failure(self, mock_call_llm):
+        mock_call_llm.side_effect = RuntimeError("API error")
+        result = repair_with_llm(
+            "not json at all",
+            "openrouter:test:free",
+            auth={"openrouter": "sk-test"},
+        )
+        self.assertIsNone(result)
+
+    @patch("ai_vuln_harness.stages.runtime.call_llm")
+    def test_repair_prompt_includes_malformed_output(self, mock_call_llm):
+        mock_call_llm.return_value = '{"status": "confirmed"}'
+        malformed = "some broken output {{{"
+        repair_with_llm(
+            malformed,
+            "openrouter:test:free",
+            parse_error="unmatched braces",
+            auth={"openrouter": "sk-test"},
+        )
+        prompt_arg = mock_call_llm.call_args[0][1]
+        self.assertIn(malformed, prompt_arg)
+        self.assertIn("unmatched braces", prompt_arg)
+
+    @patch("ai_vuln_harness.stages.runtime.call_llm")
+    def test_repair_prompt_mentions_expected_format(self, mock_call_llm):
+        mock_call_llm.return_value = '{"status": "confirmed"}'
+        repair_with_llm(
+            "garbage", "openrouter:test:free", auth={"openrouter": "sk-test"}
+        )
+        prompt_arg = mock_call_llm.call_args[0][1]
+        self.assertIn("status", prompt_arg)
+        self.assertIn("PASS|FAIL|N/A", prompt_arg)
+        self.assertIn("validate_result", prompt_arg)
+
+    @patch("ai_vuln_harness.stages.runtime.call_llm")
+    def test_truncates_long_malformed_output(self, mock_call_llm):
+        mock_call_llm.return_value = '{"status": "confirmed"}'
+        long_malformed = "x" * 5000
+        repair_with_llm(
+            long_malformed, "openrouter:test:free", auth={"openrouter": "sk-test"}
+        )
+        prompt_arg = mock_call_llm.call_args[0][1]
+        self.assertLess(len(prompt_arg), 4200)
+        self.assertIn("…", prompt_arg)
+
+
+class RunValidateFindingRepairTests(_MockedCallTests):
+    def test_repair_flow_fixes_malformed_output(self):
+        class FakeResponse:
+            def __init__(self, data):
+                self.data = data
+                self.status = 200
+
+            def read(self):
+                return json.dumps(self.data).encode()
+
+        malformed_call = {
+            "choices": [{"message": {"content": "garbage not json {{{"}}],
+        }
+        repair_call = {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"status": "confirmed", "reason": "repair got it"}',
+                    },
+                },
+            ],
+        }
+
+        finding = {"snippet_id": "s1", "class": "buffer-overflow"}
+        snippet = {
+            "content": "void main() { gets(buf); }",
+            "file": "test.c",
+            "name": "test",
+        }
+
+        with patch(
+            "ai_vuln_harness.stages.runtime.urllib.request.urlopen",
+            side_effect=[FakeResponse(malformed_call), FakeResponse(repair_call)],
+        ):
+            result = run_validate_finding(
+                finding,
+                snippet,
+                "openrouter:test:free",
+                auth={"openrouter": "sk-test"},
+                cache=None,
+            )
+
+        self.assertEqual(result["validate_status"], "confirmed")
+        self.assertEqual(result["validate_reason"], "repair got it")
+
+    def test_repair_flow_falls_through_when_repair_also_fails(self):
+        class FakeResponse:
+            def __init__(self, data):
+                self.data = data
+                self.status = 200
+
+            def read(self):
+                return json.dumps(self.data).encode()
+
+        malformed_call = {
+            "choices": [{"message": {"content": "garbage {{{"}}],
+        }
+        still_bad_call = {
+            "choices": [{"message": {"content": "still garbage {{{"}}],
+        }
+
+        finding = {"snippet_id": "s1", "class": "buffer-overflow"}
+        snippet = {
+            "content": "void main() { gets(buf); }",
+            "file": "test.c",
+            "name": "test",
+        }
+
+        with patch(
+            "ai_vuln_harness.stages.runtime.urllib.request.urlopen",
+            side_effect=[FakeResponse(malformed_call), FakeResponse(still_bad_call)],
+        ):
+            result = run_validate_finding(
+                finding,
+                snippet,
+                "openrouter:test:free",
+                auth={"openrouter": "sk-test"},
+                cache=None,
+            )
+
+        self.assertEqual(result["validate_status"], "needs-more-info")
+        self.assertIn("unparseable", result.get("validate_reason", ""))
 
 
 if __name__ == "__main__":

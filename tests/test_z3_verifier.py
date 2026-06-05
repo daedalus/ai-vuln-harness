@@ -31,7 +31,9 @@ def test_unsat_with_explicit_contradiction():
         "localization_confidence": 0.1,
         "validate_runtime": {"vulnerability_observed": False},
     }
-    status, reason = verify_validate_feasibility(finding, {"content": ""}, timeout_ms=10)
+    status, reason = verify_validate_feasibility(
+        finding, {"content": ""}, timeout_ms=10
+    )
     if z3_verifier.z3 is None:
         assert status == "unknown"
         assert reason == "z3_unavailable"
@@ -48,7 +50,9 @@ def test_sat_with_runtime_observed():
         "localization_confidence": 0.8,
         "validate_runtime": {"vulnerability_observed": True},
     }
-    status, reason = verify_validate_feasibility(finding, {"content": ""}, timeout_ms=10)
+    status, reason = verify_validate_feasibility(
+        finding, {"content": ""}, timeout_ms=10
+    )
     if z3_verifier.z3 is None:
         assert status == "unknown"
         assert reason == "z3_unavailable"
