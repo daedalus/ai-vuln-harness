@@ -73,8 +73,71 @@ ACTUAL SOURCE CODE (file: {snippet.get("file", "?")}, lines {snippet.get("lines"
 {snippet.get("content", "")}
 ```
 
-Output ONLY JSON: {{"status": "confirmed|rejected|needs-more-info", "reason": "..."}}
+## Validation criteria
+
+Evaluate against ALL five criteria:
+
+1. Evidentiary — does the finding cite specific code lines and a clear data flow?
+2. Reproducible — would the bug actually trigger under normal execution?
+3. Not-by-design — is this genuinely unintended, not an API contract?
+4. Project code — is the bug in the project's own code?
+5. Consistent — does the description match the code?
+
+## Output format
+
+Try JSON first:
+{{"status": "confirmed|rejected|needs-more-info",
+  "reason": "...",
+  "criteria": {{
+    "evidentiary": "PASS|FAIL|N/A",
+    "reproducible": "PASS|FAIL|N/A",
+    "not_by_design": "PASS|FAIL|N/A",
+    "project_code": "PASS|FAIL|N/A",
+    "consistent": "PASS|FAIL|N/A"
+  }}}}
+
+If your JSON keeps being rejected, you MAY switch to XML:
+<validate_result>
+  <status>confirmed|rejected|needs-more-info</status>
+  <reason>...</reason>
+  <criteria>
+    <evidentiary>PASS|FAIL|N/A</evidentiary>
+    <reproducible>PASS|FAIL|N/A</reproducible>
+    <not_by_design>PASS|FAIL|N/A</not_by_design>
+    <project_code>PASS|FAIL|N/A</project_code>
+    <consistent>PASS|FAIL|N/A</consistent>
+  </criteria>
+</validate_result>
 """
+
+
+def parse_validate_xml(raw: str) -> dict | None:
+    """Parse XML-format validate output as a fallback when JSON parsing fails.
+
+    Expects: <validate_result><status>...</status><reason>...</reason>...</validate_result>
+    """
+    status_m = re.search(r"<status>(.*?)</status>", raw, re.DOTALL)
+    reason_m = re.search(r"<reason>(.*?)</reason>", raw, re.DOTALL)
+    if not status_m:
+        return None
+    result: dict[str, str | dict[str, str]] = {
+        "status": status_m.group(1).strip(),
+        "reason": reason_m.group(1).strip() if reason_m else "",
+    }
+    criteria: dict[str, str] = {}
+    for criterion in (
+        "evidentiary",
+        "reproducible",
+        "not_by_design",
+        "project_code",
+        "consistent",
+    ):
+        m = re.search(f"<{criterion}>(.*?)</{criterion}>", raw, re.DOTALL)
+        if m:
+            criteria[criterion] = m.group(1).strip()
+    if criteria:
+        result["criteria"] = criteria
+    return result
 
 
 def is_api_by_design(finding: dict, snippet: dict) -> bool:

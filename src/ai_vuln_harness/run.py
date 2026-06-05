@@ -60,6 +60,7 @@ from .stages.recon import build_recon_tasks
 from .stages.report import build_report, deduplicate
 from .stages.runtime import (
     HUNT_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
     VALIDATE_SYSTEM_PROMPT,
     JsonCache,
     ModelPool,
@@ -68,6 +69,7 @@ from .stages.runtime import (
     call_llm,
     call_llm_from_pool,
     fetch_model_limits,
+    format_prompt,
     health_check_models,
     load_auth_config,
     load_packs_json,
@@ -84,11 +86,27 @@ from .stages.shield import (
     filter_unreachable,
 )
 from .stages.suppressions import SuppressionRegistry
-from .stages.validate import build_validate_prompt, is_api_by_design
+from .stages.validate import build_validate_prompt, is_api_by_design, parse_validate_xml
 from .stages.voting import merge_hunter_outputs
 from .stages.z3_verifier import verify_validate_feasibility
 
 logger = logging.getLogger("vuln-harness")
+
+_DEFAULT_ENGAGEMENT = (
+    "Authorized defensive security assessment on an open-source target. "
+    "Findings are collected for responsible disclosure to the upstream maintainer."
+)
+
+_FULL_HUNT_SYSTEM = (
+    format_prompt(SYSTEM_PROMPT, engagement_context=_DEFAULT_ENGAGEMENT)
+    + "\n\n"
+    + HUNT_SYSTEM_PROMPT
+)
+_FULL_VALIDATE_SYSTEM = (
+    format_prompt(SYSTEM_PROMPT, engagement_context=_DEFAULT_ENGAGEMENT)
+    + "\n\n"
+    + VALIDATE_SYSTEM_PROMPT
+)
 
 
 def _ingest_snippets(
@@ -788,7 +806,7 @@ def _run_one_hunt_pack(
         raw = call_llm(
             model,
             prompt,
-            system=HUNT_SYSTEM_PROMPT,
+            system=_FULL_HUNT_SYSTEM,
             auth=auth,
             cache=cache,
         )
@@ -838,7 +856,7 @@ def _run_one_hunt_pack_from_pool(
         raw = call_llm_from_pool(
             pool,
             prompt,
-            system=HUNT_SYSTEM_PROMPT,
+            system=_FULL_HUNT_SYSTEM,
             auth=auth,
             cache=cache,
         )
@@ -983,11 +1001,13 @@ def _run_validate_finding(
         raw = call_llm(
             model,
             prompt,
-            system=VALIDATE_SYSTEM_PROMPT,
+            system=_FULL_VALIDATE_SYSTEM,
             auth=auth,
             cache=cache,
         )
         parsed, _repaired = repair_json_output(raw)
+        if not parsed:
+            parsed = parse_validate_xml(raw)
         if not parsed:
             parsed = {}
         status = parsed.get("status", "needs-more-info")
@@ -1034,11 +1054,13 @@ def _run_validate_finding_from_pool(
         raw = call_llm_from_pool(
             pool,
             prompt,
-            system=VALIDATE_SYSTEM_PROMPT,
+            system=_FULL_VALIDATE_SYSTEM,
             auth=auth,
             cache=cache,
         )
         parsed, _repaired = repair_json_output(raw)
+        if not parsed:
+            parsed = parse_validate_xml(raw)
         if not parsed:
             parsed = {}
         status = parsed.get("status", "needs-more-info")

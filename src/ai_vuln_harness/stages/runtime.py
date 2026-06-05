@@ -591,8 +591,19 @@ def _load_prompt(name: str) -> str:
     return (_PROMPT_DIR / f"{name}.md").read_text(encoding="utf-8").strip()
 
 
+SYSTEM_PROMPT = _load_prompt("system")
 HUNT_SYSTEM_PROMPT = _load_prompt("hunt")
 VALIDATE_SYSTEM_PROMPT = _load_prompt("validate")
+
+
+def format_prompt(template: str, **kwargs: object) -> str:
+    """Format a prompt template with the given keyword arguments.
+
+    Safely handles missing keys by leaving them as-is rather than raising.
+    """
+    return _re.sub(
+        r"\{(\w+)\}", lambda m: str(kwargs.get(m.group(1), m.group(0))), template
+    )
 
 
 def _get_auth_key(provider: str, auth: dict | None = None) -> str | None:

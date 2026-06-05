@@ -16,6 +16,7 @@ from ai_vuln_harness.run import (
     _run_one_hunt_pack as run_hunt_pack,
 )
 from ai_vuln_harness.run import (
+    _FULL_HUNT_SYSTEM,
     _run_validate_finding as run_validate_finding,
 )
 from ai_vuln_harness.run import (
@@ -25,9 +26,11 @@ from ai_vuln_harness.stages.runtime import (
     HUNT_SYSTEM_PROMPT,
     JsonCache,
     StateDB,
+    SYSTEM_PROMPT,
     cache_key,
     call_llm,
     fetch_model_limits,
+    format_prompt,
     repair_json_output,
     split_model_pools,
 )
@@ -521,6 +524,42 @@ class RunValidateFindingTests(_MockedCallTests):
         self.assertEqual(result["validate_status"], "needs-more-info")
         self.assertIn("unparseable", result.get("validate_reason", ""))
 
+    def test_run_validate_finding_xml_fallback(self):
+        validate_output = """<validate_result><status>confirmed</status><reason>xml fallback works</reason></validate_result>"""
+
+        mock_response = {
+            "choices": [{"message": {"content": validate_output}}],
+        }
+
+        class FakeResponse:
+            def read(self):
+                return json.dumps(mock_response).encode()
+
+            def __init__(self):
+                self.status = 200
+
+        finding = {"snippet_id": "s1", "class": "buffer-overflow"}
+        snippet = {
+            "content": "void main() { gets(buf); }",
+            "file": "test.c",
+            "name": "test",
+        }
+
+        with patch(
+            "ai_vuln_harness.stages.runtime.urllib.request.urlopen",
+            return_value=FakeResponse(),
+        ):
+            result = run_validate_finding(
+                finding,
+                snippet,
+                "openrouter:test:free",
+                auth={"openrouter": "sk-test"},
+                cache=None,
+            )
+
+        self.assertEqual(result["validate_status"], "confirmed")
+        self.assertEqual(result["validate_reason"], "xml fallback works")
+
 
 class RunValidateAllTests(unittest.TestCase):
     def test_run_validate_all_empty(self):
@@ -554,7 +593,7 @@ class RunHuntPackCacheTests(_MockedCallTests):
         prompt = json.dumps(pack, indent=2)
         import hashlib
 
-        ck = f"llm:openrouter:test:free:{hashlib.sha256((prompt + HUNT_SYSTEM_PROMPT).encode()).hexdigest()[:12]}"
+        ck = f"llm:openrouter:test:free:{hashlib.sha256((prompt + _FULL_HUNT_SYSTEM).encode()).hexdigest()[:12]}"
         cache.data[ck] = '{"snippet_id": "s1", "class": "uaf"}\n{"done": true}'
 
         findings, gaps = run_hunt_pack(
