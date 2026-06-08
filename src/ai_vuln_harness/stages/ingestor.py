@@ -31,9 +31,10 @@ for library targets: detect actual I/O syscall wrappers (``read()``, ``recv()``,
 from __future__ import annotations
 
 import hashlib
+import importlib
 import re
 from collections import defaultdict
-from collections.abc import Iterator  # noqa: TC003
+from collections.abc import Callable, Iterator  # noqa: TC003
 from pathlib import Path, PurePosixPath
 
 from ai_vuln_harness.cache import get_cache, is_cache_miss
@@ -66,8 +67,61 @@ _INPUT_SYSCALLS = (
     "http",
     "socket",
 )
-_SUPPORTED_EXTENSIONS = {".c", ".cc", ".cpp", ".go", ".h", ".js", ".py", ".rs", ".ts"}
-_CST_EXTENSIONS = {".c", ".h"}
+_SUPPORTED_EXTENSIONS = {
+    ".c",
+    ".cc",
+    ".cpp",
+    ".go",
+    ".h",
+    ".java",
+    ".js",
+    ".py",
+    ".rs",
+    ".ts",
+}
+
+_LANGUAGE_CST_CONFIG: dict[str, dict] = {
+    "c": {
+        "function_types": {"function_definition"},
+        "module": "tree_sitter_c",
+        "attr": "language",
+    },
+    "cpp": {
+        "function_types": {"function_definition"},
+        "module": "tree_sitter_cpp",
+        "attr": "language",
+    },
+    "rust": {
+        "function_types": {"function_item"},
+        "module": "tree_sitter_rust",
+        "attr": "language",
+    },
+    "go": {
+        "function_types": {"function_declaration", "method_declaration"},
+        "module": "tree_sitter_go",
+        "attr": "language",
+    },
+    "python": {
+        "function_types": {"function_definition"},
+        "module": "tree_sitter_python",
+        "attr": "language",
+    },
+    "javascript": {
+        "function_types": {"function_declaration", "method_definition"},
+        "module": "tree_sitter_javascript",
+        "attr": "language",
+    },
+    "typescript": {
+        "function_types": {"function_declaration", "method_definition"},
+        "module": "tree_sitter_typescript",
+        "attr": "language",
+    },
+    "java": {
+        "function_types": {"method_declaration"},
+        "module": "tree_sitter_java",
+        "attr": "language",
+    },
+}
 _IMPORT_C_RE = re.compile(r'^\s*#\s*include\s*[<"]([^">]+)[">]', re.MULTILINE)
 _IMPORT_PY_RE = re.compile(
     r"^\s*(?:from\s+([A-Za-z0-9_\.]+)\s+import|import\s+([A-Za-z0-9_\.]+))",
@@ -81,6 +135,57 @@ _REQUIRE_JS_RE = re.compile(r'require\(\s*[\'"]([^\'"]+)[\'"]\s*\)')
 _IMPORT_GO_RE = re.compile(r'^\s*import\s+(?:\(\s*)?(".*?"|`.*?`)', re.MULTILINE)
 _IMPORT_GO_BLOCK_RE = re.compile(r"^\s*import\s*\((.*?)\)", re.MULTILINE | re.DOTALL)
 _IMPORT_RUST_RE = re.compile(r"^\s*use\s+([A-Za-z0-9_:]+)", re.MULTILINE)
+_IMPORT_JAVA_RE = re.compile(
+    r"^\s*import\s+(?:static\s+)?([A-Za-z0-9_.*]+)\s*;", re.MULTILINE
+)
+
+
+def _import_handler_c_cpp(text: str) -> list[str]:
+    return list(_IMPORT_C_RE.findall(text))
+
+
+def _import_handler_python(text: str) -> list[str]:
+    result: list[str] = []
+    for left, right in _IMPORT_PY_RE.findall(text):
+        result.append(left or right)
+    return result
+
+
+def _import_handler_js_ts(text: str) -> list[str]:
+    result: list[str] = []
+    for left, right in _IMPORT_JS_RE.findall(text):
+        result.append(left or right)
+    result.extend(_REQUIRE_JS_RE.findall(text))
+    return result
+
+
+def _import_handler_go(text: str) -> list[str]:
+    result: list[str] = []
+    for token in _IMPORT_GO_RE.findall(text):
+        result.append(token.strip('"`'))
+    for block in _IMPORT_GO_BLOCK_RE.findall(text):
+        result.extend(m.group(1) for m in re.finditer(r'"([^"]+)"', block))
+    return result
+
+
+def _import_handler_rust(text: str) -> list[str]:
+    return list(_IMPORT_RUST_RE.findall(text))
+
+
+def _import_handler_java(text: str) -> list[str]:
+    return list(_IMPORT_JAVA_RE.findall(text))
+
+
+_IMPORT_DISPATCH: dict[str, Callable[[str], list[str]]] = {
+    "c": _import_handler_c_cpp,
+    "cpp": _import_handler_c_cpp,
+    "python": _import_handler_python,
+    "javascript": _import_handler_js_ts,
+    "typescript": _import_handler_js_ts,
+    "go": _import_handler_go,
+    "rust": _import_handler_rust,
+    "java": _import_handler_java,
+}
 _FUNC_NAME_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _CONTROL_FLOW = {"if", "for", "while", "switch", "return", "sizeof"}
 _FUNC_PATTERNS = {
@@ -256,7 +361,8 @@ def _extract_path_snippets(
     if cached is not None:
         return cached
 
-    if path.suffix.lower() in _CST_EXTENSIONS:
+    language = _detect_language(path)
+    if language in _LANGUAGE_CST_CONFIG:
         snippets = _extract_cst_snippets(
             path,
             repo,
@@ -293,16 +399,22 @@ def _extract_cst_snippets(
     text: str,
     is_library_target: bool = True,
 ) -> list[dict]:
-    parser = _make_c_parser()
+    language = _detect_language(path)
+    config = _LANGUAGE_CST_CONFIG.get(language)
+    if config is None:
+        return []
+
+    parser = _make_parser(config)
     if parser is None:
         return []
 
     tree = parser.parse(text.encode("utf-8"))
     relative = str(path.relative_to(repo))
-    imports = _extract_imports(text, language=_detect_language(path))
+    imports = _extract_imports(text, language=language)
+    func_types: set[str] = config["function_types"]
     snippets: list[dict] = []
     for node in _iter_nodes(tree.root_node):
-        if getattr(node, "type", None) != "function_definition":
+        if getattr(node, "type", None) not in func_types:
             continue
         name = _get_function_name(node)
         if not name:
@@ -311,7 +423,7 @@ def _extract_cst_snippets(
         snippet = {
             "id": _make_snippet_id(relative, name, node.start_point[0] + 1),
             "file": relative,
-            "language": _detect_language(path),
+            "language": language,
             "kind": "function",
             "name": name,
             "lines": [node.start_point[0] + 1, node.end_point[0] + 1],
@@ -369,6 +481,7 @@ def _detect_language(path: Path) -> str:
         ".cpp": "cpp",
         ".go": "go",
         ".h": "c",
+        ".java": "java",
         ".js": "javascript",
         ".py": "python",
         ".rs": "rust",
@@ -427,24 +540,10 @@ def _extract_regex_function_snippets(
 
 
 def _extract_imports(text: str, language: str = "text") -> list[str]:
-    imports: list[str] = []
-    if language in {"c", "cpp"}:
-        imports.extend(_IMPORT_C_RE.findall(text))
-    if language == "python":
-        for left, right in _IMPORT_PY_RE.findall(text):
-            imports.append(left or right)
-    if language in {"javascript", "typescript"}:
-        for left, right in _IMPORT_JS_RE.findall(text):
-            imports.append(left or right)
-        imports.extend(_REQUIRE_JS_RE.findall(text))
-    if language == "go":
-        for token in _IMPORT_GO_RE.findall(text):
-            imports.append(token.strip('"`'))
-        for block in _IMPORT_GO_BLOCK_RE.findall(text):
-            imports.extend(m.group(1) for m in re.finditer(r'"([^"]+)"', block))
-    if language == "rust":
-        imports.extend(_IMPORT_RUST_RE.findall(text))
-    return sorted(dict.fromkeys(i for i in imports if i))
+    handler = _IMPORT_DISPATCH.get(language)
+    if handler is None:
+        return []
+    return sorted(dict.fromkeys(i for i in handler(text) if i))
 
 
 def _extract_callees(body: str, func_name: str = "") -> list[str]:
@@ -478,15 +577,23 @@ def _make_snippet_id(file: str, name: str, line: int) -> str:
     return f"sha256:{digest[:6]}:{digest[-6:]}"
 
 
-def _make_c_parser() -> object | None:
+def _make_parser(config: dict) -> object | None:
     try:
         from tree_sitter import Language, Parser
-        from tree_sitter_c import language as c_language
     except ImportError:
         return None
+    try:
+        mod = importlib.import_module(config["module"])
+        lang_func = getattr(mod, config["attr"])
+    except (ImportError, AttributeError):
+        return None
     parser = Parser()
-    parser.language = Language(c_language())
+    parser.language = Language(lang_func())
     return parser
+
+
+def _make_c_parser() -> object | None:
+    return _make_parser(_LANGUAGE_CST_CONFIG.get("c", {}))
 
 
 def _iter_nodes(node: object) -> Iterator[object]:

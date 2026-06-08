@@ -80,15 +80,15 @@ def _extract_constraints(
 
 
 class _SolverLike(Protocol):
-    def push(self) -> None: ...
+    def push(self) -> None: ...  # noqa: E704
 
-    def add(self, *args: object) -> None: ...
+    def add(self, *args: object) -> None: ...  # noqa: E704
 
-    def check(self) -> object: ...
+    def check(self) -> object: ...  # noqa: E704
 
-    def reason_unknown(self) -> str: ...
+    def reason_unknown(self) -> str: ...  # noqa: E704
 
-    def pop(self) -> None: ...
+    def pop(self) -> None: ...  # noqa: E704
 
 
 def _check_with_assumption(solver: _SolverLike, expr: object) -> tuple[str, str]:

@@ -30,6 +30,17 @@ test = [
 sandbox = [
     "llm-sandbox[mcp-docker]",
 ]
+cst = [
+    "tree-sitter>=0.25",
+    "tree-sitter-c>=0.25",
+    "tree-sitter-cpp>=0.25",
+    "tree-sitter-go>=0.25",
+    "tree-sitter-java>=0.25",
+    "tree-sitter-javascript>=0.25",
+    "tree-sitter-python>=0.25",
+    "tree-sitter-rust>=0.25",
+    "tree-sitter-typescript>=0.25",
+]
 lint = [
     "prospector[with_ruff,with_mypy]",
     "semgrep",
