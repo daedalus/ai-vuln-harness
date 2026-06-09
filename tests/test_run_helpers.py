@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pickle
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -336,8 +337,8 @@ class TestIngestSnippets:
     def test_reingest_from_cache(self, tmp_path: Path):
         output = tmp_path / "output"
         output.mkdir()
-        (output / "snippet_db.json").write_text(
-            json.dumps({"s1": {"id": "s1", "file": "a.c"}})
+        (output / "snippet_db.pkl").write_bytes(
+            pickle.dumps({"s1": {"id": "s1", "file": "a.c"}})
         )
         snippets, snippet_db = _ingest_snippets(
             Path("/fake-repo"), output, True, {"is_library_target": False}
@@ -345,11 +346,11 @@ class TestIngestSnippets:
         assert len(snippets) == 1
         assert snippets[0]["id"] == "s1"
 
-    def test_reingest_list_to_dict(self, tmp_path: Path):
+    def test_reingest_from_cache_populates_db(self, tmp_path: Path):
         output = tmp_path / "output"
         output.mkdir()
-        (output / "snippet_db.json").write_text(
-            json.dumps([{"id": "s1", "file": "a.c"}])
+        (output / "snippet_db.pkl").write_bytes(
+            pickle.dumps({"s1": {"id": "s1", "file": "a.c"}})
         )
         snippets, snippet_db = _ingest_snippets(
             Path("/fake-repo"), output, True, {"is_library_target": False}
