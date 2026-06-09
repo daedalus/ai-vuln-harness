@@ -27,9 +27,9 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
-import pickle
 import logging
 import os
+import pickle
 import sys
 import time
 from collections import Counter
@@ -1923,7 +1923,9 @@ def run(  # noqa: PLR0913
     snippets = _apply_diff_filter(mode, base_commit, repo, snippets, head_commit, state)
 
     if not target_mode:
-        snippets = _apply_diff_filter(mode, base_commit, repo, snippets, head_commit, state)
+        snippets = _apply_diff_filter(
+            mode, base_commit, repo, snippets, head_commit, state
+        )
 
     model_chain = _resolve_model_chain(
         model_chain_override,
@@ -2284,6 +2286,7 @@ def run_all(  # noqa: PLR0913
     no_fetch_cves: bool = False,
     no_scan_git_cves: bool = False,
     no_cache: bool = False,
+    target_mode: bool = False,
 ) -> dict:
     reports: list[dict] = []
     for mode in _SINGLE_MODES:
@@ -2328,6 +2331,7 @@ def run_all(  # noqa: PLR0913
             no_fetch_cves=no_fetch_cves,
             no_scan_git_cves=no_scan_git_cves,
             no_cache=no_cache,
+            target_mode=target_mode,
         )
         report["mode_run"] = mode
         reports.append(report)
@@ -2636,7 +2640,9 @@ def main() -> None:
 
     _warn_if_no_auth(mode, args.auth_json)
 
-    log_parent = Path(repo_path).resolve().parent if Path(repo_path).is_absolute() else None
+    log_parent = (
+        Path(repo_path).resolve().parent if Path(repo_path).is_absolute() else None
+    )
     _setup_logging(
         log_file=args.log_file,
         log_dir=None if args.log_file else log_parent,
