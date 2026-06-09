@@ -252,7 +252,7 @@ def _osv_query(pkg_name: str, ecosystem: str) -> list[dict]:
     vulns: list[dict] = []
     for entry in results:
         for v in (
-            entry.get("vulns")
+            entry.get("vulns") or []
             if isinstance(entry, dict)
             else entry
             if isinstance(entry, list)
@@ -292,7 +292,7 @@ def _osv_batch_query(
         name, eco = queries[i]
         vulns = []
         for v in (
-            entry.get("vulns")
+            entry.get("vulns") or []
             if isinstance(entry, dict)
             else entry
             if isinstance(entry, list)

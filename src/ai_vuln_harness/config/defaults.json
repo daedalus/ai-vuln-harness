@@ -7,7 +7,7 @@
   "enable_pbt": false,
   "sync_default": true,
   "max_workers": 3,
-  "cache_file": "output/cache.json",
+  "cache_file": "output/cache.pkl",
   "state_db": "output/state.db",
   "suppressions_file": "output/suppressions.json",
   "entry_points": ["ssh_main", "sshd_main", "main", "sftp_server_main", "ssh_agent_main", "ssh_keygen_main", "ssh_keyscan_main", "ssh_keysign_main", "ssh_pkcs11_helper_main"],

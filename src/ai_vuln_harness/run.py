@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import pickle
 import logging
 import os
 import sys
@@ -66,6 +67,7 @@ from .stages.runtime import (
     ModelPool,
     StateDB,
     _rephrase_gap_prompt,
+    cache_key,
     call_llm,
     call_llm_from_pool,
     fetch_model_limits,
@@ -116,11 +118,9 @@ def _ingest_snippets(
     reingest: bool,
     cfg: dict,
 ) -> tuple[list[dict], dict]:
-    snippet_db_path = output_dir / "snippet_db.json"
+    snippet_db_path = output_dir / "snippet_db.pkl"
     if reingest and snippet_db_path.exists():
-        snippet_db = json.loads(snippet_db_path.read_text())
-        if isinstance(snippet_db, list):
-            snippet_db = {s["id"]: s for s in snippet_db}
+        snippet_db = pickle.loads(snippet_db_path.read_bytes())
         snippets = list(snippet_db.values())
     else:
         raw_snippets = load_repo_snippets(
@@ -137,7 +137,7 @@ def _ingest_snippets(
                 | set(tag_snippet(s, is_library_target=cfg["is_library_target"])),
             )
         snippet_db = {s["id"]: s for s in snippets}
-        snippet_db_path.write_text(json.dumps(snippet_db, indent=2))
+        snippet_db_path.write_bytes(pickle.dumps(snippet_db))
     return snippets, snippet_db
 
 
@@ -796,12 +796,15 @@ def _run_one_hunt_pack(
 ) -> tuple[list[dict], list[dict]]:
     prompt = pack.get("prompt") or json.dumps(pack, indent=2)
     tc_sum = sum(s.get("token_count", 0) for s in pack.get("snippets", []))
+    ck = cache_key("llm", model, prompt + _FULL_HUNT_SYSTEM) if cache else None
+    cache_status = "HIT" if ck and cache and cache.get(ck) is not None else "MISS"
     logger.info(
-        "hunt pack %s model=%s token_count_sum=%d prompt_chars=%d",
+        "hunt pack %s model=%s token_count_sum=%d prompt_chars=%d cache=%s",
         pack.get("agent", "?"),
         model,
         tc_sum,
         len(prompt),
+        cache_status,
     )
     try:
         raw = call_llm(
@@ -1880,6 +1883,7 @@ def run(  # noqa: PLR0913
     no_fetch_cves: bool = False,
     no_scan_git_cves: bool = False,
     no_cache: bool = False,
+    target_mode: bool = False,
 ) -> dict:
     pkg_dir = Path(__file__).parent
     work_dir = Path.cwd()
@@ -1918,6 +1922,9 @@ def run(  # noqa: PLR0913
     snippets, snippet_db = _ingest_snippets(repo, output_dir, reingest, cfg)
     snippets = _apply_diff_filter(mode, base_commit, repo, snippets, head_commit, state)
 
+    if not target_mode:
+        snippets = _apply_diff_filter(mode, base_commit, repo, snippets, head_commit, state)
+
     model_chain = _resolve_model_chain(
         model_chain_override,
         skip_health,
@@ -1935,7 +1942,7 @@ def run(  # noqa: PLR0913
         scope_notes=scope_notes,
     )
     state.put_meta("recon_task_count", str(len(recon_tasks)))
-    _persist_jsonl(output_dir / "recon_tasks.json", recon_tasks)
+    save_packs_json(recon_tasks, output_dir / "recon_tasks.pkl")
 
     packs = _build_coordinator_packs(
         snippets,
@@ -1951,7 +1958,7 @@ def run(  # noqa: PLR0913
     )
     state.put_meta("pack_count", str(len(packs)))
     domain_map = _build_domain_map(packs)
-    _persist_jsonl(output_dir / "context_packs.json", packs)
+    save_packs_json(packs, output_dir / "context_packs.pkl")
 
     hunt_models, validate_models, model_pool = _resolve_pools(
         model_chain,
@@ -2407,7 +2414,7 @@ def _run_health_check(model_override: list[str] | None, auth_json: Path | None) 
 
     pkg_dir = Path(__file__).parent
     auth = load_auth_config(explicit_path=auth_json, script_dir=pkg_dir)
-    cache = JsonCache(Path.cwd() / "output/cache.json")
+    cache = JsonCache(Path.cwd() / "output/cache.pkl")
     model_chain = model_override or []
     model_limits = fetch_model_limits(model_chain, pkg_dir)
     all_models = list(model_limits.keys()) if model_limits else model_chain
@@ -2428,7 +2435,7 @@ def _run_health_check(model_override: list[str] | None, auth_json: Path | None) 
     }
 
 
-def _build_run_kwargs(args: argparse.Namespace) -> dict:
+def _build_run_kwargs(args: argparse.Namespace, *, target_mode: bool = False) -> dict:
     return {
         "auth_path": args.auth_json,
         "kl_threshold": args.kl_threshold,
@@ -2458,12 +2465,13 @@ def _build_run_kwargs(args: argparse.Namespace) -> dict:
         "enable_z3_validate": args.enable_z3_validate,
         "z3_timeout_ms": args.z3_timeout_ms,
         "cve_corpus": args.cve_corpus,
-        "no_fetch_cves": args.no_fetch_cves,
-        "no_scan_git_cves": args.no_scan_git_cves,
+        "no_fetch_cves": args.no_fetch_cves or target_mode,
+        "no_scan_git_cves": args.no_scan_git_cves or target_mode,
         "no_cache": args.no_cache,
         "sandbox": args.sandbox,
         "sandbox_backend": args.sandbox_backend,
         "sandbox_compile": args.sandbox_compile,
+        "target_mode": target_mode,
     }
 
 
@@ -2485,13 +2493,26 @@ def main() -> None:
         ],
         default="full",
     )
-    parser.add_argument("--repo", required=True)
+    parser.add_argument("--repo", type=str, default=None)
+    parser.add_argument(
+        "--target",
+        type=str,
+        default=None,
+        help="Scan a directory of files directly (ignores git structure). Alternative to --repo.",
+    )
     parser.add_argument("--allow-full-db-fallback", action="store_true")
     parser.add_argument("--auth-json", type=Path, default=None)
     parser.add_argument("--kl-threshold", type=float, default=5.0)
     parser.add_argument("--cosine-threshold", type=float, default=0.85)
     parser.add_argument("--base-commit", type=str, default=None)
     parser.add_argument("--head-commit", type=str, default="HEAD")
+    parser.add_argument(
+        "--repo-head",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Limit scan to last N+1 commits: 0=HEAD only, 1=HEAD~1..HEAD, etc. Overrides --base-commit.",
+    )
     parser.add_argument("--max-cost-usd", type=float, default=None)
     parser.add_argument("--max-concurrency", type=int, default=None)
     parser.add_argument("--max-run", type=int, default=None)
@@ -2601,27 +2622,37 @@ def main() -> None:
 
     _setup_proxy(args.proxy)
 
+    if args.repo_head is not None:
+        args.base_commit = f"HEAD~{args.repo_head + 1}"
+        args.head_commit = "HEAD"
+
     mode = "poc-only" if args.poc_only else args.mode
+
+    repo_path = args.repo or args.target
+    if not repo_path:
+        parser.error("one of --repo or --target is required")
+    if args.repo and args.target:
+        parser.error("--repo and --target are mutually exclusive")
 
     _warn_if_no_auth(mode, args.auth_json)
 
+    log_parent = Path(repo_path).resolve().parent if Path(repo_path).is_absolute() else None
     _setup_logging(
         log_file=args.log_file,
-        log_dir=None
-        if args.log_file
-        else (Path(args.repo).parent if Path(args.repo).is_absolute() else None),
+        log_dir=None if args.log_file else log_parent,
     )
 
     if args.model_health_check:
         _run_health_check(args.model_override, args.auth_json)
         return
 
-    kwargs = _build_run_kwargs(args)
+    kwargs = _build_run_kwargs(args, target_mode=bool(args.target))
+    repo = Path(repo_path)
     if mode == "all":
-        run_all(Path(args.repo), **kwargs)
+        run_all(repo, **kwargs)
     elif mode == "benchmark":
         run_benchmark_gate(
-            Path(args.repo),
+            repo,
             benchmark_corpus=args.benchmark_corpus,
             benchmark_baseline=args.benchmark_baseline,
             benchmark_thresholds=args.benchmark_thresholds,
@@ -2632,7 +2663,7 @@ def main() -> None:
             **kwargs,
         )
     else:
-        run(mode, Path(args.repo), **kwargs)
+        run(mode, repo, **kwargs)
 
 
 if __name__ == "__main__":

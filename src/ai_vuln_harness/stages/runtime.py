@@ -27,6 +27,7 @@ import json
 import logging
 import math
 import os
+import pickle
 import re as _re
 import sqlite3
 import ssl
@@ -278,7 +279,10 @@ class JsonCache:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self.path.exists():
-            raw = json.loads(self.path.read_text() or "{}")
+            try:
+                raw = pickle.loads(self.path.read_bytes())
+            except (pickle.UnpicklingError, EOFError):
+                raw = json.loads(self.path.read_text() or "{}")
             self.data = raw if isinstance(raw, dict) else {}
         else:
             self.data = {}
@@ -288,16 +292,19 @@ class JsonCache:
 
     def put(self, key: str, value: object) -> None:
         self.data[key] = value
-        self.path.write_text(json.dumps(self.data, indent=2))
+        self.path.write_bytes(pickle.dumps(self.data))
 
 
 def save_packs_json(packs: list[dict], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(packs))
+    path.write_bytes(pickle.dumps(packs))
 
 
 def load_packs_json(path: Path) -> list[dict]:
-    return json.loads(path.read_text())
+    try:
+        return pickle.loads(path.read_bytes())
+    except (pickle.UnpicklingError, EOFError):
+        return json.loads(path.read_text())
 
 
 class StateDB:
@@ -627,6 +634,8 @@ def _call_llm_once(
 ) -> str:
     log = logging.getLogger("vuln-harness")
     _validate_url(req.full_url)
+    if "User-Agent" not in req.headers:
+        req.add_unredirected_header("User-Agent", "vuln-harness/1.0")
     resp = urllib.request.urlopen(
         req, context=ctx, timeout=timeout
     )  # nosem: URL validated above
