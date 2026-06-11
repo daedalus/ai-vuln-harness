@@ -406,6 +406,7 @@ def process_findings(
     output_dir: Path,
     run: bool = True,
     sandbox_prefix: list[str] | None = None,
+    test_reduction: bool = False,
 ) -> list[dict]:
     """Process findings through PoC compilation and execution.
 
@@ -422,6 +423,9 @@ def process_findings(
     sandbox_prefix:
         Optional sandbox wrapper tokens (e.g. ``["firejail", "--"]``) passed
         to ``EgressAuditContext``.
+    test_reduction:
+        If ``True``, run test-case reduction on confirmed PoCs to shrink
+        them to the minimal trigger.
 
     Returns
     -------
@@ -476,7 +480,41 @@ def process_findings(
                     }
                 if poc["result"]["verdict"] == "confirmed":
                     f["poc_confirmed"] = True
+                    if test_reduction:
+                        _apply_test_reduction(poc, Path(str(output_dir)))
             json_file = Path(str(output_dir)) / "pocs" / f"{poc['poc_id']}.json"
             json_file.write_text(json.dumps(poc, indent=2))
         results.append(poc)
     return results
+
+
+def _apply_test_reduction(poc: dict, output_dir: Path) -> None:
+    """Run test-case reduction on a confirmed PoC."""
+    from ai_vuln_harness.stages.test_reducer import reduce_poc_source
+
+    src_file = poc.get("harness", {}).get("source_file")
+    if not src_file:
+        return
+    src_path = Path(src_file)
+    if not src_path.exists():
+        return
+
+    lang = poc.get("harness", {}).get("language", "c")
+    reduced = reduce_poc_source(src_path, lang, output_dir)
+    if reduced and reduced.exists():
+        poc["reduced_source"] = str(reduced)
+        original_lines = len(src_path.read_text().splitlines())
+        reduced_lines = len(reduced.read_text().splitlines())
+        poc["reduction"] = {
+            "original_lines": original_lines,
+            "reduced_lines": reduced_lines,
+            "reduction_pct": round((1 - reduced_lines / original_lines) * 100, 1)
+            if original_lines
+            else 0,
+        }
+        logger.info(
+            "PoC %s reduced: %d → %d lines",
+            poc.get("poc_id", "?"),
+            original_lines,
+            reduced_lines,
+        )

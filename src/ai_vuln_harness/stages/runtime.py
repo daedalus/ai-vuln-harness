@@ -66,7 +66,7 @@ def _ensure_both_nonempty(
 
 def split_model_pools(models: list[str]) -> tuple[list[str], list[str]]:
     models = list(dict.fromkeys(models))
-    hunt = _preferred_by_keyword(models, ("deepseek", "qwen", "gemma"))
+    hunt = _preferred_by_keyword(models, ("deepseek", "qwen", "gemma", "mimo"))
     validate = [
         m
         for m in _preferred_by_keyword(models, ("nemotron", "trinity", "z-ai"))
@@ -152,9 +152,12 @@ _BASE_URLS = {
     "cerebras": "https://api.cerebras.ai/v1",
     "google": "https://generativelanguage.googleapis.com/v1beta/openai",
     "zen": "https://opencode.ai/zen/v1",
+    "mimo": "https://api.xiaomimimo.com/api/free-ai/openai",
 }
 
-_KNOWN_PROVIDERS = frozenset({"openrouter", "groq", "cerebras", "google", "zen"})
+_KNOWN_PROVIDERS = frozenset(
+    {"openrouter", "groq", "cerebras", "google", "zen", "mimo"}
+)
 
 
 def _resolve_provider(model_id: str) -> str:
@@ -202,6 +205,12 @@ def _fetch_provider_limits(
             limits[bare] = int(ctx_win)
     except (urllib.error.URLError, OSError, json.JSONDecodeError):
         pass
+
+    if not limits and provider_models:
+        for m in provider_models:
+            if m not in limits:
+                limits[m] = 128_000
+
     return limits
 
 

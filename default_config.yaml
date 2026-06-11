@@ -1,6 +1,6 @@
 llm:
-  default_model: mimo/mimo-auto
-  default_connector: mimo
+  default_model: openrouter:nvidia/nemotron-3-super-120b-a12b:free
+  default_connector: openrouter
   connectors:
     openai:
       - name: lm-studio
@@ -16,28 +16,27 @@ llm:
       - name: openrouter
         api_key: ${OPENROUTER_API_KEY}
         base_url: https://openrouter.ai/api/v1
-        model: openrouter/free
+        model: nvidia/nemotron-3-super-120b-a12b:free
       - name: mimo
         api_key: anonymous
         base_url: https://api.xiaomimimo.com/api/free-ai/openai
-        model: mimo-auto
+        model: mimo-v2.5
   use_model_registry: false
-  user_agent: opencode/1.4.8
+  user_agent: vuln-harness/1.0
 
 stages:
   recon:
     model_pool: validate
     models:
-      - mimo/mimo-auto
-      - zen:nemotron-3-ultra-free
+      - openrouter:nvidia/nemotron-3-super-120b-a12b:free
+      - openrouter:google/gemma-4-31b-it:free
     max_workers: 1
     repair_attempts: 2
   hunt:
     model_pool: hunt
     models:
-      - mimo/mimo-auto
-      - openrouter:deepseek/deepseek-chat-v3-0324:free
-      - zen:big-pickle
+      - openrouter:nvidia/nemotron-3-super-120b-a12b:free
+      - openrouter:google/gemma-4-31b-it:free
     max_workers: 10
   localization:
     model_pool: none
@@ -46,9 +45,8 @@ stages:
   validate:
     model_pool: validate
     models:
-      - mimo/mimo-auto
       - openrouter:nvidia/nemotron-3-super-120b-a12b:free
-      - zen:nemotron-3-ultra-free
+      - openrouter:google/gemma-4-31b-it:free
     max_workers: 5
   fuzz_orchestrator:
     model_pool: none
@@ -57,30 +55,30 @@ stages:
   gapfill:
     model_pool: hunt
     models:
-      - mimo/mimo-auto
-      - zen:big-pickle
+      - openrouter:nvidia/nemotron-3-super-120b-a12b:free
+      - openrouter:google/gemma-4-31b-it:free
     max_workers: 1
   dedupe:
     model_pool: hunt
     models:
-      - mimo/mimo-auto
-      - zen:big-pickle
+      - openrouter:nvidia/nemotron-3-super-120b-a12b:free
+      - openrouter:google/gemma-4-31b-it:free
     max_workers: 1
   trace:
     model_pool: validate
     models:
-      - mimo/mimo-auto
       - openrouter:nvidia/nemotron-3-super-120b-a12b:free
+      - openrouter:google/gemma-4-31b-it:free
     max_workers: 5
   feedback:
     model_pool: hunt
     models:
-      - mimo/mimo-auto
-      - zen:big-pickle
+      - openrouter:nvidia/nemotron-3-super-120b-a12b:free
+      - openrouter:google/gemma-4-31b-it:free
     max_workers: 1
   report:
     model_pool: hunt
     models:
-      - mimo/mimo-auto
-      - zen:big-pickle
+      - openrouter:nvidia/nemotron-3-super-120b-a12b:free
+      - openrouter:google/gemma-4-31b-it:free
     max_workers: 1

@@ -169,13 +169,25 @@ def _resolve_model_chain(
     auth: dict,
     mode: str,
     cache: JsonCache,
+    stages_cfg: dict | None = None,
 ) -> list[str]:
-    model_chain = model_chain_override or [
-        "deepseek/deepseek-v4-flash:free",
-        "qwen/qwen-2.5-coder-32b-instruct:free",
-        "nvidia/nemotron-3-super-120b-a12b:free",
-        "arcee-ai/trinity-large-thinking:free",
-    ]
+    if model_chain_override:
+        model_chain = model_chain_override
+    elif stages_cfg:
+        hunt_models = stages_cfg.get("hunt", {}).get("models", [])
+        model_chain = hunt_models or [
+            "deepseek/deepseek-v4-flash:free",
+            "qwen/qwen-2.5-coder-32b-instruct:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
+            "arcee-ai/trinity-large-thinking:free",
+        ]
+    else:
+        model_chain = [
+            "deepseek/deepseek-v4-flash:free",
+            "qwen/qwen-2.5-coder-32b-instruct:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
+            "arcee-ai/trinity-large-thinking:free",
+        ]
     if not skip_health and auth and mode not in ("validate-only", "resume", "poc-only"):
         alive, dead = health_check_models(model_chain, auth=auth, cache=cache)
         cache.put("model_health_alive", alive)
@@ -187,7 +199,7 @@ def _resolve_model_chain(
             model_chain = alive
         else:
             logger.warning("all models dead; continuing with original chain")
-    elif skip_health:
+    elif skip_health and cache:
         cached_alive = cache.get("model_health_alive")
         if cached_alive:
             model_chain = cached_alive
@@ -504,6 +516,7 @@ def _run_poc_stage(
     output_dir: Path,
     run_poc_enabled: bool,
     poc_finding_id: str | None,
+    test_reduction: bool = False,
 ) -> list[dict]:
     if not run_poc_enabled:
         return []
@@ -517,7 +530,7 @@ def _run_poc_stage(
     if not target:
         _persist_jsonl(output_dir / "pocs.jsonl", [])
         return []
-    pocs = run_poc(target, snippet_db)
+    pocs = run_poc(target, snippet_db, test_reduction=test_reduction)
     _persist_jsonl(output_dir / "pocs.jsonl", pocs)
     return pocs
 
@@ -1905,6 +1918,7 @@ def run(  # noqa: PLR0913
     validate_model_chain_override: list[str] | None = None,
     run_poc_enabled: bool = False,
     poc_finding_id: str | None = None,
+    test_reduction: bool = False,
     run_patch_enabled: bool = False,
     refresh_models: bool = False,
     budget_ratio: float = 0.85,
@@ -1951,6 +1965,19 @@ def run(  # noqa: PLR0913
     _enforce_cost_limit(state, run_id, max_cost_usd)
 
     auth = load_auth_config(explicit_path=auth_path, script_dir=pkg_dir)
+    llm_cfg = yaml_cfg.get("llm", {})
+    for connector in llm_cfg.get("connectors", {}).values():
+        if isinstance(connector, list):
+            for c in connector:
+                name = c.get("name", "")
+                api_key = c.get("api_key", "")
+                if api_key and name and name not in auth:
+                    auth[name] = api_key
+        elif isinstance(connector, dict):
+            name = connector.get("name", "")
+            api_key = connector.get("api_key", "")
+            if api_key and name and name not in auth:
+                auth[name] = api_key
     state.put_meta("auth_providers", json.dumps(sorted(auth.keys())))
 
     global_max = max_concurrency or cfg.get("max_workers", 3)
@@ -1975,6 +2002,7 @@ def run(  # noqa: PLR0913
         auth,
         mode,
         cache,
+        stages_cfg,
     )
     _clear_model_limits_cache(pkg_dir, refresh_models)
     model_limits = fetch_model_limits(model_chain, pkg_dir)
@@ -2108,6 +2136,7 @@ def run(  # noqa: PLR0913
         output_dir,
         run_poc_enabled,
         poc_finding_id,
+        test_reduction=test_reduction,
     )
     exploit_synthesis_records = _run_exploit_synthesis_stage(
         findings,
@@ -2154,7 +2183,8 @@ def run(  # noqa: PLR0913
 
     state.put_meta("last_mode", mode)
     state.finish_run(run_id)
-    cache.put("last_report", report)
+    if cache:
+        cache.put("last_report", report)
     return report
 
 
@@ -2310,6 +2340,7 @@ def run_all(  # noqa: PLR0913
     validate_model_chain_override: list[str] | None = None,
     run_poc_enabled: bool = False,
     poc_finding_id: str | None = None,
+    test_reduction: bool = False,
     run_patch_enabled: bool = False,
     refresh_models: bool = False,
     budget_ratio: float = 0.85,
@@ -2355,6 +2386,7 @@ def run_all(  # noqa: PLR0913
             validate_model_chain_override=validate_model_chain_override,
             run_poc_enabled=run_poc_enabled,
             poc_finding_id=poc_finding_id,
+            test_reduction=test_reduction,
             run_patch_enabled=run_patch_enabled,
             refresh_models=refresh_models,
             budget_ratio=budget_ratio,
@@ -2499,6 +2531,7 @@ def _build_run_kwargs(args: argparse.Namespace, *, target_mode: bool = False) ->
         "validate_model_chain_override": args.validate_model_override,
         "run_poc_enabled": args.poc_finding is not None or args.poc_only,
         "poc_finding_id": args.poc_finding if args.poc_finding != "all" else None,
+        "test_reduction": args.test_reduction,
         "run_patch_enabled": args.run_patch,
         "refresh_models": args.refresh_models,
         "budget_ratio": args.budget_ratio,
@@ -2652,6 +2685,12 @@ def main() -> None:
         action="store_true",
         dest="run_patch",
         help="Generate patch candidates for confirmed findings (PATCH stage).",
+    )
+    parser.add_argument(
+        "--test-reduction",
+        action="store_true",
+        dest="test_reduction",
+        help="Run test-case reduction on confirmed PoCs to shrink them to minimal triggers.",
     )
     parser.add_argument(
         "--no-cache", action="store_true", help="Disable LLM response caching"

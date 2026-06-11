@@ -31,3 +31,5 @@ references/
 workdir/
 *.coverage_full
 uv.lock
+auth.json
+src/ai_vuln_harness/config/models.dev
