@@ -1,0 +1,86 @@
+llm:
+  default_model: mimo/mimo-auto
+  default_connector: mimo
+  connectors:
+    openai:
+      - name: lm-studio
+        base_url: http://localhost:1234/v1
+        model: local-model
+      - name: ollama
+        base_url: http://localhost:11434
+        model: llama3
+      - name: opencode
+        api_key: public
+        base_url: https://opencode.ai/zen/v1
+        model: big-pickle
+      - name: openrouter
+        api_key: ${OPENROUTER_API_KEY}
+        base_url: https://openrouter.ai/api/v1
+        model: openrouter/free
+      - name: mimo
+        api_key: anonymous
+        base_url: https://api.xiaomimimo.com/api/free-ai/openai
+        model: mimo-auto
+  use_model_registry: false
+  user_agent: opencode/1.4.8
+
+stages:
+  recon:
+    model_pool: validate
+    models:
+      - mimo/mimo-auto
+      - zen:nemotron-3-ultra-free
+    max_workers: 1
+    repair_attempts: 2
+  hunt:
+    model_pool: hunt
+    models:
+      - mimo/mimo-auto
+      - openrouter:deepseek/deepseek-chat-v3-0324:free
+      - zen:big-pickle
+    max_workers: 10
+  localization:
+    model_pool: none
+    models: []
+    max_workers: 1
+  validate:
+    model_pool: validate
+    models:
+      - mimo/mimo-auto
+      - openrouter:nvidia/nemotron-3-super-120b-a12b:free
+      - zen:nemotron-3-ultra-free
+    max_workers: 5
+  fuzz_orchestrator:
+    model_pool: none
+    models: []
+    max_workers: 1
+  gapfill:
+    model_pool: hunt
+    models:
+      - mimo/mimo-auto
+      - zen:big-pickle
+    max_workers: 1
+  dedupe:
+    model_pool: hunt
+    models:
+      - mimo/mimo-auto
+      - zen:big-pickle
+    max_workers: 1
+  trace:
+    model_pool: validate
+    models:
+      - mimo/mimo-auto
+      - openrouter:nvidia/nemotron-3-super-120b-a12b:free
+    max_workers: 5
+  feedback:
+    model_pool: hunt
+    models:
+      - mimo/mimo-auto
+      - zen:big-pickle
+    max_workers: 1
+  report:
+    model_pool: hunt
+    models:
+      - mimo/mimo-auto
+      - zen:big-pickle
+    max_workers: 1

@@ -12,7 +12,7 @@ license = {text = "MIT"}
 authors = [
     {name = "Darío Clavijo", email = "clavijodario@gmail.com"}
 ]
-dependencies = ["fastmcp"]
+dependencies = ["fastmcp", "pyyaml"]
 
 [project.optional-dependencies]
 dev = [

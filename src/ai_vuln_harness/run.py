@@ -32,6 +32,8 @@ import os
 import pickle
 import sys
 import time
+
+import yaml
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
@@ -614,6 +616,44 @@ def _load_stages_config(script_dir: Path) -> dict:
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError):
         return {}
+
+
+def _load_yaml_config(work_dir: Path) -> dict:
+    """Load configuration from default_config.yaml in the working directory.
+
+    Returns an empty dict if the file is absent or malformed.
+    """
+    path = work_dir / "default_config.yaml"
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r") as f:
+            data = yaml.safe_load(f)
+        return data if isinstance(data, dict) else {}
+    except (yaml.YAMLError, OSError):
+        return {}
+
+
+def _merge_yaml_config(base_cfg: dict, yaml_cfg: dict) -> dict:
+    """Merge YAML config into the base configuration.
+
+    The YAML config provides llm and stages overrides that are merged
+    into the existing config structure.
+    """
+    if not yaml_cfg:
+        return base_cfg
+
+    merged = base_cfg.copy()
+
+    llm_cfg = yaml_cfg.get("llm", {})
+    if llm_cfg:
+        merged["llm"] = llm_cfg
+
+    stages_cfg = yaml_cfg.get("stages", {})
+    if stages_cfg:
+        merged["stages_config"] = stages_cfg
+
+    return merged
 
 
 def _apply_runtime_flags(
@@ -1900,7 +1940,9 @@ def run(  # noqa: PLR0913
         enable_z3_validate=enable_z3_validate,
         z3_timeout_ms=z3_timeout_ms,
     )
-    stages_cfg = _load_stages_config(pkg_dir)
+    yaml_cfg = _load_yaml_config(work_dir)
+    cfg = _merge_yaml_config(cfg, yaml_cfg)
+    stages_cfg = cfg.get("stages_config") or _load_stages_config(pkg_dir)
     state = StateDB(work_dir / cfg["state_db"])
     cache = None if no_cache else JsonCache(work_dir / cfg["cache_file"])
 
