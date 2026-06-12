@@ -11,6 +11,10 @@
     "bucket_rationale"
   ],
   "properties": {
+    "finding_id": {
+      "type": "string",
+      "description": "Deterministic SHA256-based ID: SHA256(file + class + line_range). Enables cross-agent dedup."
+    },
     "snippet_id": {"type": "string"},
     "severity": {
       "type": "string",

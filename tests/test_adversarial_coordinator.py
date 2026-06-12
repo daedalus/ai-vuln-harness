@@ -13,9 +13,10 @@ class CoordinatorBudgetBoundaryTests(unittest.TestCase):
     """Token budget edge cases."""
 
     def test_exact_budget_fit(self):
+        # Snippets with content that sums to ~90 tokens when serialized
         snippets = [
-            {"file": "a.c", "token_count": 100},
-            {"file": "b.c", "token_count": 80},
+            {"file": "a.c", "content": "x" * 160, "token_count": 40},
+            {"file": "b.c", "content": "x" * 160, "token_count": 40},
         ]
         tasks = [
             {
@@ -27,14 +28,15 @@ class CoordinatorBudgetBoundaryTests(unittest.TestCase):
                 "priority": "high",
             },
         ]
-        packs = build_context_packs(snippets, tasks, budget_tokens=90)
+        packs = build_context_packs(snippets, tasks, budget_tokens=200)
         self.assertEqual(len(packs), 1)
         self.assertEqual(len(packs[0]["snippets"]), 2)
 
     def test_budget_split_across_domains(self):
+        # Snippets with content that exceeds budget when both included
         snippets = [
-            {"file": "a.c", "token_count": 100},
-            {"file": "b.c", "token_count": 100},
+            {"file": "a.c", "content": "x" * 200, "token_count": 50},
+            {"file": "b.c", "content": "x" * 200, "token_count": 50},
         ]
         tasks = [
             {
@@ -46,13 +48,13 @@ class CoordinatorBudgetBoundaryTests(unittest.TestCase):
                 "priority": "high",
             },
         ]
-        packs = build_context_packs(snippets, tasks, budget_tokens=70)
+        packs = build_context_packs(snippets, tasks, budget_tokens=100)
         self.assertEqual(len(packs), 2)
 
     def test_zero_budget_creates_separate_packs(self):
         snippets = [
-            {"file": "a.c", "token_count": 1},
-            {"file": "b.c", "token_count": 1},
+            {"file": "a.c", "content": "x" * 10, "token_count": 1},
+            {"file": "b.c", "content": "x" * 10, "token_count": 1},
         ]
         tasks = [
             {

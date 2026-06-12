@@ -709,8 +709,8 @@ class CoordinatorDeeperEdgeTests(unittest.TestCase):
 
     def test_all_snippets_exceed_budget_alone(self):
         snippets = [
-            {"file": "a.c", "token_count": 200},
-            {"file": "b.c", "token_count": 200},
+            {"file": "a.c", "content": "x" * 200, "token_count": 200},
+            {"file": "b.c", "content": "x" * 200, "token_count": 200},
         ]
         tasks = [
             {
@@ -722,7 +722,7 @@ class CoordinatorDeeperEdgeTests(unittest.TestCase):
                 "priority": "high",
             },
         ]
-        packs = build_context_packs(snippets, tasks, budget_tokens=70)
+        packs = build_context_packs(snippets, tasks, budget_tokens=100)
         self.assertEqual(len(packs), 2)
 
     def test_recon_task_missing_priority(self):

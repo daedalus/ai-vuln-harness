@@ -126,21 +126,22 @@ def bucket_finding(
     )
 
 
-def _dedup_key(finding: dict) -> tuple[str, str, int]:
-    """Improvement ⑥: composite dedup key covering split-continuation snippets.
+def _dedup_key(finding: dict) -> str:
+    """Deterministic dedup key using SHA256-based finding_id.
 
-    Uses (file, class, source_lines_start) so that different snippet IDs for
-    the same large function (split on line boundaries) still collapse to one
-    record.  Falls back to (snippet_id, class, 0) when line metadata is absent.
+    Falls back to composite (file, class, start_line) when finding_id is absent.
     """
+    fid = finding.get("finding_id")
+    if fid:
+        return fid
     lines = finding.get("lines") or []
     start_line = lines[0] if lines else 0
     file_key = str(finding.get("file") or finding.get("snippet_id") or "")
-    return (file_key, str(finding.get("class") or ""), int(start_line))
+    return f"{file_key}|{finding.get('class', '')}|{start_line}"
 
 
 def deduplicate(findings: list[dict]) -> list[dict]:
-    """Deduplicate findings using the composite key (improvement ⑥).
+    """Deduplicate findings using deterministic finding_id.
 
     Keeps the highest-severity variant when collapsing duplicates.
     """
@@ -148,7 +149,7 @@ def deduplicate(findings: list[dict]) -> list[dict]:
     def _rank(f: dict) -> int:
         return _SEV_RANK.get(str(f.get("severity", "")).upper(), 0)
 
-    seen: dict[tuple[str, str, int], dict] = {}
+    seen: dict[str, dict] = {}
     for f in findings:
         key = _dedup_key(f)
         if key not in seen or _rank(f) > _rank(seen[key]):

@@ -286,6 +286,104 @@ Multi-agent configurations achieved the highest scores on BrowseComp and Program
 
 **Implication for harness:** The harness's pipeline is strictly sequential. Multi-agent patterns (parallel hunt agents, subagent delegation for complex findings) could improve both throughput and depth but are not implemented.
 
+### A4.5 Looped Computation Patterns (OpenMythos Architecture)
+
+**Reference:** [OpenMythos](https://github.com/kyegomez/OpenMythos) — open-source PyTorch reconstruction of a hypothesized Claude Mythos Recurrent-Depth Transformer (RDT) architecture by Kye Gomez. MIT license. Independent, theoretical reconstruction; not affiliated with Anthropic.
+
+OpenMythos implements a **three-stage architecture** with looped recurrence that maps directly to the harness's multi-iteration vulnerability analysis patterns:
+
+```
+Prelude (encode once) → Recurrent Block (loop N times with frozen input injection) → Coda (decode once)
+```
+
+The Recurrent Block uses **frozen input injection** — the encoded input `e` is set once after the Prelude and re-injected at every loop iteration. This prevents drift across arbitrary recurrence depth. The ACT (Adaptive Computation Time) halting mechanism with a `still_running` gate ensures each position contributes exactly once on its halting step, preventing remainder leakage.
+
+#### Pattern 1: Frozen Context Injection
+
+In OpenMythos, `e` is frozen after the Prelude and re-injected at every loop iteration. This is the architectural guarantee against drift across arbitrary recurrence depth.
+
+**Application to harness:** The gapfill loop re-hunts domains with modified prompts, but the original context pack is not frozen — it can be mutated by intermediate results. A frozen-context pattern would:
+- Snapshot the original context pack before gapfill iterations
+- Re-inject the frozen context at every gapfill attempt
+- Prevent prompt drift from accumulating across iterations
+
+| Gap | Details |
+|---|---|
+| **Frozen context injection in gapfill loop** | The gapfill loop mutates context across iterations (appending hints, rephrasing prompts). No snapshot of the original context is preserved. A frozen-context pattern would prevent accumulated prompt drift. |
+
+#### Pattern 2: Overthinking Detection
+
+OpenMythos documents "overthinking degradation" — output quality plateaus then degrades as `n_loops` increases past the convergence point. The recommended fix: tune `act_threshold` downward or add a hard cap.
+
+**Application to harness:** The gapfill loop runs up to 2 iterations (`MAX_GAPFILL=2`), but there is no detection of whether additional iterations are improving or degrading quality. A convergence detector would:
+- Compare confidence scores between iterations
+- Halt early if two successive iterations produce the same answer with only cosmetic changes
+- Prevent wasting compute on iterations that degrade signal
+
+| Gap | Details |
+|---|---|
+| **Overthinking / convergence detection in gapfill** | Gapfill runs a fixed 2 iterations with no quality comparison between rounds. Early-halt on convergence would save compute and prevent quality degradation from prompt mutation. |
+
+#### Pattern 3: Runtime Invariants (Mathematical Constraints)
+
+OpenMythos enforces eight runtime invariants — mathematical constraints that must hold during execution, not just structural layout rules. The most critical: spectral radius ρ(A) < 1 enforced via `exp(-exp(...))` reparameterization, not just initialization.
+
+**Application to harness:** The harness has structural invariants (file layout, stage ordering) in `docs/invariants.md` but lacks runtime invariants — mathematical constraints that must hold during execution. Examples:
+- Confidence scores must be monotonically non-increasing across validation rounds (SHIELD should not introduce false confidence)
+- Hallucination scores must not decrease after SHIELD processing
+- Finding count after VOTING must be ≤ finding count before VOTING (dedup is lossy)
+- Chain length after CHAINS must be ≥ 1 for any finding that passes (chains add edges, not remove them)
+
+| Gap | Details |
+|---|---|
+| **Runtime invariant enforcement** | Structural invariants (file layout, stage order) are enforced, but no runtime invariants exist. Mathematical constraints on score monotonicity, finding count bounds, and chain integrity are absent. |
+| **Score drift detection** | No mechanism detects when a stage produces output that violates score-level invariants (e.g., confidence increasing after adversarial validation). Silent corruption propagates to REPORT. |
+
+#### Pattern 4: Scaling Discipline for Multi-Model Deployments
+
+OpenMythos uses a parameterized scaling formula:
+
+```
+total ≈ embed + prelude/coda dense blocks + recurrent MLA + MoE
+MoE = 3 * dim * expert_dim * (n_experts + n_shared * n_experts_per_tok)
+```
+
+Larger scales intentionally bump `n_shared_experts`, `n_experts_per_tok`, and `lora_rank`. The 100B+ tier raises `rope_theta` and enables `max_output_tokens=131072`.
+
+**Application to harness:** The harness assigns models to HUNT/VALIDATE stages via `config/defaults.json` with no scaling discipline. When adding new models, there is no budget formula to ensure total compute stays bounded. A scaling discipline would:
+- Define a compute budget per stage (tokens × calls × model tier)
+- Enforce that HUNT + VALIDATE + gapfill total compute stays within a configurable cap
+- Scale model assignment based on finding difficulty (high-confidence findings get stronger models)
+
+| Gap | Details |
+|---|---|
+| **Compute scaling discipline** | No budget formula constrains total compute across stages. Adding models or increasing `hunt_workers` has no bounded cost envelope. A scaling discipline would prevent runaway costs. |
+| **Difficulty-adaptive model routing** | All HUNT packs use the same model regardless of difficulty. A scaling pattern would route high-difficulty findings to stronger models and low-difficulty to lighter models. |
+
+#### Pattern 5: Per-Iteration Quality Gating
+
+OpenMythos's ACT halting mechanism evaluates a halting probability `p = sigmoid(halt(h))` at every loop iteration and halts when cumulative probability exceeds a threshold. Each position contributes exactly once via the `still_running` gate.
+
+**Application to harness:** The gapfill loop has no per-iteration quality gate — it runs a fixed number of rounds regardless of output quality. An ACT-inspired gate would:
+- Evaluate a quality signal (hallucination score, confidence delta) after each gapfill round
+- Halt early if quality has converged or degraded
+- Ensure each finding contributes to the final report exactly once (no double-counting across iterations)
+
+| Gap | Details |
+|---|---|
+| **Per-iteration quality gating in gapfill** | No adaptive halting mechanism. Gapfill runs fixed iterations. An ACT-inspired quality gate would halt when additional iterations stop improving signal. |
+
+#### External References (Architectural)
+
+These papers from the OpenMythos repository provide architectural context for looped computation patterns applicable to vulnerability research pipelines:
+
+| Reference | Relevance |
+|---|---|
+| **Parcae** (Prairie et al., 2026) — [arxiv.org/abs/2604.12946](https://arxiv.org/abs/2604.12946) | LTI stability fix and scaling laws for looped LMs. The spectral-radius constraint method (`exp(-exp(...))` reparameterization) is directly applicable to preventing drift in multi-iteration vulnerability analysis. |
+| **Universal Transformers** (Dehghani et al., 2018) — [arxiv.org/pdf/1807.03819](https://arxiv.org/pdf/1807.03819) | Original ACT halting for transformers. The per-position halting probability mechanism maps to adaptive compute allocation per finding. |
+| **Reasoning with Latent Thoughts** (Saunshi et al., 2025) — [arxiv.org/abs/2502.17416](https://arxiv.org/abs/2502.17416) | Power of looped transformers. Validates that iterative refinement with frozen input injection outperforms single-pass analysis. |
+| **Fine-grained MoE** (2024) — [arxiv.org/abs/2401.06066](https://arxiv.org/abs/2401.06066) | Shared experts + per-token routing. The always-on shared expert pattern maps to the harness's need for a "baseline" model that handles every pack while specialized models handle specific domains. |
+
 ---
 
 ## A5. Reference & Competitor Architecture Comparison
@@ -345,6 +443,287 @@ Multi-agent configurations achieved the highest scores on BrowseComp and Program
 | **Exponential-backoff retry with error classification** | `audit/` | Classifies API errors into `QuotaExhaustedError` (terminal) vs `TransientAgentError` (retry up to 3× with exponential backoff 30s–240s). The harness has no retry logic — API failures silently produce empty results. |
 | **Rich Click-based CLI** | `audit/` | 4 commands (`auth-check`, `run`, `status`, `report`) with Rich tables. The harness uses argparse with a single `main()` function. |
 | **Separate prompt files per stage** | `audit/` | **Status: ✅ Implemented** — prompts shipped in `src/ai_vuln_harness/prompts/` as separate `.md` files. |
+
+### A5.3 vs. Glasswing-Open (`igorbarshteyn/glasswing-open`)
+
+**Source:** `https://github.com/igorbarshteyn/glasswing-open` — proof-of-concept agentic scaffold replicating Claude Mythos Preview's cyber capabilities with open-weights LLMs + Claude Code. LLM-agnostic (Qwen3.5, MiniMax M2.7), Kali Linux native, 5 target modes (local-source, remote-repo, api-endpoint, website, remote-machine). MIT license. 34 commits, untested (author awaiting hardware).
+
+**Architecture:**
+
+```
+Open-weights model (llama-server, port 8001)
+        ↕ OpenAI-compatible API
+Claude Code (orchestrator + agentic loop)
+        ↕ bash, file read/write, tool calls
+Kali Linux host (native pentesting toolkit + analysis tools)
+        ↕ workspace directory
+Results (findings, exploits, scan logs, discovery journal)
+```
+
+**Where Glasswing-Open Is Stronger (Architectural):**
+
+| Advantage | Details |
+|---|---|
+| **Hook-based auto-capture system** | 7 Claude Code hooks (PreToolUse, PostToolUse, Stop) provide automated crash capture, variant triggering, and premature-exit prevention. `asan-capture.sh` auto-captures AddressSanitizer/UBSan/MSan/TSan/LeakSanitizer reports as structured JSON to `findings/auto-captured/`. `crash-oracle.sh` captures non-sanitizer crashes (SIGSEGV, SIGABRT, SIGBUS). The harness has no equivalent hook system — sanitizer output is parsed ad-hoc by the POC stage. |
+| **Variant-hunter hook** | When a `FINDING-*.md` is created, `variant-hunter.sh` injects context prompting systematic variant analysis: same pattern/same file, same pattern/other files, same author (via `git log --author`), same API misuse. The harness has no automated variant analysis — the CHAINS stage operates on metadata only. |
+| **Discovery memory system** | Three-file persistent observation log: `discovery_journal.jsonl` (structured observations), `breadcrumbs.jsonl` (unexplored areas), `attack_graph.md` (living graph of exploitation paths). Updated across sessions. The harness has no equivalent cross-file observation persistence — each stage processes its input independently. |
+| **Adaptive compute budgets** | Rank-based turn allocation: rank-5 files get 100% budget, rank-3 get 60%. Neighbor finding boost: +50% budget when adjacent files had findings. The harness has fixed pipeline cost per finding — no mechanism to allocate more compute to high-priority targets. |
+| **Neighbor re-scan (Phase 2b)** | After confirmed findings, re-scan files in the same directory or with the same base name (`.c`/`.h` pairs). Implements Mythos' "deepening near confirmed bugs" pattern. The harness has no equivalent — each snippet is processed independently. |
+| **Crash corpus collection** | Collects all PoC inputs from `poc/` and `exploits/` into a structured `corpus/` directory with `manifest.json` for regression testing and fuzzer seeding. The harness has no equivalent — PoC inputs are not collected for reuse. |
+| **Self-recovery protocol** | When stuck (all hypotheses fail): change approach (read test suite for untested paths), trace call chain with GDB breakpoints, try MSan/UBSan/Valgrind, build minimal harness, start from network input path. The harness has no equivalent — when LLM produces no findings, the gapfill loop rephrases the prompt but does not change methodology. |
+| **5-phase orchestrator** | Phase 1 (AI rank) → Phase 2 (parallel scan) → Phase 2b (neighbor rescan) → Phase 3 (triage with chain analysis) → Phase 4 (exploit dev). The harness has a 17-stage pipeline but lacks the neighbor rescan and exploit dev phases. |
+| **Scan checkpoint / premature exit prevention** | `scan-checkpoint.sh` fires when the agent tries to stop. Blocks exit if: scan_log.jsonl is empty, auto-captured findings are uninvestigated, formal findings don't exist for captured crashes, or attack graph is missing. The harness has no equivalent — stages can complete with empty output without warning. |
+| **Per-target context templates** | 10 templates for different target types: C/C++ media parser, Linux kernel module, network server, cryptographic library, web application/API, embedded firmware, N-day analysis, kernel subsystem (netfilter/BPF/io_uring/VFS), crypto library (OpenSSL/BoringSSL), binary-only/closed-source. The harness has no target-specific templates. |
+| **Multi-language sanitizer integration** | Language-specific testing approaches: C/C++ (ASan/UBSan), Rust (cargo +nightly -Zsanitizer=address), Go (go build -race), Java (SecurityException/ClassCastException oracles), Python (traceback + ctypes segfault), JS/TS (unhandled promise rejection, heap OOM), Ruby (Marshal.load), PHP (unserialize). The harness's POC stage is C/C++ only (ASan). |
+| **First-principles assumption framework** | 7 categories of assumptions software makes: Size/Bounds, Type/Encoding, State/Lifecycle, Concurrency, Trust Boundary, Numerical/Logical, Environmental. Each category has specific violation patterns to check. The hunt prompt has domain-specific patterns but not this systematic framework. |
+| **Multi-pass strategy** | Pass 1 (broad: rank-4/5 files, obvious cases) → Pass 2 (deep: revisit failed files, cross-reference, complex triggers) → Pass 3 (chain: escalate severity through combination) → Pass 4 (variant: systematic variant analysis across codebase). The harness is single-pass per snippet. |
+
+**Where This Harness Is Stronger (Architectural):**
+
+| Advantage | Details |
+|---|---|
+| **Pipeline depth** | 17 canonical stages vs 5 phases. Covers hallucination detection (KL-divergence, call-path graph, semantic dedup), gap analysis, voting, shielding, suppression, exposure tracking, feedback loops. |
+| **LLM output validation** | KL-divergence hallucination detection, call-path graph verification, semantic dedup, token-overlap analysis. Glasswing-Open relies on the agent's own judgment + sanitizer oracle only. |
+| **Schema-validated contracts** | 8 JSON schemas + `contracts.py` for stage contract enforcement. Glasswing-Open has no output validation. |
+| **Multi-provider model routing** | 5 providers with disjoint model pools for HUNT vs VALIDATE. Glasswing-Open uses a single model alias. |
+| **Exploit synthesis tier assessment** | T4–T1 tier grading with exploitability assessment. Glasswing-Open has exploit dev as a separate phase but no tier categorization. |
+| **Property-based testing** | Invariant inference + ASan-compiled C harness generation + bounded-random fuzzing. Glasswing-Open has no PBT. |
+| **MCP server** | FastMCP-based stdio server for IDE integration. Glasswing-Open has no MCP. |
+| **Resumable state** | SQLite StateDB for pipeline state persistence. Glasswing-Open uses file-based scan_log.jsonl. |
+
+**Architectural Gap Summary:**
+
+| Gap | Severity | Effort | Notes |
+|---|---|---|---|
+| **Hook-based auto-capture system** | 🟠 High | Medium | Automated sanitizer/crash capture as structured JSON would cut false-positive rate and enable automated triage. |
+| **Variant analysis automation** | 🟠 High | Medium | Post-finding variant hunting (same pattern, same author, same API) would multiply findings per confirmed bug by 3–10×. |
+| **Discovery memory (journal + breadcrumbs + attack graph)** | 🟠 High | Medium | Persistent cross-file observation log would enable chain discovery across sessions. |
+| **Adaptive compute allocation** | 🟡 Medium | Low | Rank-based turn budgets would allocate more compute to high-priority targets. |
+| **Neighbor re-scan** | 🟡 Medium | Low | Re-scanning files adjacent to confirmed findings would catch cluster bugs. |
+| **Crash corpus collection** | 🟡 Medium | Low | Collecting PoC inputs for regression testing and fuzzer seeding. |
+| **Scan checkpoint / premature exit prevention** | 🟡 Medium | Low | Preventing stages from completing with empty output without warning. |
+| **Self-recovery protocol** | 🟡 Medium | Low | Structured recovery strategies when LLM produces no findings (change methodology, not just rephrase). |
+| **Per-target context templates** | 🟡 Medium | Low | Target-specific guidance for kernel, web, crypto, embedded, binary-only. |
+| **Multi-language sanitizer integration** | 🟡 Medium | Medium | Extending POC stage beyond C/C++ ASan to Rust, Go, Java, Python, JS/TS. |
+| **First-principles assumption framework** | 🟢 Stretch | Low | Systematic 7-category assumption violation framework for HUNT prompts. |
+| **Multi-pass strategy** | 🟢 Stretch | Medium | Broad → deep → chain → variant passes instead of single-pass per snippet. |
+
+### A5.4 vs. Claude Mythos Architecture (`FareedKhan-dev/claude-mythos-architecture`)
+
+**Source:** `https://github.com/FareedKhan-dev/claude-mythos-architecture` — reverse-engineering of the Mythos cybersecurity harness as a 12-component architecture across 3 layers. Tested against MLflow v2.9.2 with real subprocess PoCs. 249 notebook cells, 11 confirmed findings, 1 critical attack chain, 4 patches. MIT license.
+
+**Results:** The full 12-component harness found **11 real findings** (vs 4 for one-shot Opus 4.7, 4 for GPT-5.5, 3 for DeepSeek V4, 6 for Solo-ReAct Opus). Zero false positives. Produced a composite 4-link critical-path PoC and chain-severance proof. 2× improvement over strongest baseline.
+
+**Architecture — 3 Layers, 12 Components:**
+
+```
+Layer 1: Engagement Substrate (C1–C4)  — keeps the harness honest
+Layer 2: Discovery & Verification (C5–C9) — decides what to look at, scans, proves
+Layer 3: Synthesis (C10–C12) — chains findings, fixes, speculates
+```
+
+**Where This Architecture Is Stronger (12 Components):**
+
+| Component | Description | Harness Gap |
+|---|---|---|
+| **C1: Engagement Graph** | Typed SQLite world model with 6 tables (`surface`, `facts`, `hypotheses`, `findings`, `dead_ends`, `chains`). Every component writes into it. Shared world model across all agents. | The harness has SQLite StateDB but not a typed graph. No `dead_ends` table (abandoned hypotheses), no `surface` table (attack surface tracking), no `chains` table (exploit chain state). |
+| **C2: Hash-Chained Immutable Audit Log** | Every action recorded with SHA-256 chain. Tamper-evident. Append-only. No agent-callable tool takes a write handle. | The harness has no audit log. Actions are logged to stderr but not chained or tamper-evident. No cryptographic attestation of pipeline actions. |
+| **C3: Risk-Classified Action Layer** | Every tool tagged `LOW`, `MEDIUM`, or `HIGH`. HIGH actions are **structurally refused**, never auto-approved. | The harness has `EgressAuditContext` for POC but no risk classification for other stages. No structural refusal of high-risk actions. |
+| **C4: Self-Monitor + Deliberative Gate** | Behavioural pathology detectors + two-step pre-action check. 5 detectors map to System Card incidents (reward hacking, confabulation, etc.). | The harness has reward-hack detection and confabulation guard but no comprehensive self-monitor. No deliberative gate (two-step pre-action check). No mapping to System Card incidents. |
+| **C5: ULTRAPLAN** | Long up-front reasoning call at maximum effort that produces the engagement plan. Reviewed by an Advisor before execution. | The harness has no planning phase. COORDINATOR assigns packs but does not produce a strategic engagement plan. No Advisor review before execution. |
+| **C6: Coordinator + Role-Polymorphic Worker Swarm** | Ephemeral fresh-context workers across the target surface, each with a single role (`scanner`, `variant-hunter`, `verifier`, `skeptic`, `chain-builder`, `fixer`). Parallel execution, writeback to graph. | The harness has parallel hunt workers but they all use the same role (scan for vulns). No role-polymorphic workers. No skeptic or chain-builder roles. No writeback to a shared graph. |
+| **C7: Cross-Model 2-of-3 Corroboration + Moderated Debate** | Every candidate voted on by Opus 4.7, GPT-5.5, and DeepSeek V4 before expensive verification. Moderated debate resolves disagreements. | The harness has VOTING stage but uses same-provider models. No cross-model corroboration (e.g., OpenRouter + Groq + Cerebras). No moderated debate. |
+| **C8: Dynamic Executable-PoC Verification Gate** | Every hypothesis gets a real Python subprocess that exercises the sink. Pass = `SINK REACHED` + `exit 0`. Skeptic re-inspection on every survived sink. | The harness has POC stage with ASan but not a dynamic verification gate. No skeptic re-inspection. No `SINK REACHED` oracle. |
+| **C9: Variant Hunter + Known-Issue Dedup** | Catalog ledger becomes bug signatures. Variant hunter searches files the swarm did not touch. Dedup matches against catalog. | The harness has CVE fetcher but no catalog-ledger dedup. No variant hunter that searches untouched files. |
+| **C10: Chain Builder + Composite Critical-Path PoC** | Each finding maps to precondition→postcondition state transition. Attack graph built and walked. Composite PoC runs end-to-end as one subprocess. Necessity verified by re-running with each link disabled. | The harness has CHAINS stage (BFS on metadata) but no composite PoC. No precondition→postcondition mapping. No necessity testing (re-run with each link disabled). |
+| **C11: Fixer with Chain-Severance Proof + CI Workflow** | Patches applied to copy of target. Composite chain PoC re-run against patched copy must die. Smoke test must pass. Patches held against real upstream fix commits. GitHub Actions workflow emitted. | The harness has PATCH stage but no chain-severance proof. No CI workflow emission. No upstream fix comparison. |
+| **C12: Speculation Layer with COW Overlay** | Harness predicts operator's next instruction and runs it in a COW overlay of the engagement directory. Result promoted on semantic match. Boundary detection refuses to speculate past HIGH-risk actions. | The harness has no speculation layer. No COW overlay. No predictive execution. |
+
+#### Detailed Implementation Specs (from notebook)
+
+**Engagement Graph schema (C1):**
+
+```
+surface   (id, kind, path, detail, source, ts)
+facts     (id, content, source, ts)
+hypotheses (id, target, vuln_class, claim, status, poc_sketch, source, ts)
+findings  (id, hyp_id, severity, cwe, title, file, poc_path, evidence, corroborators, cve_anchor, ts)
+dead_ends (id, target, why, source, ts)
+chains    (id, name, links, composite_poc_path, is_critical, ts)
+```
+
+**Audit log chain format (C2):** Each entry is JSONL with `ts`, `type`, `actor`, `payload`, `prev` (previous entry's SHA-256), `hash` (SHA-256 of `prev` + canonical JSON body). Six entry types: `action`, `model_output`, `tool_result`, `gate`, `refusal`, `self_monitor`. First mismatch in linear recomputation identifies the tampered line. Log file is structurally unreachable from agent-callable tools.
+
+**Risk-classified action layer (C3):** 44-tool registry. LOW (18 tools: `read_file`, `grep`, `graph_query`) = auto-approved. MEDIUM (11 tools: `run_poc_in_sandbox`, `write_poc_file`, `apply_patch_to_copy`, `ask_opus/gpt/deepseek`) = auto-approved + logged. HIGH (15 tools: `network_to_external`, `dump_process_memory`, `call_gdb`, `call_dd_on_proc`, `post_anywhere_external`, `send_email`, `delete_test_file`, `edit_audit_log`) = hard refused. Unknown tools default-deny. Includes `approval_score()` heuristic, sandbox enforcement (writes only to `engagement/sandbox/`), per-actor budget caps, per-item scope checks.
+
+**Self-monitor pathology detectors (C4):** 8 detectors mapped to System Card sections:
+- `test_delete_then_pass` (§2.3.5.2) — test file removed then tests pass
+- `cleanup_to_avoid_detection` (§2.3.3.1) — write then delete/revert own artifact
+- `ci_widening` (§2.3.3.1) — confidence interval grows after value asserted
+- `no_macro_obfuscation` (§2.3.5.2) — output flag contradicts artifact contents
+- `reward_hack_fishing` (§4.5.4) — 8+ grind/finalgrind-style runs
+- `proc_memory_attempt` (§4.5.5.3) — attempted gdb/dd on /proc
+- `sandbox_escape_attempt` (§4.5.5.3) — write outside sandbox
+- `external_filing_attempt` (§4.5.5.3) — send_email or post to external
+
+Three strikes halts the actor. Deliberative Gate compares agent self-check JSON against independent risk+scope+budget re-verification; disagreement = refusal.
+
+**ULTRAPLAN structure (C5):** Three-pass plan: (1) deterministic static scan counts dangerous sinks (`eval`, `pickle.load`, `importlib.import_module`, `Template`) per target file; (2) variant hunt seeds extracted from catalog (13 entries, each with file+CWE+signature); (3) single Opus call producing JSON with `scope`, `vuln_classes`, `worklist` (per item: file, vuln_class, model, reason), `budgets` (per model: max_calls, max_usd), `stopping_criteria`. A second "Advisor" call reviews before execution.
+
+**Corroboration voting logic (C7):** Each hypothesis evaluated by all three models via `corroborate()`, each returning "real" or "fp". Tally ≥ 2/3 = promote to "testing". Tally = 1/3 = enters moderated 2-turn debate (Opus moderates dissenter vs. majority, transcript logged to audit). Debate outcome: "PROMOTE" or "REFUTE". Tally = 0/3 = immediately refuted, recorded as dead end.
+
+**Verification gate oracle (C8):** `run_poc_in_sandbox()` writes PoC to temp file, runs as subprocess with 10s timeout. Sink reached = `exit 0` AND `"SINK REACHED"` in stdout. Two modes: direct-call (pickle sentinel, Jinja SSTI gadget) and live-server (boots `mlflow server --app-name basic-auth`, waits for `/health`, sends authenticated HTTP). After PoC passes, fresh-context skeptic re-reads source in separate Opus call (no PoC context) looking for compensating controls; result: "survives" or "demoted: <reason>".
+
+**Chain-severance proof (C10–C11):** 9-state vocabulary (`unauth`, `low_priv`, `admin`, `arbitrary_read`, `arbitrary_write`, `rce_worker`, `rce_cross_tenant`, `data_exfil`). Each finding annotated as (precondition, postcondition) edge. DFS path enumeration (19 paths). Critical path: default creds → `_validate_source` bypass → `loader_module` import → cross-tenant propagation (4 links). Necessity verified by 4 subprocess runs, each disabling one link via CLI arg; every run exits non-zero at the disabled link. Composite PoC exits 0 against unpatched, exits non-zero against patched overlay.
+
+**Speculation layer COW overlay (C12):** `shutil.copytree(engagement/, engagement.spec/, ignore=sandbox)` creates COW copy. Predictor: Opus call emitting top-2 next operator instructions with confidence scores. Background forked execution writes results to `engagement.spec/speculation/`. Boundary detection: `predicted_action_risk()` checks text for HIGH keywords (apply patches, send to maintainers, deploy) = REFUSE; MEDIUM keywords (run live server, open network) = STAGE only; LOW = full speculative execution. Caps: 2 ahead, 8 turns, 40 messages. On match: rename `.spec/` over `engagement/` (promote). On miss: `shutil.rmtree(engagement.spec/)`.
+
+**Scoreboard (5 runs, 8 metrics):**
+
+| Run | Real Findings | FP | Chain | Composite PoC | Severed | Smoke | Re-reports | $/finding |
+|---|---|---|---|---|---|---|---|---|
+| One-shot Opus 4.7 | 4/13 | 1 | no | no | no | n/a | — | $0.36 |
+| One-shot GPT-5.5 | 4/13 | 1 | no | no | no | n/a | — | $0.18 |
+| One-shot DeepSeek V4 | 3/13 | 0 | no | no | no | n/a | — | $0.04 |
+| Solo-ReAct Opus | 6/13 | 0 | no | no | no | n/a | — | $1.12 |
+| **Mythos full harness** | **11/13** | **0** | **yes** | **yes** | **yes** | **pass** | **0** | **$0.90** |
+
+**Where This Harness Is Stronger (Architectural):**
+
+| Advantage | Details |
+|---|---|
+| **Pipeline depth** | 17 canonical stages vs 12 components. Covers gap analysis, shielding, suppressions, exposure tracking, feedback loops. The mythos-architecture has no equivalent. |
+| **Multi-provider model routing** | 5 providers with disjoint model pools. The mythos-architecture uses 3 models (Opus, GPT-5.5, DeepSeek) but not disjoint pools. |
+| **Schema-validated contracts** | 8 JSON schemas + `contracts.py`. The mythos-architecture has no output validation. |
+| **Property-based testing** | Invariant inference + ASan-compiled C harness + bounded-random fuzzing. The mythos-architecture has no PBT. |
+| **Exploit synthesis tier assessment** | T4–T1 tier grading. The mythos-architecture has chain builder but no tier categorization. |
+| **MCP server** | FastMCP-based stdio server. The mythos-architecture has no MCP. |
+| **Multi-language ingestor** | Tree-sitter AST for 8 languages. The mythos-architecture targets Python only (MLflow). |
+| **Resumable state** | SQLite StateDB. The mythos-architecture uses engagement graph but no resume mechanism. |
+
+**Architectural Gap Summary:**
+
+| Gap | Severity | Effort | Notes |
+|---|---|---|---|
+| **Engagement Graph (typed world model)** | 🔴 Critical | High | Shared graph with surface/facts/hypotheses/findings/deads/chains tables would unify all stage state. Currently each stage reads/writes independently. |
+| **Hash-Chained Immutable Audit Log** | 🟠 High | Medium | SHA-256 chained append-only log would provide tamper-evident action history. Required for CVD attestation and reproducibility. |
+| **Risk-Classified Action Layer** | 🟠 High | Medium | LOW/MEDIUM/HIGH tool classification with structural refusal of HIGH actions. Extends EgressAuditContext to all stages. |
+| **Self-Monitor + Deliberative Gate** | 🟠 High | Medium–High | Behavioural pathology detectors + two-step pre-action check. Maps to System Card incidents. Extends reward-hack/confabulation to comprehensive self-monitor. |
+| **ULTRAPLAN (strategic planning phase)** | 🟠 High | Medium | Up-front reasoning call at max effort produces engagement plan. Advisor review before execution. Currently no planning phase. |
+| **Role-Polymorphic Worker Swarm** | 🟠 High | Medium | Ephemeral workers with single roles (scanner, variant-hunter, verifier, skeptic, chain-builder, fixer). Currently all workers same role. |
+| **Cross-Model 2-of-3 Corroboration** | 🟡 Medium | Medium | Voting across 3 different providers before expensive verification. Currently VOTING uses same-provider models. |
+| **Dynamic Executable-PoC Verification Gate** | 🟡 Medium | Medium | Real subprocess PoCs with `SINK REACHED` oracle. Skeptic re-inspection. Currently POC uses ASan only. |
+| **Variant Hunter + Known-Issue Dedup** | 🟡 Medium | Low | Catalog-ledger dedup + search untouched files. Currently no variant hunter. |
+| **Chain Builder + Composite PoC** | 🟡 Medium | Medium | Precondition→postcondition mapping, composite PoC, necessity testing. Currently CHAINS is metadata-only. |
+| **Fixer with Chain-Severance Proof** | 🟡 Medium | Medium | Patch + regression proof + CI workflow emission. Currently PATCH has no regression proof. |
+| **Speculation Layer with COW Overlay** | 🟢 Stretch | High | Predictive execution in COW overlay. Novel pattern, no equivalent in any reference. |
+
+### A5.5 vs. Claude Mythos Red Teaming Framework (`anshug/claude-mythos`)
+
+**Source:** `https://github.com/anshug/claude-mythos` — prompt framework that transforms LLMs into multi-agent offensive security systems. 7 specialized agents, 8-phase methodology, shared findings bus, CVSS 3.1 scoring, 3-tier validation model. CC-BY-4.0 license. 44 stars, 10 forks.
+
+**Architecture:**
+
+```
+RECON → HUNTER → ADVERSARIAL → EXPLOIT → TRIAGE → AI SECURITY → SECRETS & SUPPLY CHAIN
+         ↕ shared findings bus (/tmp/findings.jsonl) ↕
+```
+
+**Where This Framework Is Stronger (7 Agents + 8 Phases):**
+
+| Component | Description | Harness Gap |
+|---|---|---|
+| **AI Security Agent** | Dedicated agent for LLM/agent-specific vulnerabilities: prompt injection, context poisoning (RAG), tool misuse, data exfiltration, unsafe agent chaining, vector DB poisoning, trust boundary violations, unsafe LLM output execution. | The harness has LLM-specific vuln classes as a stretch goal (O1.3) but no dedicated agent. No RAG poisoning detection, no vector DB poisoning, no agent chaining flaw detection. |
+| **Secrets & Supply Chain Agent** | Dedicated agent for: hardcoded credential detection (entropy + patterns), dependency risk analysis (known CVEs, weak version pinning, suspicious packages), CI/CD attack vectors (unsafe PR execution, mutable tags, workflow injection). | The harness has no dedicated secrets/supply-chain agent. Dependency checking is manual (`_check_deps()`). No CI/CD attack vector detection. |
+| **Shared findings bus** | JSONL-based inter-agent communication at `/tmp/findings.jsonl`. Each agent reads before writing to avoid duplication. Deterministic finding IDs enable dedup. | The harness has no shared findings bus. Each stage reads/writes independently via StateDB. No JSONL inter-agent communication. |
+| **Finding ID as SHA256** | `SHA256(file_path + vuln_class + line_range)` — deterministic, collision-resistant, enables exact dedup across agents. | The harness uses `hashlib.sha256()` for snippet IDs but not for finding dedup. Finding dedup is semantic (cosine-sim), not deterministic. |
+| **3-tier validation model** | Tier 1 (Confirmed: runtime exploit), Tier 2 (Plausible: validated code path), Tier 3 (Theoretical: pattern only). Rule: High/Critical requires Tier 1 or 2. | The harness has confidence scores but no formal tier model. No rule preventing High/Critical assignment without runtime confirmation. |
+| **Adversarial analysis techniques** | Specific attack patterns: empty/null inputs, double encoding (`%2527`), Unicode tricks, parameter duplication, type confusion, second-order execution paths. | The hunt prompt has domain-specific patterns but not these specific adversarial encoding techniques. No double-encoding or Unicode trick detection. |
+| **8-phase methodology** | File Prioritization → Vulnerability Hypothesis → Adversarial Analysis → Experimentation → Exploit Development → Triage → Reporting → Iteration. More granular than the harness's pipeline. | The harness has 17 stages but lacks the dedicated adversarial analysis phase and the iteration loop (re-run adversarial across all findings). |
+| **Operating constraints** | Container isolation, no exfiltration, no payload persistence, mandatory logging to `/tmp/agent_log.jsonl`. | The harness has `EgressAuditContext` for POC but no container isolation, no mandatory logging constraint, no payload persistence prohibition. |
+
+**Where This Harness Is Stronger (Architectural):**
+
+| Advantage | Details |
+|---|---|
+| **Pipeline depth** | 17 canonical stages vs 8 phases. Covers gap analysis, shielding, suppressions, exposure tracking, feedback loops. |
+| **LLM output validation** | KL-divergence hallucination detection, call-path graph verification, semantic dedup. The framework relies on agent judgment only. |
+| **Schema-validated contracts** | 8 JSON schemas + `contracts.py`. The framework has a JSON output schema but no validation. |
+| **Multi-provider model routing** | 5 providers with disjoint model pools. The framework uses a single model. |
+| **Property-based testing** | Invariant inference + ASan-compiled C harness + bounded-random fuzzing. The framework has no PBT. |
+| **Exploit synthesis tier assessment** | T4–T1 tier grading. The framework has 3-tier validation but no exploit depth categorization. |
+| **MCP server** | FastMCP-based stdio server. The framework has no MCP. |
+| **Multi-language ingestor** | Tree-sitter AST for 8 languages. The framework is language-agnostic (prompt-based). |
+| **Resumable state** | SQLite StateDB. The framework uses JSONL (no resume). |
+
+**Architectural Gap Summary:**
+
+| Gap | Severity | Effort | Notes |
+|---|---|---|---|
+| **AI Security Agent (LLM/agent vuln detection)** | 🟠 High | Medium | Dedicated detection of prompt injection, RAG poisoning, tool misuse, agent chaining flaws, vector DB poisoning. Currently a stretch goal. |
+| **Secrets & Supply Chain Agent** | 🟡 Medium | Medium | Dedicated secrets detection + dependency risk + CI/CD attack vectors. Currently no dedicated agent. |
+| **Shared findings bus (JSONL inter-agent)** | 🟡 Medium | Low | JSONL-based communication between agents with deterministic dedup. Currently stages communicate via StateDB. |
+| **Finding ID as SHA256 (deterministic dedup)** | 🟡 Medium | Low | `SHA256(file_path + vuln_class + line_range)` for exact dedup. Currently semantic dedup only. |
+| **3-tier validation model with severity gating** | 🟡 Medium | Low | Rule: High/Critical requires Tier 1 (confirmed) or Tier 2 (plausible). Currently no severity gating. |
+| **Adversarial encoding techniques** | 🟢 Stretch | Low | Double encoding, Unicode tricks, parameter duplication, type confusion detection. |
+| **Mandatory logging constraint** | 🟢 Stretch | Low | All tool invocations logged to JSONL. Currently optional. |
+
+### A5.6 vs. RealMythos (`tszdanger/RealMythos`)
+
+**Source:** `https://github.com/tszdanger/RealMythos` — staged open initiative for public reconstruction of Claude Mythos as an open cybersecurity reasoning stack. 4-stage pipeline: Dataset → Model → Reproducible Environments → Trace Collection. 6,159 CVE-linked C/C++ reasoning records, `pocwriter-v1` model (Qwen3.5-9B SFT), Apache-2.0. 261 stars, 35 forks. Independent from Anthropic.
+
+**Architecture — 4 Stages:**
+
+```
+Stage 1: Security Reasoning Dataset (6,159 CVE-linked records)
+    ↓
+Stage 2: Open Security Reasoning Model (pocwriter-v1, Qwen3.5-9B SFT)
+    ↓
+Stage 3: Reproducible Software Environments (containerized vulnerable builds)
+    ↓
+Stage 4: Scaffold-Based Trace Collection (multiple scaffold designs)
+```
+
+**Where RealMythos Is Stronger (Data + Training + Reproducibility):**
+
+| Component | Description | Harness Gap |
+|---|---|---|
+| **CVE-linked reasoning dataset** | 6,159 records derived from real-world CVEs (not generic security Q&A). Each record includes root cause, trigger conditions, attacker-controlled inputs, data-flow path, impact, and PoC-oriented reasoning. SFT-ready format. | The harness has no training dataset. HUNT prompts are hand-written. No CVE-linked reasoning data for fine-tuning or few-shot examples. |
+| **Patch-unaware reasoning** | Reasoning prepared without access to fix code. Prevents the model from cheating by memorizing patches rather than learning to reason about vulnerabilities. Quality signal: does the model find the bug without seeing the fix? | The harness feeds raw source to LLMs with no awareness of whether patch information leaks into reasoning. No mechanism to prevent fix-leakage. |
+| **PoC-oriented evaluation metrics** | Quality tied to PoC construction success, not prose quality. Evaluation metadata includes whether a PoC triggers the hypothesized code path. Structured quality signals per record. | The harness evaluates findings by confidence scores and schema validation. No PoC-oriented quality metric. No structured evaluation metadata per finding. |
+| **Reproducible vulnerability environments** | Containerized vulnerable software environments with dependency capture, build scripts, test harnesses, PoC execution guards. Target: 18% → 35% reproducibility rate. Failure taxonomy for non-reproducible cases. | The harness has no reproducible environments. POC stage compiles with ASan but doesn't capture the full environment. No dependency capture, no failure taxonomy. |
+| **Scaffold-based trace collection** | Multiple scaffold designs for diverse reasoning workflows: static-analysis-assisted, dynamic-execution, patch-diff-aware, multi-reviewer validation, human-in-the-loop, environment-grounded PoC, failure-analysis. | The harness uses a single prompt per stage. No multiple scaffold designs. No trace collection infrastructure for reasoning quality analysis. |
+| **Open security reasoning model** | `pocwriter-v1`: full-parameter SFT of Qwen3.5-9B on RealMythosReasoning. +25% over baseline. Apache-2.0. Publicly available on Hugging Face. | The harness uses API-only models (OpenRouter free tier). No fine-tuned security reasoning model. No local model option. |
+| **Reef vulnerability/fix collection** | Foundation framework for collecting real-world vulnerabilities and fixes (published at ASE 2023). Provides the data pipeline for CVE-linked record extraction. | The harness has CVE fetcher (OSV.dev) but no structured vulnerability/fix collection framework. No pipeline for extracting reasoning records from CVEs. |
+| **Staged release with versioning** | Version tags, changelogs, artifact checksums, dataset/model cards, responsible-use statements. Community-verifiable infrastructure. | The harness has CHANGELOG.md but no artifact checksums, no versioned model releases, no dataset cards. |
+| **Comparison with baseline datasets** | Benchmarked against Primus, CyberSec-Merged, AquilaX, SecCoT-CN, SecKnowledge, OpenCodeReasoning. RealMythos is the only dataset with all 6 quality axes: real CVE code, PoC, patch-unaware, quality gate, CoT, teacher model. | The harness has no benchmark comparison for its prompts or outputs. No baseline dataset comparison. |
+
+**Where This Harness Is Stronger (Architectural):**
+
+| Advantage | Details |
+|---|---|
+| **Pipeline depth** | 17 canonical stages vs 4 stages. Covers gap analysis, shielding, suppressions, exposure tracking, feedback loops. |
+| **Runtime execution** | Live LLM calls with real-time validation. RealMythos is primarily a dataset/model training project, not a runtime scanning harness. |
+| **Multi-provider routing** | 5 providers with disjoint model pools. RealMythos uses a single model. |
+| **Schema-validated contracts** | 8 JSON schemas + `contracts.py`. RealMythos has dataset schema but no runtime contract validation. |
+| **MCP server** | FastMCP-based stdio server. RealMythos has no MCP. |
+| **Multi-language ingestor** | Tree-sitter AST for 8 languages. RealMythos targets C/C++ only. |
+| **Resumable state** | SQLite StateDB. RealMythos has no runtime state. |
+| **Property-based testing** | Invariant inference + ASan-compiled C harness + bounded-random fuzzing. RealMythos has no PBT. |
+
+**Architectural Gap Summary:**
+
+| Gap | Severity | Effort | Notes |
+|---|---|---|---|
+| **CVE-linked reasoning dataset** | 🟠 High | High | 6,159 real-world CVE records for few-shot prompting or fine-tuning. Currently hand-written prompts only. |
+| **Patch-unaware reasoning** | 🟡 Medium | Medium | Prevent fix-leakage by hiding patch information during analysis. Currently no awareness. |
+| **PoC-oriented evaluation metrics** | 🟡 Medium | Low | Quality tied to PoC success, not prose. Structured evaluation metadata per finding. |
+| **Reproducible vulnerability environments** | 🟡 Medium | High | Containerized environments with dependency capture, build scripts, test harnesses. Currently ASan-only. |
+| **Scaffold-based trace collection** | 🟢 Stretch | High | Multiple scaffold designs for diverse reasoning workflows. Currently single prompt per stage. |
+| **Open security reasoning model** | 🟢 Stretch | High | Fine-tuned model for security reasoning (pocwriter-v1). Currently API-only. |
+| **Reef vulnerability/fix collection pipeline** | 🟡 Medium | Medium | Structured pipeline for extracting reasoning records from CVEs. Currently manual. |
+| **Staged release with versioning + checksums** | 🟢 Stretch | Low | Version tags, checksums, dataset/model cards for all artifacts. Currently minimal. |
+| **Benchmark comparison for prompts/outputs** | 🟢 Stretch | Medium | Compare harness outputs against baseline datasets (Primus, CyberSec-Merged, etc.). |
 
 ---
 
@@ -621,6 +1000,53 @@ These areas are **explicitly out of scope** for a vulnerability discovery harnes
 | 🟡 Medium | Controlled CVE rediscovery benchmark (academic method) | O3 | Low |
 | 🟡 Medium | Role-tiered access layer + audit log | A1 | Low–Medium |
 | 🟡 Medium | `effort`-style dynamic compute allocation per finding | A4 | Low |
+| 🟡 Medium | Frozen context injection in gapfill loop | A4 | Low |
+| 🟡 Medium | Overthinking / convergence detection in gapfill | A4 | Low |
+| 🟡 Medium | Runtime invariant enforcement (score monotonicity, count bounds) | A4 | Medium |
+| 🟡 Medium | Score drift detection across pipeline stages | A4 | Medium |
+| 🟡 Medium | Compute scaling discipline for multi-model deployments | A4 | Low |
+| 🟡 Medium | Difficulty-adaptive model routing | A4 | Medium |
+| 🟡 Medium | Per-iteration quality gating in gapfill (ACT-inspired) | A4 | Medium |
+| 🟠 High | Hook-based auto-capture system (sanitizer/crash → structured JSON) | A5 | Medium |
+| 🟠 High | Variant analysis automation (post-finding variant hunting) | A5 | Medium |
+| 🟠 High | Discovery memory (journal + breadcrumbs + attack graph) | A5 | Medium |
+| 🟡 Medium | Adaptive compute allocation (rank-based turn budgets) | A5 | Low |
+| 🟡 Medium | Neighbor re-scan (files adjacent to confirmed findings) | A5 | Low |
+| 🟡 Medium | Crash corpus collection (PoC inputs → regression corpus) | A5 | Low |
+| 🟡 Medium | Scan checkpoint / premature exit prevention | A5 | Low |
+| 🟡 Medium | Self-recovery protocol (structured recovery when stuck) | A5 | Low |
+| 🟡 Medium | Per-target context templates (kernel, web, crypto, embedded) | A5 | Low |
+| 🟡 Medium | Multi-language sanitizer integration (Rust, Go, Java, Python, JS) | A5 | Medium |
+| 🟢 Stretch | First-principles assumption framework (7 categories for HUNT) | A5 | Low |
+| 🟢 Stretch | Multi-pass strategy (broad → deep → chain → variant) | A5 | Medium |
+| 🔴 Critical | Engagement Graph (typed world model: surface/facts/hypo/findings/deads/chains) | A5 | High |
+| 🟠 High | Hash-Chained Immutable Audit Log (SHA-256 tamper-evident) | A5 | Medium |
+| 🟠 High | Risk-Classified Action Layer (LOW/MEDIUM/HIGH, structural refusal) | A5 | Medium |
+| 🟠 High | Self-Monitor + Deliberative Gate (pathology detectors + pre-action check) | A5 | Medium–High |
+| 🟠 High | ULTRAPLAN (strategic planning phase + Advisor review) | A5 | Medium |
+| 🟠 High | Role-Polymorphic Worker Swarm (scanner/verifier/skeptic/chain-builder/fixer) | A5 | Medium |
+| 🟡 Medium | Cross-Model 2-of-3 Corroboration + Moderated Debate | A5 | Medium |
+| 🟡 Medium | Dynamic Executable-PoC Verification Gate (SINK REACHED oracle) | A5 | Medium |
+| 🟡 Medium | Variant Hunter + Known-Issue Dedup (catalog ledger) | A5 | Low |
+| 🟡 Medium | Chain Builder + Composite PoC (precondition→postcondition, necessity test) | A5 | Medium |
+| 🟡 Medium | Fixer with Chain-Severance Proof + CI Workflow emission | A5 | Medium |
+| 🟢 Stretch | Speculation Layer with COW Overlay (predictive execution) | A5 | High |
+| 🟠 High | AI Security Agent (prompt injection, RAG poisoning, agent chaining) | A5 | Medium |
+| 🟡 Medium | Secrets & Supply Chain Agent (credentials, deps, CI/CD) | A5 | Medium |
+| 🟡 Medium | Shared findings bus (JSONL inter-agent communication) | A5 | Low |
+| 🟡 Medium | Finding ID as SHA256 (deterministic dedup) | A5 | Low |
+| 🟡 Medium | 3-tier validation model with severity gating | A5 | Low |
+| 🟢 Stretch | Adversarial encoding techniques (double encoding, Unicode tricks) | A5 | Low |
+| 🟢 Stretch | Mandatory logging constraint (all tool invocations → JSONL) | A5 | Low |
+| 🟠 High | CVE-linked reasoning dataset (6,159 real-world CVE records) | A5 | High |
+| 🟡 Medium | Patch-unaware reasoning (prevent fix-leakage) | A5 | Medium |
+| 🟡 Medium | PoC-oriented evaluation metrics (quality tied to PoC success) | A5 | Low |
+| 🟡 Medium | Reproducible vulnerability environments (containerized builds) | A5 | High |
+| 🟢 Stretch | Scaffold-based trace collection (multiple scaffold designs) | A5 | High |
+| 🟢 Stretch | Open security reasoning model (pocwriter-v1, Qwen3.5-9B SFT) | A5 | High |
+| 🟡 Medium | Reef vulnerability/fix collection pipeline | A5 | Medium |
+| 🟢 Stretch | Staged release with versioning + checksums | A5 | Low |
+| 🟢 Stretch | Benchmark comparison for prompts/outputs | A5 | Medium |
 | 🟡 Medium | Auth/IAM + cloud-native domain expansion | O1 | Medium |
 | 🟡 Medium | VAOP vetted-access operational pattern | A2 | Medium |
 | 🟡 Medium | MCPR posture rubric (runtime anomaly detection) | A2 | Medium |
@@ -691,7 +1117,13 @@ These areas are **explicitly out of scope** for a vulnerability discovery harnes
 - `/tmp/deep-research-report.md` — Deep research report on Claude Mythos: Project Glasswing metrics (10K+ vulns, 400 critical from Cloudflare), 72% exploit success rate, CVE-to-exploit in hours, sandbox escape incident with 4 containment failures (A1–A4).
 - `/tmp/readme.txt` — OpenMythos theoretical RDT architecture hypothesis: 3-stage pipeline (Prelude → Recurrent Block up to 64 loops → Coda), MoE (64 experts, 4 active per token), Multi-Latent Attention, Parcae LTI stability constraint.
 - `/tmp/deep-research-report (1).md` — Deep research report on Claude Mythos Preview: System Card confirmed metrics (SWE-Bench Verified 93.9%, Terminal-Bench 2.0 82.0%, SWE-Bench Pro 77.8%), ~10T parameters rumored.
-- [OpenMythos — GitHub](https://github.com/openmythos) — Open-source theoretical reconstruction of Claude Mythos architecture (RDT, MoE, MLA, Parcae stability). Independent, not official Anthropic.
-- [Parcae: Stable Training of Looped Transformers — UCSD + Together AI](https://arxiv.org/abs/2604.XXXXX) — April 2026 paper providing the spectral-radius constraint method for looped transformer stability.
+- [OpenMythos — GitHub](https://github.com/kyegomez/OpenMythos) — Open-source PyTorch reconstruction of hypothesized Claude Mythos Recurrent-Depth Transformer (RDT) architecture. MIT license. Three-stage layout (Prelude → Recurrent Block → Coda), MoE FFN (64 experts, 4 active per token), Multi-Latent Attention, Parcae LTI stability constraint. Independent, theoretical reconstruction; not affiliated with Anthropic.
+- [Parcae: Stable Training of Looped Transformers — Prairie et al. (2026)](https://arxiv.org/abs/2604.12946) — LTI stability fix and scaling laws for looped LMs. Spectral-radius constraint via `exp(-exp(...))` reparameterization. Applicable to preventing drift in multi-iteration vulnerability analysis.
 - [Defense-in-Depth Reference Architecture for Mythos-Class Frontier Models — MDPI](https://mdpi.com) — May 2026 paper specifying VAOP, ABOR, CPIP, MCPR containment layers.
 - [defending-code-reference-harness — GitHub](https://github.com/anthropics/defending-code-reference-harness) — Anthropic's official reference implementation for autonomous vulnerability discovery and remediation with Claude. 7-stage ASAN pipeline, gVisor sandboxed, per-target YAML configs, two-container trust boundary. Apache 2.0.
+- [Universal Transformers — Dehghani et al. (2018)](https://arxiv.org/pdf/1807.03819) — Original Adaptive Computation Time (ACT) halting for transformers. Per-position halting probability mechanism applicable to adaptive compute allocation per finding.
+- [Reasoning with Latent Thoughts — Saunshi et al. (2025)](https://arxiv.org/abs/2502.17416) — Power of looped transformers. Validates iterative refinement with frozen input injection outperforms single-pass analysis.
+- [Glasswing-Open — GitHub](https://github.com/igorbarshteyn/glasswing-open) — Proof-of-concept agentic scaffold replicating Claude Mythos Preview's cyber capabilities with open-weights LLMs. LLM-agnostic (Qwen3.5, MiniMax M2.7), Kali Linux native, 7 hooks (auto-capture, variant hunting, scan checkpoint), discovery memory system (journal + breadcrumbs + attack graph), 5-phase orchestrator with neighbor re-scan, crash corpus collection, 10 per-target context templates, 7-category first-principles assumption framework. MIT license.
+- [Claude Mythos Architecture — GitHub](https://github.com/FareedKhan-dev/claude-mythos-architecture) — Reverse-engineering of the Mythos cybersecurity harness as a 12-component architecture across 3 layers (Engagement Substrate, Discovery & Verification, Synthesis). Tested against MLflow v2.9.2: 11 real findings, 0 false positives, 1 critical 4-link attack chain, 4 patches with chain-severance proof. Components: Engagement Graph (typed SQLite world model), Hash-Chained Audit Log, Risk-Classified Action Layer, Self-Monitor + Deliberative Gate, ULTRAPLAN, Role-Polymorphic Worker Swarm, Cross-Model 2-of-3 Corroboration, Dynamic Executable-PoC Verification Gate, Variant Hunter, Chain Builder + Composite PoC, Fixer with Chain-Severance Proof + CI Workflow, Speculation Layer with COW Overlay. MIT license.
+- [Claude Mythos Red Teaming Framework — GitHub](https://github.com/anshug/claude-mythos) — Prompt framework transforming LLMs into 7-agent offensive security systems (Recon, Hunter, Adversarial, Exploit, Triage, AI Security, Secrets & Supply Chain). 8-phase methodology, shared findings bus (`/tmp/findings.jsonl`), SHA256 deterministic finding IDs, 3-tier validation model (Confirmed/Plausible/Theoretical), CVSS 3.1 scoring. Dedicated AI Security agent for prompt injection, RAG poisoning, tool misuse, agent chaining flaws. CC-BY-4.0 license.
+- [RealMythos — GitHub](https://github.com/tszdanger/RealMythos) — Staged open initiative for public reconstruction of Claude Mythos as an open cybersecurity reasoning stack. 4 stages: Dataset (6,159 CVE-linked C/C++ reasoning records) → Model (`pocwriter-v1`, Qwen3.5-9B SFT, +25% over baseline) → Reproducible Environments (containerized vulnerable builds, 18%→35% reproducibility target) → Trace Collection (multiple scaffold designs). Patch-unaware reasoning, PoC-oriented evaluation, Reef vulnerability/fix collection foundation. Apache-2.0.

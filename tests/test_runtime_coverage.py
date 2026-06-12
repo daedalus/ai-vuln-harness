@@ -236,11 +236,15 @@ class FetchModelLimitsTests(unittest.TestCase):
                     }
                 )
             )
-            result = fetch_model_limits(
-                ["fake-model-v1:free"],
-                Path(tmp),
-            )
-            self.assertEqual(result, {"fake-model-v1:free": 65536})
+            with patch(
+                "ai_vuln_harness.stages.runtime._fetch_provider_limits",
+                return_value={},
+            ):
+                result = fetch_model_limits(
+                    ["fake-model-v1:free"],
+                    Path(tmp),
+                )
+                self.assertEqual(result, {"fake-model-v1:free": 65536})
 
     def test_fallback_to_128k_on_empty_cache_and_no_network(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -305,12 +309,16 @@ class FetchModelLimitsTests(unittest.TestCase):
                     }
                 )
             )
-            result = fetch_model_limits(
-                ["model-a:free", "model-b:free"],
-                Path(tmp),
-            )
-            self.assertEqual(result["model-a:free"], 32768)
-            self.assertEqual(result["model-b:free"], 65536)
+            with patch(
+                "ai_vuln_harness.stages.runtime._fetch_provider_limits",
+                return_value={},
+            ):
+                result = fetch_model_limits(
+                    ["model-a:free", "model-b:free"],
+                    Path(tmp),
+                )
+                self.assertEqual(result["model-a:free"], 32768)
+                self.assertEqual(result["model-b:free"], 65536)
 
     def test_stale_cache_falls_back_when_no_network(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -327,11 +335,15 @@ class FetchModelLimitsTests(unittest.TestCase):
                     }
                 )
             )
-            result = fetch_model_limits(
-                ["stale-model:free"],
-                Path(tmp),
-            )
-            self.assertEqual(result.get("stale-model:free"), 999)
+            with patch(
+                "ai_vuln_harness.stages.runtime._fetch_provider_limits",
+                return_value={},
+            ):
+                result = fetch_model_limits(
+                    ["stale-model:free"],
+                    Path(tmp),
+                )
+                self.assertEqual(result.get("stale-model:free"), 999)
 
 
 class _MockedCallTests(unittest.TestCase):

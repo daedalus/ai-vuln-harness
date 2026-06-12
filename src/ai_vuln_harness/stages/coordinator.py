@@ -113,16 +113,24 @@ def _chunk_domain(
     budget_tokens: int,
     system_prompt: str,
 ) -> list[dict]:
-    import tiktoken
+    try:
+        import tiktoken
 
-    token_enc = tiktoken.get_encoding("cl100k_base")
+        token_enc = tiktoken.get_encoding("cl100k_base")
+
+        def _encode(text: str) -> list:
+            return token_enc.encode(text)
+    except ImportError:
+        # Fallback: approximate 1 token per 4 bytes when tiktoken unavailable
+        def _encode(text: str) -> list:
+            return [0] * max(1, len(text) // 4)
 
     def _pack_overhead_tokens(domain: str, ctx: dict | None = None) -> int:
         dummy = _make_pack(domain, [], security_context=ctx)
-        return len(token_enc.encode(json.dumps(dummy, indent=2)))
+        return len(_encode(json.dumps(dummy, indent=2)))
 
     def _snippet_tokens(s: dict) -> int:
-        return len(token_enc.encode(json.dumps(s, indent=2)))
+        return len(_encode(json.dumps(s, indent=2)))
 
     packs: list[dict] = []
     pack_snips: list[dict] = []
@@ -130,7 +138,7 @@ def _chunk_domain(
     overhead = _pack_overhead_tokens(domain, security_ctx)
     running_tokens = overhead
     if system_prompt:
-        running_tokens += len(token_enc.encode(system_prompt)) + 30
+        running_tokens += len(_encode(system_prompt)) + 30
 
     for s in items:
         s_tok = _snippet_tokens(s)
@@ -150,7 +158,7 @@ def _chunk_domain(
             pack_snips = [s]
             running_tokens = overhead + s_tok
             if system_prompt:
-                running_tokens += len(token_enc.encode(system_prompt)) + 30
+                running_tokens += len(_encode(system_prompt)) + 30
     if pack_snips:
         packs.append(_make_pack(domain, pack_snips, security_context=security_ctx))
     return packs

@@ -2,6 +2,12 @@
 only findings that appear in at least *min_votes* independent outputs.
 
 This cuts noise before it reaches the Validate stage.
+
+Improvements:
+- 3-tier validation model (Tier 1=Confirmed, Tier 2=Plausible, Tier 3=Theoretical)
+- Severity gating: High/Critical requires Tier 1 or Tier 2
+- Confidence aggregation across votes
+- Evidence accumulation from multiple hunters
 """
 
 from __future__ import annotations
@@ -21,6 +27,64 @@ _CONJUNCTIVE_CONNECTORS = re.compile(
 _CALL_PATH_CEILING = 8
 _CONNECTOR_CEILING = 5
 _FILE_CEILING = 4
+
+# ---------------------------------------------------------------------------
+# 3-tier validation model (from anshug/claude-mythos)
+# ---------------------------------------------------------------------------
+
+TIER_CONFIRMED = 1  # Runtime exploit executed successfully
+TIER_PLAUSIBLE = 2  # Validated code path, no runtime confirmation
+TIER_THEORETICAL = 3  # Pattern match only, no validation
+
+_TIER_RANK = {
+    "confirmed": TIER_CONFIRMED,
+    "plausible": TIER_PLAUSIBLE,
+    "theoretical": TIER_THEORETICAL,
+}
+_TIER_NAMES = {
+    TIER_CONFIRMED: "confirmed",
+    TIER_PLAUSIBLE: "plausible",
+    TIER_THEORETICAL: "theoretical",
+}
+
+
+def _determine_validation_tier(finding: dict) -> int:
+    """Determine validation tier from finding attributes.
+
+    Tier 1 (Confirmed): poc_confirmed=True, or confidence >= 0.9
+    Tier 2 (Plausible): confidence >= 0.6, or has suspicious_points
+    Tier 3 (Theoretical): everything else
+    """
+    if finding.get("poc_confirmed"):
+        return TIER_CONFIRMED
+    confidence = finding.get("confidence") or finding.get("validate_confidence") or 0.0
+    if confidence >= 0.9:
+        return TIER_CONFIRMED
+    if confidence >= 0.6 or finding.get("suspicious_points"):
+        return TIER_PLAUSIBLE
+    return TIER_THEORETICAL
+
+
+def _validate_severity_tier(finding: dict, *, enforce: bool = False) -> dict:
+    """Enforce severity gating: High/Critical requires Tier 1 or Tier 2.
+
+    If enforce=True and a finding is marked High/Critical but is only Tier 3
+    (Theoretical), downgrade to Medium. This prevents unconfirmed findings from
+    being reported as high-severity.
+
+    Default is enforce=False to preserve backward compatibility.
+    """
+    if not enforce:
+        return finding
+    tier = finding.get("validation_tier", TIER_THEORETICAL)
+    severity = str(finding.get("severity", "")).upper()
+    if severity in ("CRITICAL", "HIGH") and tier == TIER_THEORETICAL:
+        finding["severity"] = "MEDIUM"
+        finding["severity_downgraded"] = True
+        finding["downgrade_reason"] = (
+            f"High/Critical requires Tier 1 or 2, was Tier {tier}"
+        )
+    return finding
 
 
 def complexity_score(finding: dict) -> float:
@@ -83,12 +147,19 @@ def complexity_score(finding: dict) -> float:
 _COMPLEXITY_PENALTY_THRESHOLD = 0.75
 
 
-def _finding_key(finding: dict) -> tuple[str, str]:
-    """Canonical dedup key: (snippet_id, vulnerability class)."""
-    return (
-        str(finding.get("snippet_id") or ""),
-        str(finding.get("class") or ""),
-    )
+def _finding_key(finding: dict) -> str:
+    """Deterministic dedup key using SHA256-based finding_id.
+
+    Falls back to (snippet_id, class) when finding_id is absent.
+    Returns empty string when no valid key can be constructed.
+    """
+    fid = finding.get("finding_id")
+    if fid:
+        return fid
+    snippet_id = str(finding.get("snippet_id") or "")
+    if not snippet_id:
+        return ""
+    return snippet_id + "|" + str(finding.get("class") or "")
 
 
 def _severity_rank(sev: str) -> int:
@@ -97,37 +168,102 @@ def _severity_rank(sev: str) -> int:
 
 def _count_votes(
     outputs: list[list[dict]],
-) -> tuple[dict[tuple[str, str], int], dict[tuple[str, str], dict]]:
-    vote_counts: dict[tuple[str, str], int] = defaultdict(int)
-    best_variant: dict[tuple[str, str], dict] = {}
+) -> tuple[dict[str, int], dict[str, dict]]:
+    """Count votes and aggregate confidence/evidence across hunters.
+
+    For each unique finding:
+    - vote_count: number of hunters that found it
+    - confidence_sum / confidence_count: for averaging
+    - evidence: accumulated suspicious_points from all hunters
+    - hunters: list of hunter models that found it
+    """
+    vote_counts: dict[str, int] = defaultdict(int)
+    best_variant: dict[str, dict] = {}
+    confidence_sums: dict[str, float] = defaultdict(float)
+    confidence_counts: dict[str, int] = defaultdict(int)
+    evidence_acc: dict[str, list[dict]] = defaultdict(list)
+    hunter_acc: dict[str, list[str]] = defaultdict(list)
+
     for run in outputs:
-        seen_in_run: set[tuple[str, str]] = set()
+        seen_in_run: set[str] = set()
         for f in run or []:
             key = _finding_key(f)
-            if not key[0]:
+            if not key:
                 continue
             if key not in seen_in_run:
                 vote_counts[key] += 1
                 seen_in_run.add(key)
+                # Track which hunter model found this
+                model = f.get("hunt_model") or f.get("model") or "unknown"
+                if model not in hunter_acc[key]:
+                    hunter_acc[key].append(model)
+
+            # Aggregate confidence
+            conf = f.get("confidence") or f.get("validate_confidence") or 0.0
+            if conf > 0:
+                confidence_sums[key] += conf
+                confidence_counts[key] += 1
+
+            # Accumulate evidence (suspicious_points)
+            points = f.get("suspicious_points") or []
+            if points:
+                evidence_acc[key].extend(points)
+
+            # Keep highest severity variant
             existing = best_variant.get(key)
             if existing is None or _severity_rank(
                 f.get("severity", ""),
             ) > _severity_rank(existing.get("severity", "")):
                 best_variant[key] = f
+
+    # Annotate best variants with aggregated data
+    for key, variant in best_variant.items():
+        if confidence_counts[key] > 0:
+            variant["aggregated_confidence"] = round(
+                confidence_sums[key] / confidence_counts[key],
+                3,
+            )
+        if evidence_acc[key]:
+            variant["accumulated_evidence"] = evidence_acc[key]
+        if hunter_acc[key]:
+            variant["hunter_models"] = hunter_acc[key]
+
     return vote_counts, best_variant
 
 
 def _build_results(
-    best_variant: dict[tuple[str, str], dict],
-    vote_counts: dict[tuple[str, str], int],
+    best_variant: dict[str, dict],
+    vote_counts: dict[str, int],
     min_votes: int,
+    *,
+    enforce_severity_gating: bool = False,
 ) -> tuple[list[dict], list[dict]]:
+    """Build promoted/suppressed lists with validation tier and severity gating.
+
+    Applies:
+    1. Validation tier assignment (Tier 1/2/3)
+    2. Severity gating (High/Critical requires Tier 1 or 2) — when enforce_severity_gating=True
+    3. Complexity penalty
+    """
     promoted: list[dict] = []
     suppressed: list[dict] = []
     for key, variant in best_variant.items():
         count = vote_counts[key]
         cscore = complexity_score(variant)
-        annotated = {**variant, "vote_count": count, "complexity_score": cscore}
+
+        # Determine validation tier
+        tier = _determine_validation_tier(variant)
+        variant["validation_tier"] = tier
+        variant["validation_tier_name"] = _TIER_NAMES.get(tier, "unknown")
+
+        # Apply severity gating (only when enforced)
+        variant = _validate_severity_tier(variant, enforce=enforce_severity_gating)
+
+        annotated = {
+            **variant,
+            "vote_count": count,
+            "complexity_score": cscore,
+        }
         if count >= min_votes:
             if cscore > _COMPLEXITY_PENALTY_THRESHOLD and count == min_votes:
                 annotated["suppressed_reason"] = "complexity_penalty"
@@ -142,6 +278,8 @@ def _build_results(
 def merge_hunter_outputs(
     outputs: list[list[dict]],
     min_votes: int = 2,
+    *,
+    enforce_severity_gating: bool = False,
 ) -> tuple[list[dict], list[dict]]:
     """Merge findings from multiple hunter runs.
 
@@ -152,13 +290,23 @@ def merge_hunter_outputs(
     min_votes:
         Minimum number of runs a finding must appear in to be promoted.
         Defaults to 2 (majority of two or more hunters required).
+    enforce_severity_gating:
+        If True, High/Critical findings require Tier 1 or Tier 2 validation.
+        Default False for backward compatibility.
 
     Returns
     -------
     (promoted, suppressed)
         *promoted* contains deduplicated findings that reached the vote
-        threshold, each annotated with a ``vote_count`` field and a
-        ``complexity_score`` field.
+        threshold, each annotated with:
+        - ``vote_count``: number of hunters that found it
+        - ``complexity_score``: over-engineering penalty score
+        - ``validation_tier``: 1 (confirmed), 2 (plausible), 3 (theoretical)
+        - ``validation_tier_name``: human-readable tier name
+        - ``aggregated_confidence``: average confidence across votes
+        - ``accumulated_evidence``: merged suspicious_points from all hunters
+        - ``hunter_models``: list of models that found this vulnerability
+
         *suppressed* contains findings that did not reach threshold, plus
         findings demoted by the complexity penalty (annotated with
         ``"suppressed_reason": "complexity_penalty"``).
@@ -170,9 +318,18 @@ def merge_hunter_outputs(
     if len(outputs) == 1:
         result = []
         for f in outputs[0] or []:
+            tier = _determine_validation_tier(f)
+            f["validation_tier"] = tier
+            f["validation_tier_name"] = _TIER_NAMES.get(tier, "unknown")
+            f = _validate_severity_tier(f, enforce=enforce_severity_gating)
             annotated = {**f, "vote_count": 1, "complexity_score": complexity_score(f)}
             result.append(annotated)
         return result, []
 
     vote_counts, best_variant = _count_votes(outputs)
-    return _build_results(best_variant, vote_counts, min_votes)
+    return _build_results(
+        best_variant,
+        vote_counts,
+        min_votes,
+        enforce_severity_gating=enforce_severity_gating,
+    )

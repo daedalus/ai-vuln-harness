@@ -242,6 +242,8 @@ class TestBuildRunKwargs:
         ns.sandbox_backend = "docker"
         ns.sandbox_compile = False
         ns.no_cache = False
+        ns.test_reduction = False
+        ns.enforce_severity_gating = False
         return ns
 
     def test_returns_dict(self, args):

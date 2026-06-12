@@ -463,7 +463,14 @@ def _run_gapfill_loop(
             gapfill_iter=gapfill_iter,
             model_pool=model_pool,
         )
-        validated.extend(fresh_f)
+        seen_ids = {f.get("finding_id", "") for f in validated if f.get("finding_id")}
+        for f in fresh_f:
+            fid = f.get("finding_id", "")
+            if fid and fid in seen_ids:
+                continue
+            if fid:
+                seen_ids.add(fid)
+            validated.append(f)
         all_gaps = [g for g in all_gaps if g.get("gapfill_retried")] + fresh_g
     return validated, all_gaps, gapfill_tasks
 
@@ -961,6 +968,7 @@ def _run_hunt_packs(
 
     all_findings: list[dict] = []
     all_gaps: list[dict] = []
+    seen_finding_ids: set[str] = set()
 
     if model_pool is not None:
         tasks = [{"pack": p} for p in packs]
@@ -1014,7 +1022,13 @@ def _run_hunt_packs(
             domain = t["pack"].get("agent", "?")
             try:
                 findings, gaps = f.result()
-                all_findings.extend(findings)
+                for finding in findings:
+                    fid = finding.get("finding_id", "")
+                    if fid and fid in seen_finding_ids:
+                        continue
+                    if fid:
+                        seen_finding_ids.add(fid)
+                    all_findings.append(finding)
                 all_gaps.extend(gaps)
             except Exception as e:
                 all_gaps.append(
@@ -1481,15 +1495,19 @@ def _kpi_precision_top_n(findings: list[dict], top_n: int) -> float:
 def _kpi_duplicate_rate(findings: list[dict]) -> float:
     dedup_keys = set()
     for finding in findings:
-        lines = finding.get("lines") or []
-        line_start = int(lines[0]) if lines else 0
-        dedup_keys.add(
-            (
-                str(finding.get("file") or finding.get("snippet_id") or ""),
-                str(finding.get("class") or ""),
-                line_start,
-            ),
-        )
+        fid = finding.get("finding_id")
+        if fid:
+            dedup_keys.add(fid)
+        else:
+            lines = finding.get("lines") or []
+            line_start = int(lines[0]) if lines else 0
+            dedup_keys.add(
+                (
+                    str(finding.get("file") or finding.get("snippet_id") or ""),
+                    str(finding.get("class") or ""),
+                    line_start,
+                ),
+            )
     return 1.0 - _safe_ratio(len(dedup_keys), len(findings))
 
 
@@ -1938,6 +1956,7 @@ def run(  # noqa: PLR0913
     no_scan_git_cves: bool = False,
     no_cache: bool = False,
     target_mode: bool = False,
+    enforce_severity_gating: bool = False,
 ) -> dict:
     pkg_dir = Path(__file__).parent
     work_dir = Path.cwd()
@@ -2103,6 +2122,7 @@ def run(  # noqa: PLR0913
     promoted, suppressed_by_vote = merge_hunter_outputs(
         [validated],
         min_votes=cfg.get("shield", {}).get("min_votes", 2),
+        enforce_severity_gating=enforce_severity_gating,
     )
     state.put_meta("suppressed_by_vote", str(len(suppressed_by_vote)))
 
@@ -2551,6 +2571,7 @@ def _build_run_kwargs(args: argparse.Namespace, *, target_mode: bool = False) ->
         "sandbox_backend": args.sandbox_backend,
         "sandbox_compile": args.sandbox_compile,
         "target_mode": target_mode,
+        "enforce_severity_gating": args.enforce_severity_gating,
     }
 
 
@@ -2703,6 +2724,13 @@ def main() -> None:
     parser.add_argument("--benchmark-profile", type=str, default="library")
     parser.add_argument("--benchmark-top-n", type=int, default=10)
     parser.add_argument("--update-benchmark-baseline", action="store_true")
+    parser.add_argument(
+        "--enforce-severity-gating",
+        action="store_true",
+        default=False,
+        help="Downgrade High/Critical findings to Medium if only Tier 3 (Theoretical). "
+        "Requires Tier 1 (Confirmed) or Tier 2 (Plausible) for High/Critical severity.",
+    )
     args = parser.parse_args()
 
     _setup_proxy(args.proxy)

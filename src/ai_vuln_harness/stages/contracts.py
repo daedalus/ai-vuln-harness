@@ -16,6 +16,7 @@ before escalation).
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable  # noqa: TC003
 
 PIPELINE_STAGES = [
@@ -41,8 +42,27 @@ PIPELINE_STAGES = [
 ]
 
 
+def _finding_id(finding: dict) -> str:
+    """Deterministic SHA256-based finding ID for cross-agent dedup.
+
+    ID = SHA256(file_path + vuln_class + line_range).
+
+    Uses the same composite key as report dedup: (file, class, start_line).
+    Falls back to snippet_id when file metadata is absent.
+    """
+    lines = finding.get("lines") or []
+    start_line = lines[0] if lines else 0
+    end_line = lines[-1] if len(lines) > 1 else start_line
+    file_key = str(finding.get("file") or finding.get("snippet_id") or "")
+    vuln_class = str(finding.get("class") or "")
+    line_range = f"{start_line}-{end_line}"
+    raw = f"{file_key}|{vuln_class}|{line_range}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
 def standardize_finding(finding: dict) -> dict:
     out = dict(finding)
+    out.setdefault("finding_id", _finding_id(out))
     out.setdefault("status", "raw")
     out.setdefault("poc_confirmed", False)
     out.setdefault("bucket_rationale", "")
