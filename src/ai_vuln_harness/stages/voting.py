@@ -166,17 +166,53 @@ def _severity_rank(sev: str) -> int:
     return {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}.get(str(sev).upper(), 0)
 
 
+def _aggregate_finding_data(
+    key: str,
+    finding: dict,
+    confidence_sums: dict[str, float],
+    confidence_counts: dict[str, int],
+    evidence_acc: dict[str, list[dict]],
+    hunter_acc: dict[str, list[str]],
+) -> None:
+    """Aggregate confidence, evidence, and hunter info for a single finding."""
+    conf = finding.get("confidence") or finding.get("validate_confidence") or 0.0
+    if conf > 0:
+        confidence_sums[key] += conf
+        confidence_counts[key] += 1
+
+    points = finding.get("suspicious_points") or []
+    if points:
+        evidence_acc[key].extend(points)
+
+    model = finding.get("hunt_model") or finding.get("model") or "unknown"
+    if model not in hunter_acc[key]:
+        hunter_acc[key].append(model)
+
+
+def _annotate_best_variants(
+    best_variant: dict[str, dict],
+    confidence_sums: dict[str, float],
+    confidence_counts: dict[str, int],
+    evidence_acc: dict[str, list[dict]],
+    hunter_acc: dict[str, list[str]],
+) -> None:
+    """Annotate best variants with aggregated confidence, evidence, hunters."""
+    for key, variant in best_variant.items():
+        if confidence_counts[key] > 0:
+            variant["aggregated_confidence"] = round(
+                confidence_sums[key] / confidence_counts[key],
+                3,
+            )
+        if evidence_acc[key]:
+            variant["accumulated_evidence"] = evidence_acc[key]
+        if hunter_acc[key]:
+            variant["hunter_models"] = hunter_acc[key]
+
+
 def _count_votes(
     outputs: list[list[dict]],
 ) -> tuple[dict[str, int], dict[str, dict]]:
-    """Count votes and aggregate confidence/evidence across hunters.
-
-    For each unique finding:
-    - vote_count: number of hunters that found it
-    - confidence_sum / confidence_count: for averaging
-    - evidence: accumulated suspicious_points from all hunters
-    - hunters: list of hunter models that found it
-    """
+    """Count votes and aggregate confidence/evidence across hunters."""
     vote_counts: dict[str, int] = defaultdict(int)
     best_variant: dict[str, dict] = {}
     confidence_sums: dict[str, float] = defaultdict(float)
@@ -193,41 +229,18 @@ def _count_votes(
             if key not in seen_in_run:
                 vote_counts[key] += 1
                 seen_in_run.add(key)
-                # Track which hunter model found this
-                model = f.get("hunt_model") or f.get("model") or "unknown"
-                if model not in hunter_acc[key]:
-                    hunter_acc[key].append(model)
-
-            # Aggregate confidence
-            conf = f.get("confidence") or f.get("validate_confidence") or 0.0
-            if conf > 0:
-                confidence_sums[key] += conf
-                confidence_counts[key] += 1
-
-            # Accumulate evidence (suspicious_points)
-            points = f.get("suspicious_points") or []
-            if points:
-                evidence_acc[key].extend(points)
-
-            # Keep highest severity variant
+            _aggregate_finding_data(
+                key, f, confidence_sums, confidence_counts, evidence_acc, hunter_acc,
+            )
             existing = best_variant.get(key)
             if existing is None or _severity_rank(
                 f.get("severity", ""),
             ) > _severity_rank(existing.get("severity", "")):
                 best_variant[key] = f
 
-    # Annotate best variants with aggregated data
-    for key, variant in best_variant.items():
-        if confidence_counts[key] > 0:
-            variant["aggregated_confidence"] = round(
-                confidence_sums[key] / confidence_counts[key],
-                3,
-            )
-        if evidence_acc[key]:
-            variant["accumulated_evidence"] = evidence_acc[key]
-        if hunter_acc[key]:
-            variant["hunter_models"] = hunter_acc[key]
-
+    _annotate_best_variants(
+        best_variant, confidence_sums, confidence_counts, evidence_acc, hunter_acc,
+    )
     return vote_counts, best_variant
 
 

@@ -950,6 +950,89 @@ def _run_one_hunt_pack_from_pool(
         ]
 
 
+def _build_hunt_tasks(
+    packs: list[dict],
+    models: list[str],
+    model_pool: ModelPool | None,
+) -> list[dict]:
+    """Build task list for hunt workers."""
+    from .stages.runtime import _MODEL_BY_DOMAIN
+
+    if model_pool is not None:
+        return [{"pack": p} for p in packs]
+
+    tasks: list[dict] = []
+    for pack in packs:
+        domain = pack.get("agent", "mem-safety")
+        preferred = _MODEL_BY_DOMAIN.get(domain)
+        ordered = []
+        if preferred and preferred in models:
+            ordered.append(preferred)
+        ordered.extend(m for m in models if m not in ordered)
+        tasks.append({"pack": pack, "models": ordered})
+    return tasks
+
+
+def _submit_hunt_tasks(
+    tasks: list[dict],
+    pool: ThreadPoolExecutor,
+    auth: dict[str, str],
+    cache: JsonCache,
+    model_pool: ModelPool | None,
+) -> dict:
+    """Submit hunt tasks to thread pool, return futures dict."""
+    futures = {}
+    for t in tasks:
+        if model_pool is not None:
+            futures[
+                pool.submit(
+                    _run_one_hunt_pack_from_pool,
+                    t["pack"],
+                    model_pool,
+                    auth=auth,
+                    cache=cache,
+                )
+            ] = t
+        else:
+            model = t["models"][0] if t["models"] else ""
+            futures[
+                pool.submit(
+                    _run_one_hunt_pack,
+                    t["pack"],
+                    model,
+                    auth=auth,
+                    cache=cache,
+                )
+            ] = t
+    return futures
+
+
+def _collect_hunt_results(
+    futures: dict,
+    all_findings: list[dict],
+    all_gaps: list[dict],
+    seen_finding_ids: set[str],
+) -> None:
+    """Collect results from completed hunt futures, dedup by finding_id."""
+    for f in as_completed(futures):
+        t = futures[f]
+        domain = t["pack"].get("agent", "?")
+        try:
+            findings, gaps = f.result()
+            for finding in findings:
+                fid = finding.get("finding_id", "")
+                if fid and fid in seen_finding_ids:
+                    continue
+                if fid:
+                    seen_finding_ids.add(fid)
+                all_findings.append(finding)
+            all_gaps.extend(gaps)
+        except Exception as e:
+            all_gaps.append(
+                {"coverage_gap": domain, "reason": f"hunt worker exception: {e}"},
+            )
+
+
 def _run_hunt_packs(
     packs: list[dict],
     models: list[str],
@@ -961,8 +1044,6 @@ def _run_hunt_packs(
     domain_map: dict[str, list[dict]] | None = None,  # noqa: ARG001
     model_pool: ModelPool | None = None,
 ) -> tuple[list[dict], list[dict]]:
-    from .stages.runtime import _MODEL_BY_DOMAIN
-
     if max_run is not None:
         packs = packs[:max_run]
 
@@ -970,19 +1051,7 @@ def _run_hunt_packs(
     all_gaps: list[dict] = []
     seen_finding_ids: set[str] = set()
 
-    if model_pool is not None:
-        tasks = [{"pack": p} for p in packs]
-    else:
-        tasks: list[dict] = []
-        for pack in packs:
-            domain = pack.get("agent", "mem-safety")
-            preferred = _MODEL_BY_DOMAIN.get(domain)
-            ordered = []
-            if preferred and preferred in models:
-                ordered.append(preferred)
-            ordered.extend(m for m in models if m not in ordered)
-            tasks.append({"pack": pack, "models": ordered})
-
+    tasks = _build_hunt_tasks(packs, models, model_pool)
     completed = 0
     total = len(tasks)
     logger.info(
@@ -993,49 +1062,10 @@ def _run_hunt_packs(
     )
 
     with ThreadPoolExecutor(max_workers=parallel) as pool:
-        futures = {}
-        for t in tasks:
-            if model_pool is not None:
-                futures[
-                    pool.submit(
-                        _run_one_hunt_pack_from_pool,
-                        t["pack"],
-                        model_pool,
-                        auth=auth,
-                        cache=cache,
-                    )
-                ] = t
-            else:
-                model = t["models"][0] if t["models"] else ""
-                futures[
-                    pool.submit(
-                        _run_one_hunt_pack,
-                        t["pack"],
-                        model,
-                        auth=auth,
-                        cache=cache,
-                    )
-                ] = t
-
-        for f in as_completed(futures):
-            t = futures[f]
-            domain = t["pack"].get("agent", "?")
-            try:
-                findings, gaps = f.result()
-                for finding in findings:
-                    fid = finding.get("finding_id", "")
-                    if fid and fid in seen_finding_ids:
-                        continue
-                    if fid:
-                        seen_finding_ids.add(fid)
-                    all_findings.append(finding)
-                all_gaps.extend(gaps)
-            except Exception as e:
-                all_gaps.append(
-                    {"coverage_gap": domain, "reason": f"hunt worker exception: {e}"},
-                )
-            completed += 1
-            logger.info("hunt %d/%d packs done", completed, total)
+        futures = _submit_hunt_tasks(tasks, pool, auth, cache, model_pool)
+        _collect_hunt_results(futures, all_findings, all_gaps, seen_finding_ids)
+        completed = len(futures)
+        logger.info("hunt %d/%d packs done", completed, total)
 
     return all_findings, all_gaps
 
@@ -1915,6 +1945,49 @@ def run_benchmark_gate(
     return artifact
 
 
+def _load_yaml_auth(yaml_cfg: dict, auth: dict[str, str]) -> None:
+    """Load API keys from YAML config connectors into auth dict."""
+    llm_cfg = yaml_cfg.get("llm", {})
+    for connector in llm_cfg.get("connectors", {}).values():
+        if isinstance(connector, list):
+            for c in connector:
+                name = c.get("name", "")
+                api_key = c.get("api_key", "")
+                if api_key and name and name not in auth:
+                    auth[name] = api_key
+        elif isinstance(connector, dict):
+            name = connector.get("name", "")
+            api_key = connector.get("api_key", "")
+            if api_key and name and name not in auth:
+                auth[name] = api_key
+
+
+def _post_process_findings(
+    findings: list[dict],
+    repo: Path,
+    snippets: list[dict],
+    all_tasks: list[dict],
+    scope_notes: str | None,
+    cfg: dict,
+    state: StateDB,
+) -> dict:
+    """Run post-processing: exposure windows, feedback, report assembly."""
+    findings, exposure_metrics = annotate_exposure_windows(findings, repo)
+
+    traced = [f for f in findings if f.get("trace_status") == "confirmed"]
+    covered = {f for t in all_tasks for f in t.get("target_files", [])}
+    feedback_tasks = build_feedback_tasks(
+        traced,
+        snippets,
+        already_covered=covered,
+        max_tasks=10,
+        scope_notes=scope_notes,
+    )
+    state.put_meta("feedback_task_count", str(len(feedback_tasks)))
+
+    return annotate_exposure_windows(findings, repo)[1], feedback_tasks
+
+
 def run(  # noqa: PLR0913
     mode: str,
     repo: Path,
@@ -1984,19 +2057,7 @@ def run(  # noqa: PLR0913
     _enforce_cost_limit(state, run_id, max_cost_usd)
 
     auth = load_auth_config(explicit_path=auth_path, script_dir=pkg_dir)
-    llm_cfg = yaml_cfg.get("llm", {})
-    for connector in llm_cfg.get("connectors", {}).values():
-        if isinstance(connector, list):
-            for c in connector:
-                name = c.get("name", "")
-                api_key = c.get("api_key", "")
-                if api_key and name and name not in auth:
-                    auth[name] = api_key
-        elif isinstance(connector, dict):
-            name = connector.get("name", "")
-            api_key = connector.get("api_key", "")
-            if api_key and name and name not in auth:
-                auth[name] = api_key
+    _load_yaml_auth(yaml_cfg, auth)
     state.put_meta("auth_providers", json.dumps(sorted(auth.keys())))
 
     global_max = max_concurrency or cfg.get("max_workers", 3)
@@ -2008,8 +2069,6 @@ def run(  # noqa: PLR0913
     state.put_meta("validate_workers", str(validate_workers))
 
     snippets, snippet_db = _ingest_snippets(repo, output_dir, reingest, cfg)
-    snippets = _apply_diff_filter(mode, base_commit, repo, snippets, head_commit, state)
-
     if not target_mode:
         snippets = _apply_diff_filter(
             mode, base_commit, repo, snippets, head_commit, state
@@ -2175,18 +2234,9 @@ def run(  # noqa: PLR0913
     )
     _run_trace_stage(findings, state)
 
-    findings, exposure_metrics = annotate_exposure_windows(findings, repo)
-
-    traced = [f for f in findings if f.get("trace_status") == "confirmed"]
-    covered = {f for t in all_tasks for f in t.get("target_files", [])}
-    feedback_tasks = build_feedback_tasks(
-        traced,
-        snippets,
-        already_covered=covered,
-        max_tasks=10,
-        scope_notes=scope_notes,
+    exposure_metrics, feedback_tasks = _post_process_findings(
+        findings, repo, snippets, all_tasks, scope_notes, cfg, state,
     )
-    state.put_meta("feedback_task_count", str(len(feedback_tasks)))
 
     report = _assemble_report(
         repo=str(repo),
