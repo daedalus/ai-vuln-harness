@@ -168,6 +168,7 @@ class VulnerabilityKB:
         db_path: Path | str | None = None,
         use_faiss: bool = False,
         embedding_model: str = "all-MiniLM-L6-v2",
+        reset: bool = False,
     ) -> None:
         self._patterns: list[dict] = list(_DEFAULT_CWE_PATTERNS)
         self._vectorizer: TfidfVectorizer | None = None
@@ -192,12 +193,19 @@ class VulnerabilityKB:
         self._db_path = db_path
 
         if db_path:
-            self._init_db(db_path)
+            self._init_db(db_path, reset=reset)
             self._load_from_db()
 
-    def _init_db(self, db_path: Path | str) -> None:
-        """Initialize SQLite database for pattern storage."""
+    def _init_db(self, db_path: Path | str, reset: bool = False) -> None:
+        """Initialize SQLite database for pattern storage.
+
+        If reset=True, drops and recreates the table.
+        """
         self._conn = sqlite3.connect(str(db_path))
+
+        if reset:
+            self._conn.execute("DROP TABLE IF EXISTS cwe_patterns")
+
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS cwe_patterns (
                 cwe TEXT PRIMARY KEY,
@@ -209,7 +217,7 @@ class VulnerabilityKB:
         """)
         self._conn.commit()
 
-        # Seed database with defaults if empty
+        # Seed database with defaults only when empty
         count = self._conn.execute("SELECT COUNT(*) FROM cwe_patterns").fetchone()[0]
         if count == 0:
             for p in _DEFAULT_CWE_PATTERNS:
@@ -330,7 +338,20 @@ class VulnerabilityKB:
         if self._built_faiss:
             return
 
-        # Encode all patterns
+        # Try loading from disk first
+        if self._db_path:
+            index_path = Path(str(self._db_path)).with_suffix(".faiss")
+            if index_path.exists():
+                try:
+                    self._faiss_index = faiss.read_index(str(index_path))
+                    self._built_faiss = True
+                    if hasattr(self, '_verbose') and self._verbose:
+                        print(f"  Loaded FAISS index from {index_path}")
+                    return
+                except Exception:
+                    pass
+
+        # Build fresh index
         texts = []
         for p in self._patterns:
             text = f"{p['title']} {p['description']} {' '.join(p.get('patterns', []))}"
@@ -339,12 +360,19 @@ class VulnerabilityKB:
         self._faiss_embeddings = self._faiss_model.encode(texts, show_progress_bar=False)
         embeddings_np = np.array(self._faiss_embeddings).astype("float32")
 
-        # Build FAISS index (Inner Product for cosine similarity after normalization)
         dimension = embeddings_np.shape[1]
         faiss.normalize_L2(embeddings_np)
         self._faiss_index = faiss.IndexFlatIP(dimension)
         self._faiss_index.add(embeddings_np)
         self._built_faiss = True
+
+        # Save to disk
+        if self._db_path:
+            index_path = Path(str(self._db_path)).with_suffix(".faiss")
+            try:
+                faiss.write_index(self._faiss_index, str(index_path))
+            except Exception:
+                pass
 
     def search(self, query: str, top_k: int = 5, threshold: float = 0.1) -> list[dict]:
         """Search for matching CWE/CVE patterns.

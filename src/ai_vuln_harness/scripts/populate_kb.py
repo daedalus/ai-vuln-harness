@@ -40,23 +40,37 @@ def main() -> None:
     parser.add_argument(
         "--max-per-dataset",
         type=int,
-        default=1000,
-        help="Maximum patterns per dataset (default: 1000)",
+        default=0,
+        help="Maximum patterns per dataset (0 = no limit, default: 0)",
     )
     parser.add_argument(
         "--datasets",
         nargs="+",
         default=None,
-        choices=["mitre_cwe", "nvd_cve", "exploitdb", "github", "vuldeepecker"],
+        choices=["mitre_cwe", "nvd_cve", "exploitdb", "github", "osv", "snyk", "d2a", "juliet"],
         help="Specific datasets to load (default: all)",
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Enable verbose output",
+    )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Reset database (drop and recreate) before loading",
     )
     args = parser.parse_args()
 
     # Ensure output directory exists
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
+    if args.reset and args.output.exists():
+        print(f"Resetting database at {args.output}...")
+        args.output.unlink()
+
     print(f"Initializing knowledge base at {args.output}...")
-    with VulnerabilityKB(args.output) as kb:
+    with VulnerabilityKB(args.output, reset=args.reset) as kb:
         print(f"Starting size: {kb.size} patterns")
 
         # Load datasets
@@ -64,6 +78,7 @@ def main() -> None:
             kb,
             max_per_dataset=args.max_per_dataset,
             datasets=args.datasets,
+            verbose=args.verbose,
         )
 
         print(f"\n{'='*50}")
