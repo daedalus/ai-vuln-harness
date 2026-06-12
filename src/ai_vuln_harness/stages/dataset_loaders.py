@@ -228,7 +228,7 @@ def load_nvd_cve_from_file(
 
 def load_nvd_cve_from_url(
     kb: VulnerabilityKB,
-    url: str = "https://nvd.nist.gov/feeds/json/cve/1.1/nvdcve-1.1-2024.json.gz",
+    url: str = "https://nvd.nist.gov/feeds/json/cve/1.1/nvdcve-1.1-2023.json.gz",
     cache_path: Path | None = None,
     max_patterns: int = 1000,
 ) -> int:
@@ -236,6 +236,8 @@ def load_nvd_cve_from_url(
 
     Downloads the JSON feed and loads patterns.
     Caches the file to avoid re-downloading.
+
+    Note: NVD may block automated requests. If download fails, use cached data.
 
     Returns the number of patterns loaded.
     """
@@ -246,17 +248,24 @@ def load_nvd_cve_from_url(
 
     if not cache_path.exists():
         print(f"Downloading NVD CVE data from {url}...")
-        req = urllib.request.Request(url, headers={"User-Agent": "ai-vuln-harness/1.0"})
-        with urllib.request.urlopen(req, timeout=120) as response:
-            data = response.read()
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "ai-vuln-harness/1.0 (https://github.com/daedalus/ai-vuln-harness)",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=120) as response:
+                data = response.read()
 
-        # Handle gzip if needed
-        if url.endswith(".gz"):
-            data = gzip.decompress(data)
+            # Handle gzip if needed
+            if url.endswith(".gz"):
+                data = gzip.decompress(data)
 
-        with open(cache_path, "wb") as f:
-            f.write(data)
-        print(f"NVD CVE data cached to {cache_path}")
+            with open(cache_path, "wb") as f:
+                f.write(data)
+            print(f"NVD CVE data cached to {cache_path}")
+        except Exception as e:
+            print(f"  Failed to download NVD CVE: {e}")
+            print(f"  Note: NVD may block automated requests. Try again later or use cached data.")
+            return 0
 
     return load_nvd_cve_from_file(kb, cache_path, max_patterns)
 
@@ -412,7 +421,7 @@ def load_exploitdb_from_file(
 
 def load_exploitdb_from_url(
     kb: VulnerabilityKB,
-    url: str = "https://www.exploit-db.com/downloadscsv",
+    url: str = "https://gitlab.com/exploit-database/exploitdb/-/raw/main/files_exploits.csv",
     cache_path: Path | None = None,
     max_patterns: int = 500,
 ) -> int:
@@ -425,12 +434,18 @@ def load_exploitdb_from_url(
 
     if not cache_path.exists():
         print(f"Downloading Exploit-DB CSV from {url}...")
-        req = urllib.request.Request(url, headers={"User-Agent": "ai-vuln-harness/1.0"})
-        with urllib.request.urlopen(req, timeout=120) as response:
-            data = response.read()
-        with open(cache_path, "wb") as f:
-            f.write(data)
-        print(f"Exploit-DB CSV cached to {cache_path}")
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "ai-vuln-harness/1.0 (https://github.com/daedalus/ai-vuln-harness)",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=120) as response:
+                data = response.read()
+            with open(cache_path, "wb") as f:
+                f.write(data)
+            print(f"Exploit-DB CSV cached to {cache_path}")
+        except Exception as e:
+            print(f"  Failed to download Exploit-DB: {e}")
+            return 0
 
     return load_exploitdb_from_file(kb, cache_path, max_patterns)
 
@@ -499,11 +514,13 @@ def load_github_advisory_from_file(
 
 def load_github_advisory_from_url(
     kb: VulnerabilityKB,
-    url: str = "https://github.com/github/advisory-database/raw/main/advisories/npm.json",
+    url: str = "https://api.github.com/advisories?per_page=100&type=reviewed&ecosystem=npm",
     cache_path: Path | None = None,
     max_patterns: int = 500,
 ) -> int:
     """Download and load GitHub Advisory Database.
+
+    Uses the GitHub API to fetch recent advisories.
 
     Returns the number of patterns loaded.
     """
@@ -512,12 +529,22 @@ def load_github_advisory_from_url(
 
     if not cache_path.exists():
         print(f"Downloading GitHub Advisory Database from {url}...")
-        req = urllib.request.Request(url, headers={"User-Agent": "ai-vuln-harness/1.0"})
-        with urllib.request.urlopen(req, timeout=120) as response:
-            data = response.read()
-        with open(cache_path, "wb") as f:
-            f.write(data)
-        print(f"GitHub Advisory Database cached to {cache_path}")
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "ai-vuln-harness/1.0 (https://github.com/daedalus/ai-vuln-harness)",
+            "Accept": "application/vnd.github+json",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=120) as response:
+                data = response.read()
+            # Convert API response to JSONL format
+            advisories = json.loads(data)
+            with open(cache_path, "w") as f:
+                for adv in advisories:
+                    f.write(json.dumps(adv) + "\n")
+            print(f"GitHub Advisory Database cached to {cache_path}")
+        except Exception as e:
+            print(f"  Failed to download GitHub Advisory: {e}")
+            return 0
 
     return load_github_advisory_from_file(kb, cache_path, max_patterns)
 
@@ -717,10 +744,18 @@ def load_osv_from_url(
         cache_path = _default_cache_dir() / "osv_vulns.json"
 
     if not cache_path.exists():
-        print(f"Downloading OSV.dev vulnerabilities from {url}...")
-        # OSV API endpoint for recent vulnerabilities
-        api_url = "https://osv.dev/list?ecosystem=&page=1"
-        req = urllib.request.Request(api_url, headers={"User-Agent": "ai-vuln-harness/1.0"})
+        print(f"Downloading OSV.dev vulnerabilities...")
+        # Use OSV API endpoint for querying vulnerabilities
+        api_url = "https://api.osv.dev/v1/query"
+        query_data = json.dumps({}).encode()
+        req = urllib.request.Request(
+            api_url,
+            data=query_data,
+            headers={
+                "User-Agent": "ai-vuln-harness/1.0 (https://github.com/daedalus/ai-vuln-harness)",
+                "Content-Type": "application/json",
+            },
+        )
         try:
             with urllib.request.urlopen(req, timeout=120) as response:
                 data = response.read()
@@ -799,22 +834,35 @@ def load_snyk_from_file(
 
 def load_snyk_from_url(
     kb: VulnerabilityKB,
-    url: str = "https://snyk.io/api/v1/vuln",
+    url: str = "https://api.snyk.io/v1",
     cache_path: Path | None = None,
     max_patterns: int = 500,
+    api_key: str | None = None,
 ) -> int:
     """Download and load Snyk vulnerabilities.
 
-    Note: Snyk API requires authentication. This loader works with exported JSON.
+    Note: Snyk API requires authentication. Pass api_key or set SNYK_API_KEY env var.
+    If no API key is available, returns 0.
 
     Returns the number of patterns loaded.
     """
+    import os
+
     if cache_path is None:
         cache_path = _default_cache_dir() / "snyk_vulns.json"
 
     if not cache_path.exists():
+        # Check for API key
+        key = api_key or os.environ.get("SNYK_API_KEY")
+        if not key:
+            print("  Skipping Snyk: No API key available (set SNYK_API_KEY env var)")
+            return 0
+
         print(f"Downloading Snyk vulnerabilities from {url}...")
-        req = urllib.request.Request(url, headers={"User-Agent": "ai-vuln-harness/1.0"})
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "ai-vuln-harness/1.0",
+            "Authorization": f"token {key}",
+        })
         try:
             with urllib.request.urlopen(req, timeout=120) as response:
                 data = response.read()
@@ -903,7 +951,7 @@ def load_d2a_from_file(
 
 def load_d2a_from_url(
     kb: VulnerabilityKB,
-    url: str = "https://raw.githubusercontent.com/declare-lab/D2A/main/data/bugs.json",
+    url: str = "https://raw.githubusercontent.com/declare-lab/D2A/master/data/bugs.json",
     cache_path: Path | None = None,
     max_patterns: int = 500,
 ) -> int:
@@ -916,7 +964,9 @@ def load_d2a_from_url(
 
     if not cache_path.exists():
         print(f"Downloading D2A dataset from {url}...")
-        req = urllib.request.Request(url, headers={"User-Agent": "ai-vuln-harness/1.0"})
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "ai-vuln-harness/1.0 (https://github.com/daedalus/ai-vuln-harness)",
+        })
         try:
             with urllib.request.urlopen(req, timeout=120) as response:
                 data = response.read()
