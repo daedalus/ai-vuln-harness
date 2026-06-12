@@ -605,7 +605,7 @@ Three strikes halts the actor. Deliberative Gate compares agent self-check JSON 
 
 | Gap | Severity | Effort | Notes |
 |---|---|---|---|
-| **Engagement Graph (typed world model)** | 🔴 Critical | High | Shared graph with surface/facts/hypotheses/findings/deads/chains tables would unify all stage state. Currently each stage reads/writes independently. |
+| **Engagement Graph (typed world model)** | ✅ Done | High | Shared graph with surface/facts/hypotheses/findings/deads/chains tables. Implemented in `stages/engagement_graph.py`. |
 | **Hash-Chained Immutable Audit Log** | 🟠 High | Medium | SHA-256 chained append-only log would provide tamper-evident action history. Required for CVD attestation and reproducibility. |
 | **Risk-Classified Action Layer** | 🟠 High | Medium | LOW/MEDIUM/HIGH tool classification with structural refusal of HIGH actions. Extends EgressAuditContext to all stages. |
 | **Self-Monitor + Deliberative Gate** | 🟠 High | Medium–High | Behavioural pathology detectors + two-step pre-action check. Maps to System Card incidents. Extends reward-hack/confabulation to comprehensive self-monitor. |
@@ -743,7 +743,7 @@ Orchestrator → Recon Agent → Analysis Agent → Verification Agent → Repor
 
 | Component | Description | Harness Gap |
 |---|---|---|
-| **RAG Knowledge Base** | CWE/CVE knowledge base with ChromaDB vector store. Code semantic understanding combined with vulnerability patterns. Reduces false positives by matching code against known vulnerability patterns. | The hunt prompt has domain-specific patterns but no RAG knowledge base. No CWE/CVE semantic matching. No vector store for vulnerability patterns. |
+| **RAG Knowledge Base** | CWE/CVE knowledge base with TF-IDF similarity search. 15 built-in CWE patterns. Optional sklearn for vector search, fallback to keyword matching. Implemented in `stages/rag_kb.py`. |
 | **Self-Correction in Verification** | Verification agent writes PoC scripts, executes in Docker sandbox, and automatically retries with self-correction on failure. Iterates until PoC succeeds or max retries reached. | The harness's POC stage runs ASan once and reports. No self-correction loop. No retry with modified PoC on failure. |
 | **Docker Sandbox for PoC** | Dedicated Docker container for PoC execution. Network isolation, resource limits, clean environment per run. The harness has Docker but not dedicated PoC sandbox. | The harness uses `EgressAuditContext` for POC but not a dedicated sandbox container. No network isolation for PoC execution. |
 | **Multi-LLM Support with Ollama** | Supports OpenAI, Claude, Gemini, DeepSeek, and Ollama (local deployment). Model-agnostic via LiteLLM. | The harness uses OpenRouter free tier. No Ollama support. No local model option. |
@@ -772,7 +772,7 @@ Orchestrator → Recon Agent → Analysis Agent → Verification Agent → Repor
 
 | Gap | Severity | Effort | Notes |
 |---|---|---|---|
-| **RAG Knowledge Base (CWE/CVE)** | 🟠 High | High | ChromaDB vector store with CWE/CVE patterns. Semantic matching for vulnerability detection. |
+| **RAG Knowledge Base (CWE/CVE)** | ✅ Done | High | TF-IDF vector store with 15 built-in CWE patterns. Keyword fallback when sklearn unavailable. Integrated into pipeline for finding enrichment. |
 | **Self-Correction in Verification** | 🟠 High | Medium | Retry loop with PoC modification on failure. Currently single-shot. |
 | **Docker Sandbox for PoC** | 🟡 Medium | Medium | Dedicated container with network isolation and resource limits. |
 | **Multi-LLM Support (Ollama)** | 🟡 Medium | Medium | LiteLLM integration for local model deployment. |
@@ -1075,7 +1075,7 @@ These areas are **explicitly out of scope** for a vulnerability discovery harnes
 | 🟡 Medium | Multi-language sanitizer integration (Rust, Go, Java, Python, JS) | A5 | Medium |
 | 🟢 Stretch | First-principles assumption framework (7 categories for HUNT) | A5 | Low |
 | 🟢 Stretch | Multi-pass strategy (broad → deep → chain → variant) | A5 | Medium |
-| 🔴 Critical | Engagement Graph (typed world model: surface/facts/hypo/findings/deads/chains) | A5 | High |
+| 🔴 Critical | ~~Engagement Graph (typed world model: surface/facts/hypo/findings/deads/chains)~~ | A5 | ✅ Done |
 | 🟠 High | Hash-Chained Immutable Audit Log (SHA-256 tamper-evident) | A5 | Medium |
 | 🟠 High | Risk-Classified Action Layer (LOW/MEDIUM/HIGH, structural refusal) | A5 | Medium |
 | 🟠 High | Self-Monitor + Deliberative Gate (pathology detectors + pre-action check) | A5 | Medium–High |
@@ -1103,7 +1103,7 @@ These areas are **explicitly out of scope** for a vulnerability discovery harnes
 | 🟡 Medium | Reef vulnerability/fix collection pipeline | A5 | Medium |
 | 🟢 Stretch | Staged release with versioning + checksums | A5 | Low |
 | 🟢 Stretch | Benchmark comparison for prompts/outputs | A5 | Medium |
-| 🟠 High | RAG Knowledge Base (CWE/CVE vector store) | A5 | High |
+| ~~🟠 High~~ | ~~RAG Knowledge Base (CWE/CVE vector store)~~ | A5 | ✅ Done |
 | 🟠 High | Self-Correction in Verification (retry loop) | A5 | Medium |
 | 🟡 Medium | Docker Sandbox for PoC (network isolation) | A5 | Medium |
 | 🟡 Medium | Multi-LLM Support (Ollama via LiteLLM) | A5 | Medium |

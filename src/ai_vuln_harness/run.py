@@ -96,6 +96,7 @@ from .stages.voting import merge_hunter_outputs
 from .stages.engagement_graph import EngagementGraph
 from .stages.evidence_collector import run_evidence_collector
 from .stages.post_processor import run_post_processor
+from .stages.rag_kb import VulnerabilityKB
 from .stages.z3_verifier import verify_validate_feasibility
 
 logger = logging.getLogger("vuln-harness")
@@ -1948,6 +1949,28 @@ def run_benchmark_gate(
     return artifact
 
 
+def _enrich_findings_with_cwe(findings: list[dict], kb: VulnerabilityKB) -> None:
+    """Enrich findings with CWE matches from the RAG Knowledge Base.
+
+    For each finding, searches the knowledge base using the finding's
+    description and class, then adds matching CWE IDs to the finding dict.
+    """
+    for f in findings:
+        desc = f.get("desc", "")
+        vuln_class = f.get("class", "")
+        query = f"{vuln_class} {desc}".strip()
+        if not query:
+            continue
+
+        matches = kb.search(query, top_k=3, threshold=0.15)
+        if matches:
+            f["cwe_matches"] = [m["cwe"] for m in matches]
+            f["cwe_scores"] = {m["cwe"]: m["score"] for m in matches}
+            # If no CWE already set, use the top match
+            if not f.get("cwe") and matches:
+                f["cwe"] = matches[0]["cwe"]
+
+
 def _load_yaml_auth(yaml_cfg: dict, auth: dict[str, str]) -> None:
     """Load API keys from YAML config connectors into auth dict."""
     llm_cfg = yaml_cfg.get("llm", {})
@@ -2244,6 +2267,10 @@ def run(  # noqa: PLR0913
             findings, snippets, chains, graph,
         )
     state.put_meta("evidence_collected", json.dumps(evidence_summary))
+
+    # RAG Knowledge Base: enrich findings with CWE matches
+    rag_kb = VulnerabilityKB()
+    _enrich_findings_with_cwe(findings, rag_kb)
 
     exposure_metrics, feedback_tasks = _post_process_findings(
         findings, repo, snippets, all_tasks, scope_notes, cfg, state,
