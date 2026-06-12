@@ -93,6 +93,9 @@ from .stages.shield import (
 from .stages.suppressions import SuppressionRegistry
 from .stages.validate import build_validate_prompt, is_api_by_design, parse_validate_xml
 from .stages.voting import merge_hunter_outputs
+from .stages.engagement_graph import EngagementGraph
+from .stages.evidence_collector import run_evidence_collector
+from .stages.post_processor import run_post_processor
 from .stages.z3_verifier import verify_validate_feasibility
 
 logger = logging.getLogger("vuln-harness")
@@ -2234,6 +2237,14 @@ def run(  # noqa: PLR0913
     )
     _run_trace_stage(findings, state)
 
+    # Evidence collector: populate Engagement Graph
+    graph_path = output_dir / "engagement_graph.db"
+    with EngagementGraph(graph_path) as graph:
+        evidence_summary = run_evidence_collector(
+            findings, snippets, chains, graph,
+        )
+    state.put_meta("evidence_collected", json.dumps(evidence_summary))
+
     exposure_metrics, feedback_tasks = _post_process_findings(
         findings, repo, snippets, all_tasks, scope_notes, cfg, state,
     )
@@ -2250,6 +2261,12 @@ def run(  # noqa: PLR0913
         fuzz_artifacts=fuzz_artifacts,
         exploit_synthesis_records=exploit_synthesis_records,
     )
+
+    # Post-processor: aggregate, dashboard, KPIs
+    post_result = run_post_processor(
+        findings, chains, report, output_dir,
+    )
+    state.put_meta("post_processor_dashboard", json.dumps(post_result["dashboard"]))
 
     state.put_meta("last_mode", mode)
     state.finish_run(run_id)

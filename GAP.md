@@ -725,6 +725,62 @@ Stage 4: Scaffold-Based Trace Collection (multiple scaffold designs)
 | **Staged release with versioning + checksums** | 🟢 Stretch | Low | Version tags, checksums, dataset/model cards for all artifacts. Currently minimal. |
 | **Benchmark comparison for prompts/outputs** | 🟢 Stretch | Medium | Compare harness outputs against baseline datasets (Primus, CyberSec-Merged, etc.). |
 
+### A5.7 vs. DeepAudit (`lintsinghua/DeepAudit`)
+
+**Source:** `https://github.com/lintsinghua/DeepAudit` — multi-agent code security auditing platform. 4 agents (Orchestrator, Recon, Analysis, Verification), Docker sandbox PoC verification, RAG knowledge base (CWE/CVE), 49 CVEs found across 17 projects. FastAPI + React + TypeScript + Supabase + LangChain/LangGraph. AGPL-3.0. 6.4k stars, 793 forks.
+
+**Architecture:**
+
+```
+Orchestrator → Recon Agent → Analysis Agent → Verification Agent → Report
+     ↕              ↕              ↕                ↕
+  LangGraph     Tree-sitter     RAG (CWE/CVE)    Docker Sandbox
+     ↕                                              ↕
+  Supabase                                      PoC Execution
+```
+
+**Where DeepAudit Is Stronger (Multi-Agent + RAG + Sandbox):**
+
+| Component | Description | Harness Gap |
+|---|---|---|
+| **RAG Knowledge Base** | CWE/CVE knowledge base with ChromaDB vector store. Code semantic understanding combined with vulnerability patterns. Reduces false positives by matching code against known vulnerability patterns. | The hunt prompt has domain-specific patterns but no RAG knowledge base. No CWE/CVE semantic matching. No vector store for vulnerability patterns. |
+| **Self-Correction in Verification** | Verification agent writes PoC scripts, executes in Docker sandbox, and automatically retries with self-correction on failure. Iterates until PoC succeeds or max retries reached. | The harness's POC stage runs ASan once and reports. No self-correction loop. No retry with modified PoC on failure. |
+| **Docker Sandbox for PoC** | Dedicated Docker container for PoC execution. Network isolation, resource limits, clean environment per run. The harness has Docker but not dedicated PoC sandbox. | The harness uses `EgressAuditContext` for POC but not a dedicated sandbox container. No network isolation for PoC execution. |
+| **Multi-LLM Support with Ollama** | Supports OpenAI, Claude, Gemini, DeepSeek, and Ollama (local deployment). Model-agnostic via LiteLLM. | The harness uses OpenRouter free tier. No Ollama support. No local model option. |
+| **Supabase/PostgreSQL Persistence** | Full database persistence with Supabase. Project management, audit history, findings tracking. | The harness uses SQLite StateDB. No PostgreSQL. No project management UI. |
+| **Frontend with Real-time Audit Logs** | React + TypeScript frontend with real-time streaming of agent reasoning. Dashboard, project management, report export. | The harness has no frontend. CLI-only. |
+| **OWASP Top 10 Built-in Rules** | Pre-configured audit rules based on OWASP Top 10. Custom rule sets supported. | The hunt prompt has domain-specific patterns but no OWASP-aligned rule system. |
+| **12 Specific Vulnerability Types** | SQL injection, XSS, command injection, path traversal, SSRF, XXE, deserialization, hardcoded secrets, weak crypto, auth bypass, authz bypass, IDOR. | The harness has 11 security domains but not this specific taxonomy. |
+| **49 CVEs Found** | Demonstrated effectiveness: 49 CVEs across 17 open-source projects (Zentao, Dataease, PowerJob, O2oa, etc.). | The harness has no published CVE count. Effectiveness not demonstrated at scale. |
+| **Project Management** | GitHub/GitLab/Gitea import, ZIP upload, multi-project management. | The harness has no project management. Single-run, single-repo only. |
+
+**Where This Harness Is Stronger (Architectural):**
+
+| Advantage | Details |
+|---|---|
+| **Pipeline depth** | 17 canonical stages vs 5 phases. Covers gap analysis, shielding, suppressions, exposure tracking, feedback loops. |
+| **LLM output validation** | KL-divergence hallucination detection, call-path graph verification, semantic dedup. DeepAudit relies on agent judgment + verification agent. |
+| **Schema-validated contracts** | 8 JSON schemas + `contracts.py`. DeepAudit has no output validation. |
+| **Multi-provider model routing** | 5 providers with disjoint model pools. DeepAudit uses single model via LiteLLM. |
+| **Property-based testing** | Invariant inference + ASan-compiled C harness + bounded-random fuzzing. DeepAudit has no PBT. |
+| **Exploit synthesis tier assessment** | T4–T1 tier grading. DeepAudit has verification agent but no tier categorization. |
+| **MCP server** | FastMCP-based stdio server. DeepAudit has no MCP. |
+| **Multi-language ingestor** | Tree-sitter AST for 8 languages. DeepAudit supports 10+ languages but via Tree-sitter integration. |
+| **Resumable state** | SQLite StateDB. DeepAudit uses Supabase (more capable). |
+
+**Architectural Gap Summary:**
+
+| Gap | Severity | Effort | Notes |
+|---|---|---|---|
+| **RAG Knowledge Base (CWE/CVE)** | 🟠 High | High | ChromaDB vector store with CWE/CVE patterns. Semantic matching for vulnerability detection. |
+| **Self-Correction in Verification** | 🟠 High | Medium | Retry loop with PoC modification on failure. Currently single-shot. |
+| **Docker Sandbox for PoC** | 🟡 Medium | Medium | Dedicated container with network isolation and resource limits. |
+| **Multi-LLM Support (Ollama)** | 🟡 Medium | Medium | LiteLLM integration for local model deployment. |
+| **OWASP Top 10 Rule System** | 🟡 Medium | Low | Pre-configured rules mapped to OWASP categories. |
+| **Frontend Dashboard** | 🟢 Stretch | High | React + TypeScript UI with real-time audit logs. |
+| **PostgreSQL Persistence** | 🟢 Stretch | High | Supabase/PostgreSQL for project management and audit history. |
+| **Published CVE Metrics** | 🟢 Stretch | Low | Track and publish CVE discovery count for effectiveness measurement. |
+
 ---
 
 # Operational Gaps — Benchmarks, Throughput & Lifecycle
@@ -1047,6 +1103,14 @@ These areas are **explicitly out of scope** for a vulnerability discovery harnes
 | 🟡 Medium | Reef vulnerability/fix collection pipeline | A5 | Medium |
 | 🟢 Stretch | Staged release with versioning + checksums | A5 | Low |
 | 🟢 Stretch | Benchmark comparison for prompts/outputs | A5 | Medium |
+| 🟠 High | RAG Knowledge Base (CWE/CVE vector store) | A5 | High |
+| 🟠 High | Self-Correction in Verification (retry loop) | A5 | Medium |
+| 🟡 Medium | Docker Sandbox for PoC (network isolation) | A5 | Medium |
+| 🟡 Medium | Multi-LLM Support (Ollama via LiteLLM) | A5 | Medium |
+| 🟡 Medium | OWASP Top 10 Rule System | A5 | Low |
+| 🟢 Stretch | Frontend Dashboard (React + real-time logs) | A5 | High |
+| 🟢 Stretch | PostgreSQL Persistence (Supabase) | A5 | High |
+| 🟢 Stretch | Published CVE Metrics (effectiveness tracking) | A5 | Low |
 | 🟡 Medium | Auth/IAM + cloud-native domain expansion | O1 | Medium |
 | 🟡 Medium | VAOP vetted-access operational pattern | A2 | Medium |
 | 🟡 Medium | MCPR posture rubric (runtime anomaly detection) | A2 | Medium |
@@ -1127,3 +1191,4 @@ These areas are **explicitly out of scope** for a vulnerability discovery harnes
 - [Claude Mythos Architecture — GitHub](https://github.com/FareedKhan-dev/claude-mythos-architecture) — Reverse-engineering of the Mythos cybersecurity harness as a 12-component architecture across 3 layers (Engagement Substrate, Discovery & Verification, Synthesis). Tested against MLflow v2.9.2: 11 real findings, 0 false positives, 1 critical 4-link attack chain, 4 patches with chain-severance proof. Components: Engagement Graph (typed SQLite world model), Hash-Chained Audit Log, Risk-Classified Action Layer, Self-Monitor + Deliberative Gate, ULTRAPLAN, Role-Polymorphic Worker Swarm, Cross-Model 2-of-3 Corroboration, Dynamic Executable-PoC Verification Gate, Variant Hunter, Chain Builder + Composite PoC, Fixer with Chain-Severance Proof + CI Workflow, Speculation Layer with COW Overlay. MIT license.
 - [Claude Mythos Red Teaming Framework — GitHub](https://github.com/anshug/claude-mythos) — Prompt framework transforming LLMs into 7-agent offensive security systems (Recon, Hunter, Adversarial, Exploit, Triage, AI Security, Secrets & Supply Chain). 8-phase methodology, shared findings bus (`/tmp/findings.jsonl`), SHA256 deterministic finding IDs, 3-tier validation model (Confirmed/Plausible/Theoretical), CVSS 3.1 scoring. Dedicated AI Security agent for prompt injection, RAG poisoning, tool misuse, agent chaining flaws. CC-BY-4.0 license.
 - [RealMythos — GitHub](https://github.com/tszdanger/RealMythos) — Staged open initiative for public reconstruction of Claude Mythos as an open cybersecurity reasoning stack. 4 stages: Dataset (6,159 CVE-linked C/C++ reasoning records) → Model (`pocwriter-v1`, Qwen3.5-9B SFT, +25% over baseline) → Reproducible Environments (containerized vulnerable builds, 18%→35% reproducibility target) → Trace Collection (multiple scaffold designs). Patch-unaware reasoning, PoC-oriented evaluation, Reef vulnerability/fix collection foundation. Apache-2.0.
+- [DeepAudit — GitHub](https://github.com/lintsinghua/DeepAudit) — Multi-agent code security auditing platform. 4 agents (Orchestrator, Recon, Analysis, Verification), Docker sandbox PoC verification with self-correction, RAG knowledge base (CWE/CVE via ChromaDB), 49 CVEs found across 17 projects. FastAPI + React + TypeScript + Supabase + LangChain/LangGraph + LiteLLM. 12 vulnerability types (OWASP-aligned). Supports Ollama for local deployment. AGPL-3.0.
