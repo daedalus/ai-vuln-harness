@@ -1,8 +1,9 @@
 """RAG Knowledge Base for CWE/CVE vulnerability patterns.
 
 Provides semantic matching of code snippets against known vulnerability patterns
-using TF-IDF similarity. No external vector database required — uses sklearn's
-TfidfVectorizer for lightweight, dependency-minimal similarity search.
+using multiple backends:
+- SQLite + TF-IDF (default, no external dependencies)
+- SQLite + FAISS (optional, requires faiss-cpu + sentence-transformers)
 
 Reference: DeepAudit's RAG knowledge base (CWE/CVE via ChromaDB).
 """
@@ -10,6 +11,7 @@ Reference: DeepAudit's RAG knowledge base (CWE/CVE via ChromaDB).
 from __future__ import annotations
 
 import json
+import sqlite3
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -22,6 +24,15 @@ try:
     _HAS_SKLEARN = True
 except ImportError:
     _HAS_SKLEARN = False
+
+try:
+    import faiss
+    import numpy as np
+    from sentence_transformers import SentenceTransformer
+
+    _HAS_FAISS = True
+except ImportError:
+    _HAS_FAISS = False
 
 
 # Built-in CWE/CVE pattern catalog
@@ -137,15 +148,106 @@ _DEFAULT_CWE_PATTERNS: list[dict] = [
 class VulnerabilityKB:
     """Knowledge base for CWE/CVE vulnerability patterns.
 
-    Uses TF-IDF for lightweight semantic similarity search without
-    requiring external vector databases.
+    Supports multiple backends:
+    - SQLite + TF-IDF (default, no external dependencies)
+    - SQLite + FAISS (optional, requires faiss-cpu + sentence-transformers)
+
+    Usage:
+        # Default: SQLite + TF-IDF
+        kb = VulnerabilityKB()
+
+        # With SQLite persistence
+        kb = VulnerabilityKB(db_path="output/kb.db")
+
+        # With FAISS backend (if installed)
+        kb = VulnerabilityKB(db_path="output/kb.db", use_faiss=True)
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        db_path: Path | str | None = None,
+        use_faiss: bool = False,
+        embedding_model: str = "all-MiniLM-L6-v2",
+    ) -> None:
         self._patterns: list[dict] = list(_DEFAULT_CWE_PATTERNS)
         self._vectorizer: TfidfVectorizer | None = None
-        self._matrix = None
+        self._tfidf_matrix = None
+        self._built_tfidf = False
+
+        # FAISS state
+        self._use_faiss = use_faiss and _HAS_FAISS
+        self._faiss_index = None
+        self._faiss_embeddings = None
+        self._faiss_model = None
+        self._built_faiss = False
+
+        if self._use_faiss:
+            try:
+                self._faiss_model = SentenceTransformer(embedding_model)
+            except Exception:
+                self._use_faiss = False
+
+        # SQLite state
+        self._conn: sqlite3.Connection | None = None
+        self._db_path = db_path
+
+        if db_path:
+            self._init_db(db_path)
+            self._load_from_db()
+
+    def _init_db(self, db_path: Path | str) -> None:
+        """Initialize SQLite database for pattern storage."""
+        self._conn = sqlite3.connect(str(db_path))
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS cwe_patterns (
+                cwe TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL,
+                patterns TEXT NOT NULL,
+                language TEXT NOT NULL DEFAULT 'generic'
+            )
+        """)
+        self._conn.commit()
+
+        # Seed database with defaults if empty
+        count = self._conn.execute("SELECT COUNT(*) FROM cwe_patterns").fetchone()[0]
+        if count == 0:
+            for p in _DEFAULT_CWE_PATTERNS:
+                self._conn.execute(
+                    """INSERT OR REPLACE INTO cwe_patterns(cwe, title, description, patterns, language)
+                       VALUES(?, ?, ?, ?, ?)""",
+                    (p["cwe"], p["title"], p["description"], json.dumps(p.get("patterns", [])), p.get("language", "generic")),
+                )
+            self._conn.commit()
+
+    def _load_from_db(self) -> None:
+        """Load patterns from database into memory."""
+        if not self._conn:
+            return
+        rows = self._conn.execute("SELECT cwe, title, description, patterns, language FROM cwe_patterns").fetchall()
+        # Replace defaults with DB content
+        self._patterns = []
+        for cwe, title, desc, patterns_json, lang in rows:
+            self._patterns.append({
+                "cwe": cwe,
+                "title": title,
+                "description": desc,
+                "patterns": json.loads(patterns_json),
+                "language": lang,
+            })
         self._built = False
+
+    def _save_to_db(self) -> None:
+        """Save all patterns to database."""
+        if not self._conn:
+            return
+        for p in self._patterns:
+            self._conn.execute(
+                """INSERT OR REPLACE INTO cwe_patterns(cwe, title, description, patterns, language)
+                   VALUES(?, ?, ?, ?, ?)""",
+                (p["cwe"], p["title"], p["description"], json.dumps(p.get("patterns", [])), p.get("language", "generic")),
+            )
+        self._conn.commit()
 
     def add_pattern(
         self,
@@ -154,38 +256,59 @@ class VulnerabilityKB:
         description: str,
         patterns: list[str],
         language: str = "generic",
+        persist: bool = False,
     ) -> None:
         """Add a CWE/CVE pattern to the knowledge base."""
-        self._patterns.append({
+        entry = {
             "cwe": cwe,
             "title": title,
             "description": description,
             "patterns": patterns,
             "language": language,
-        })
-        self._built = False
+        }
+        self._patterns.append(entry)
+        self._built_tfidf = False
+        self._built_faiss = False
+        if persist and self._conn:
+            self._conn.execute(
+                """INSERT OR REPLACE INTO cwe_patterns(cwe, title, description, patterns, language)
+                   VALUES(?, ?, ?, ?, ?)""",
+                (cwe, title, description, json.dumps(patterns), language),
+            )
+            self._conn.commit()
 
-    def load_from_file(self, path: Path) -> int:
+    def load_from_file(self, path: Path, persist: bool = False) -> int:
         """Load patterns from a JSON file.
 
         Returns the number of patterns loaded.
         """
         with open(path) as f:
             data = json.load(f)
+        count = 0
         if isinstance(data, list):
             for entry in data:
                 self._patterns.append(entry)
-        self._built = False
-        return len(data) if isinstance(data, list) else 0
+                count += 1
+        self._built_tfidf = False
+        self._built_faiss = False
+        if persist and self._conn:
+            self._save_to_db()
+        return count
 
     def _build_index(self) -> None:
+        """Build search index (TF-IDF or FAISS)."""
+        if self._use_faiss:
+            self._build_faiss_index()
+        else:
+            self._build_tfidf_index()
+
+    def _build_tfidf_index(self) -> None:
         """Build TF-IDF index from patterns."""
         if not _HAS_SKLEARN:
             return
-        if self._built:
+        if self._built_tfidf:
             return
 
-        # Combine description + patterns into a single document per CWE
         docs = []
         for p in self._patterns:
             doc = f"{p['title']} {p['description']} {' '.join(p.get('patterns', []))}"
@@ -196,11 +319,37 @@ class VulnerabilityKB:
             max_features=1000,
             ngram_range=(1, 2),
         )
-        self._matrix = self._vectorizer.fit_transform(docs)
-        self._built = True
+        self._tfidf_matrix = self._vectorizer.fit_transform(docs)
+        self._built_tfidf = True
+
+    def _build_faiss_index(self) -> None:
+        """Build FAISS index from patterns."""
+        if not _HAS_FAISS or self._faiss_model is None:
+            self._build_tfidf_index()
+            return
+        if self._built_faiss:
+            return
+
+        # Encode all patterns
+        texts = []
+        for p in self._patterns:
+            text = f"{p['title']} {p['description']} {' '.join(p.get('patterns', []))}"
+            texts.append(text)
+
+        self._faiss_embeddings = self._faiss_model.encode(texts, show_progress_bar=False)
+        embeddings_np = np.array(self._faiss_embeddings).astype("float32")
+
+        # Build FAISS index (Inner Product for cosine similarity after normalization)
+        dimension = embeddings_np.shape[1]
+        faiss.normalize_L2(embeddings_np)
+        self._faiss_index = faiss.IndexFlatIP(dimension)
+        self._faiss_index.add(embeddings_np)
+        self._built_faiss = True
 
     def search(self, query: str, top_k: int = 5, threshold: float = 0.1) -> list[dict]:
         """Search for matching CWE/CVE patterns.
+
+        Uses FAISS when available, falls back to TF-IDF, then keyword matching.
 
         Parameters
         ----------
@@ -215,16 +364,48 @@ class VulnerabilityKB:
         -------
         List of dicts with 'cwe', 'title', 'score', 'patterns' keys.
         """
-        if not _HAS_SKLEARN:
-            # Fallback: keyword matching
-            return self._keyword_search(query, top_k)
-
         self._build_index()
-        if self._vectorizer is None or self._matrix is None:
-            return self._keyword_search(query, top_k)
 
+        # Try FAISS first
+        if self._use_faiss and self._faiss_index is not None and self._faiss_model is not None:
+            return self._faiss_search(query, top_k, threshold)
+
+        # Fall back to TF-IDF
+        if _HAS_SKLEARN and self._vectorizer is not None and self._tfidf_matrix is not None:
+            return self._tfidf_search(query, top_k, threshold)
+
+        # Final fallback: keyword matching
+        return self._keyword_search(query, top_k)
+
+    def _faiss_search(self, query: str, top_k: int, threshold: float) -> list[dict]:
+        """Search using FAISS index."""
+        query_embedding = self._faiss_model.encode([query])
+        query_np = np.array(query_embedding).astype("float32")
+        faiss.normalize_L2(query_np)
+
+        distances, indices = self._faiss_index.search(query_np, min(top_k, len(self._patterns)))
+
+        results = []
+        for dist, idx in zip(distances[0], indices[0]):
+            if idx < 0 or idx >= len(self._patterns):
+                continue
+            score = float(dist)  # Inner product = cosine after normalization
+            if score >= threshold:
+                results.append({
+                    "cwe": self._patterns[idx]["cwe"],
+                    "title": self._patterns[idx]["title"],
+                    "score": round(score, 4),
+                    "patterns": self._patterns[idx].get("patterns", []),
+                    "language": self._patterns[idx].get("language", "generic"),
+                    "backend": "faiss",
+                })
+
+        return results
+
+    def _tfidf_search(self, query: str, top_k: int, threshold: float) -> list[dict]:
+        """Search using TF-IDF index."""
         query_vec = self._vectorizer.transform([query])
-        scores = cosine_similarity(query_vec, self._matrix).flatten()
+        scores = cosine_similarity(query_vec, self._tfidf_matrix).flatten()
 
         results = []
         for idx in scores.argsort()[::-1][:top_k]:
@@ -235,6 +416,7 @@ class VulnerabilityKB:
                     "score": round(float(scores[idx]), 4),
                     "patterns": self._patterns[idx].get("patterns", []),
                     "language": self._patterns[idx].get("language", "generic"),
+                    "backend": "tfidf",
                 })
 
         return results
@@ -260,6 +442,7 @@ class VulnerabilityKB:
                     "score": min(score, 1.0),
                     "patterns": p.get("patterns", []),
                     "language": p.get("language", "generic"),
+                    "backend": "keyword",
                 })
 
         results.sort(key=lambda x: x["score"], reverse=True)
@@ -279,3 +462,15 @@ class VulnerabilityKB:
     @property
     def size(self) -> int:
         return len(self._patterns)
+
+    def close(self) -> None:
+        """Close database connection if open."""
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
