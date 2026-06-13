@@ -12,10 +12,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
@@ -297,6 +295,34 @@ class VulnerabilityKB:
             for entry in data:
                 self._patterns.append(entry)
                 count += 1
+        self._built_tfidf = False
+        self._built_faiss = False
+        if persist and self._conn:
+            self._save_to_db()
+        return count
+
+    def add_patterns_from_corpus(self, entries: list[dict], persist: bool = False) -> int:
+        """Bulk load patterns from a CVE corpus or CWE catalog.
+
+        Each entry should have at minimum ``cwe`` and ``title``.  Optional
+        keys: ``description``, ``patterns``, ``language``, ``severity_common``.
+
+        Returns the number of patterns added.
+        """
+        count = 0
+        for entry in entries:
+            cwe = entry.get("cwe", "")
+            if not cwe:
+                continue
+            pattern = {
+                "cwe": cwe,
+                "title": entry.get("title", ""),
+                "description": entry.get("description", ""),
+                "patterns": entry.get("patterns", []),
+                "language": entry.get("language", "generic"),
+            }
+            self._patterns.append(pattern)
+            count += 1
         self._built_tfidf = False
         self._built_faiss = False
         if persist and self._conn:

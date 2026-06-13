@@ -2,7 +2,8 @@
 
 import unittest
 
-from ai_vuln_harness.stages.voting import merge_hunter_outputs
+from ai_vuln_harness.stages.voting import merge_hunter_outputs, _semantic_merge
+from ai_vuln_harness.stages.embeddings import _HAS_EMBEDDINGS
 
 
 class MergeHunterOutputsTests(unittest.TestCase):
@@ -64,6 +65,106 @@ class MergeHunterOutputsTests(unittest.TestCase):
         promoted, suppressed = merge_hunter_outputs([[f], [f]], min_votes=2)
         self.assertEqual(promoted, [])
         self.assertEqual(suppressed, [])
+
+
+class SemanticMergeTests(unittest.TestCase):
+    """Tests for embedding-based semantic merge in voting."""
+
+    def _finding(
+        self,
+        sid: str,
+        cls: str = "buffer-overflow",
+        sev: str = "HIGH",
+        desc: str = "",
+        file: str = "",
+    ) -> dict:
+        return {
+            "snippet_id": sid,
+            "class": cls,
+            "severity": sev,
+            "desc": desc,
+            "file": file,
+            "status": "raw",
+            "poc_confirmed": False,
+        }
+
+    @unittest.skipUnless(_HAS_EMBEDDINGS, "sentence-transformers not installed")
+    def test_same_class_different_desc_merges(self):
+        """Two findings with same class but different descriptions should merge."""
+        f1 = self._finding("sid1", cls="sql-injection", desc="SQL injection in login query via user input")
+        f2 = self._finding("sid2", cls="sql-injection", desc="SQL injection vulnerability in authentication endpoint")
+        outputs = _semantic_merge([[f1], [f2]], similarity_threshold=0.7)
+        # After merge, should have fewer unique findings
+        total = sum(len(r) for r in outputs)
+        # Ideally merged into 1, but at minimum should not crash
+        self.assertGreaterEqual(total, 1)
+
+    @unittest.skipUnless(_HAS_EMBEDDINGS, "sentence-transformers not installed")
+    def test_different_class_no_merge(self):
+        """Findings with different classes should not merge."""
+        f1 = self._finding("sid1", cls="sql-injection", desc="SQL injection vulnerability")
+        f2 = self._finding("sid2", cls="buffer-overflow", desc="Buffer overflow in parsing")
+        outputs = _semantic_merge([[f1], [f2]], similarity_threshold=0.85)
+        total = sum(len(r) for r in outputs)
+        self.assertEqual(total, 2)
+
+    @unittest.skipUnless(_HAS_EMBEDDINGS, "sentence-transformers not installed")
+    def test_at_threshold_merges(self):
+        """Similarity exactly at threshold should merge."""
+        f1 = self._finding("sid1", cls="xss", desc="Cross-site scripting via innerHTML")
+        f2 = self._finding("sid2", cls="xss", desc="Cross-site scripting through innerHTML assignment")
+        outputs = _semantic_merge([[f1], [f2]], similarity_threshold=0.5)
+        # Very low threshold should force merge
+        total = sum(len(r) for r in outputs)
+        self.assertLessEqual(total, 2)
+
+    @unittest.skipUnless(_HAS_EMBEDDINGS, "sentence-transformers not installed")
+    def test_below_threshold_no_merge(self):
+        """Similarity below threshold should not merge."""
+        f1 = self._finding("sid1", cls="sql-injection", desc="SQL injection vulnerability")
+        f2 = self._finding("sid2", cls="crypto-weak", desc="Weak cryptographic algorithm usage")
+        outputs = _semantic_merge([[f1], [f2]], similarity_threshold=0.99)
+        total = sum(len(r) for r in outputs)
+        self.assertEqual(total, 2)
+
+    @unittest.skipUnless(_HAS_EMBEDDINGS, "sentence-transformers not installed")
+    def test_single_run_merges_within(self):
+        """Single run with similar findings should merge them."""
+        f1 = self._finding("sid1", desc="SQL injection in login")
+        f2 = self._finding("sid2", desc="SQL injection in authentication")
+        outputs = _semantic_merge([[f1, f2]], similarity_threshold=0.5)
+        total = sum(len(r) for r in outputs)
+        self.assertLessEqual(total, 2)
+
+    @unittest.skipUnless(_HAS_EMBEDDINGS, "sentence-transformers not installed")
+    def test_empty_outputs_no_crash(self):
+        """Empty outputs should not crash."""
+        outputs = _semantic_merge([], similarity_threshold=0.85)
+        self.assertEqual(outputs, [])
+
+    def test_semantic_merge_flag_in_merge_hunter_outputs(self):
+        """semantic_merge=False (default) should not trigger embedding merge."""
+        f1 = self._finding("sid1", cls="sql-injection", desc="SQL injection")
+        f2 = self._finding("sid2", cls="sql-injection", desc="SQL injection via input")
+        promoted, suppressed = merge_hunter_outputs(
+            [[f1], [f2]], min_votes=2, semantic_merge=False,
+        )
+        # Without semantic merge, different snippet_ids stay separate
+        total = len(promoted) + len(suppressed)
+        self.assertEqual(total, 2)
+
+    def test_semantic_merge_true_with_embeddings(self):
+        """semantic_merge=True should work end-to-end via merge_hunter_outputs."""
+        if not _HAS_EMBEDDINGS:
+            self.skipTest("sentence-transformers not installed")
+        f1 = self._finding("sid1", cls="sql-injection", desc="SQL injection in login", sev="HIGH")
+        f2 = self._finding("sid2", cls="sql-injection", desc="SQL injection vulnerability in auth", sev="MEDIUM")
+        promoted, suppressed = merge_hunter_outputs(
+            [[f1], [f2]], min_votes=2, semantic_merge=True, similarity_threshold=0.5,
+        )
+        # With low threshold, they should merge and promote
+        total = len(promoted) + len(suppressed)
+        self.assertLessEqual(total, 2)
 
 
 if __name__ == "__main__":

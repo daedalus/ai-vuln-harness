@@ -220,3 +220,95 @@ def _make_pack(
         "security_context": security_context or {},
         "known_entries": [],
     }
+
+
+# Domain centroid descriptions for embedding-based routing
+_DOMAIN_CENTROIDS: dict[str, str] = {
+    "mem-safety": "buffer overflow out-of-bounds read use-after-free integer overflow memory corruption",
+    "auth": "authentication bypass session fixation privilege escalation access control",
+    "crypto": "weak cryptographic algorithm broken cipher hardcoded key insecure random",
+    "ipc": "inter-process communication race condition TOCTOU pipe socket injection",
+    "data-flow": "untrusted user input external data reaching sensitive sink function",
+    "format-str": "format string vulnerability printf sprintf user-controlled format specifier",
+    "injection": "command injection SQL injection code injection through user input",
+    "path-traversal": "directory traversal path traversal symlink attack file access outside root",
+    "concurrency": "race condition thread safety signal handler deadlock mutex",
+    "resource": "resource exhaustion memory leak file descriptor leak denial of service",
+    "secrets": "hardcoded password API key token credential exposure in source code",
+}
+
+
+def assign_domain_by_embedding(
+    snippet: dict,
+    domain_centroids: dict[str, "np.ndarray"] | None = None,
+) -> str | None:
+    """Assign a snippet to the most similar domain using embeddings.
+
+    Parameters
+    ----------
+    snippet:
+        Snippet dict with at least ``content`` or ``name`` key.
+    domain_centroids:
+        Pre-computed domain centroid embeddings.  If None, falls back to
+        keyword tag matching (returns None).
+
+    Returns
+    -------
+    Best matching domain name, or None when embeddings are unavailable.
+    """
+    try:
+        import numpy as np
+        from ai_vuln_harness.stages.embeddings import EmbeddingIndex
+    except ImportError:
+        return None
+
+    if domain_centroids is None:
+        return None
+
+    # Build text representation of snippet
+    text = " ".join(
+        str(snippet.get(k) or "")
+        for k in ("name", "content", "file", "language")
+    ).strip()
+    if not text:
+        return None
+
+    index = EmbeddingIndex()
+    if not index._ensure_model():
+        return None
+
+    # Encode snippet
+    emb = index._model.encode([text], normalize_embeddings=True).astype("float32")[0]
+
+    # Find best matching domain
+    best_domain = None
+    best_sim = -1.0
+    for domain, centroid in domain_centroids.items():
+        sim = float(np.dot(emb, centroid) / (np.linalg.norm(emb) * np.linalg.norm(centroid) + 1e-8))
+        if sim > best_sim:
+            best_sim = sim
+            best_domain = domain
+
+    return best_domain
+
+
+def build_domain_centroids() -> dict[str, "np.ndarray"] | None:
+    """Pre-compute domain centroid embeddings from domain descriptions.
+
+    Returns None when sentence-transformers is unavailable.
+    """
+    try:
+        import numpy as np
+        from ai_vuln_harness.stages.embeddings import EmbeddingIndex
+    except ImportError:
+        return None
+
+    index = EmbeddingIndex()
+    if not index._ensure_model():
+        return None
+
+    domains = list(_DOMAIN_CENTROIDS.keys())
+    texts = [_DOMAIN_CENTROIDS[d] for d in domains]
+    embeddings = index._model.encode(texts, normalize_embeddings=True)
+
+    return {d: embeddings[i].astype("float32") for i, d in enumerate(domains)}

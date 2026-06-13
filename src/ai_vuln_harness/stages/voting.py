@@ -8,6 +8,7 @@ Improvements:
 - Severity gating: High/Critical requires Tier 1 or Tier 2
 - Confidence aggregation across votes
 - Evidence accumulation from multiple hunters
+- Semantic dedup via embedding similarity (optional)
 """
 
 from __future__ import annotations
@@ -288,11 +289,131 @@ def _build_results(
     return promoted, suppressed
 
 
+def _semantic_merge(
+    outputs: list[list[dict]],
+    similarity_threshold: float = 0.85,
+) -> list[list[dict]]:
+    """Merge semantically similar findings across hunter runs.
+
+    After exact-key dedup, some findings describe the same vulnerability
+    using different descriptions or at slightly different line ranges.
+    This function uses embedding cosine similarity to detect and merge
+    those clusters.
+
+    Parameters
+    ----------
+    outputs:
+        List of finding lists, one per hunter run.
+    similarity_threshold:
+        Minimum cosine similarity to consider two findings equivalent.
+
+    Returns
+    -------
+    New ``outputs`` list with semantically similar findings merged.
+    When sentence-transformers or faiss is unavailable, returns inputs unchanged.
+    """
+    try:
+        from ai_vuln_harness.stages.embeddings import EmbeddingIndex
+    except ImportError:
+        return outputs
+
+    index = EmbeddingIndex()
+    if not index.available:
+        return outputs
+
+    # Flatten all findings with their origin run index
+    flat: list[tuple[int, dict]] = []
+    for run_idx, run in enumerate(outputs):
+        for f in run or []:
+            flat.append((run_idx, f))
+
+    if len(flat) < 2:
+        return outputs
+
+    # Encode
+    findings = [f for _, f in flat]
+    index.encode_findings(findings)
+    pairs = index.find_similar_pairs(threshold=similarity_threshold)
+
+    if not pairs:
+        return outputs
+
+    # Union-find to cluster similar findings
+    parent = list(range(len(flat)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for a, b, _sim in pairs:
+        union(a, b)
+
+    # Build clusters: root -> list of (run_idx, finding)
+    clusters: dict[int, list[tuple[int, dict]]] = defaultdict(list)
+    for i, (run_idx, f) in enumerate(flat):
+        clusters[find(i)].append((run_idx, f))
+
+    # Rebuild outputs: each cluster becomes one finding (best variant)
+    new_outputs: list[list[dict]] = [[] for _ in outputs]
+    seen_clusters: set[int] = set()
+
+    for root, members in clusters.items():
+        if root in seen_clusters:
+            continue
+        seen_clusters.add(root)
+
+        if len(members) == 1:
+            run_idx, f = members[0]
+            new_outputs[run_idx].append(f)
+            continue
+
+        # Pick best variant by severity
+        best_run_idx, best_f = members[0]
+        for run_idx, f in members[1:]:
+            if _severity_rank(f.get("severity", "")) > _severity_rank(
+                best_f.get("severity", ""),
+            ):
+                best_run_idx, best_f = run_idx, f
+
+        # Annotate with semantic merge info
+        best_f = dict(best_f)
+        origin_runs = sorted(set(ri for ri, _ in members))
+        best_f["semantic_merge"] = True
+        best_f["semantic_cluster_size"] = len(members)
+        best_f["semantic_cluster_runs"] = origin_runs
+
+        # Accumulate evidence from all members
+        all_evidence: list[dict] = []
+        all_models: list[str] = []
+        for _, f in members:
+            all_evidence.extend(f.get("suspicious_points") or [])
+            model = f.get("hunt_model") or f.get("model") or "unknown"
+            if model not in all_models:
+                all_models.append(model)
+        if all_evidence:
+            best_f["accumulated_evidence"] = all_evidence
+        if all_models:
+            best_f["hunter_models"] = all_models
+
+        new_outputs[best_run_idx].append(best_f)
+
+    return new_outputs
+
+
 def merge_hunter_outputs(
     outputs: list[list[dict]],
     min_votes: int = 2,
     *,
     enforce_severity_gating: bool = False,
+    semantic_merge: bool = False,
+    similarity_threshold: float = 0.85,
 ) -> tuple[list[dict], list[dict]]:
     """Merge findings from multiple hunter runs.
 
@@ -306,6 +427,12 @@ def merge_hunter_outputs(
     enforce_severity_gating:
         If True, High/Critical findings require Tier 1 or Tier 2 validation.
         Default False for backward compatibility.
+    semantic_merge:
+        If True, merge semantically similar findings across runs using
+        embedding similarity before vote counting.  Requires
+        sentence-transformers + faiss.  Default False for backward compat.
+    similarity_threshold:
+        Minimum cosine similarity for semantic merge (default 0.85).
 
     Returns
     -------
@@ -327,6 +454,10 @@ def merge_hunter_outputs(
     """
     if not outputs:
         return [], []
+
+    # Optional semantic merge pass
+    if semantic_merge and len(outputs) > 1:
+        outputs = _semantic_merge(outputs, similarity_threshold=similarity_threshold)
 
     if len(outputs) == 1:
         result = []

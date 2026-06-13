@@ -51,6 +51,11 @@ def main() -> None:
         help="Specific datasets to load (default: all)",
     )
     parser.add_argument(
+        "--faiss",
+        action="store_true",
+        help="Build and persist a FAISS index (requires faiss-cpu + sentence-transformers)",
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable verbose output",
@@ -70,7 +75,7 @@ def main() -> None:
         args.output.unlink()
 
     print(f"Initializing knowledge base at {args.output}...")
-    with VulnerabilityKB(args.output, reset=args.reset) as kb:
+    with VulnerabilityKB(args.output, use_faiss=args.faiss, reset=args.reset) as kb:
         print(f"Starting size: {kb.size} patterns")
 
         # Load datasets
@@ -89,6 +94,18 @@ def main() -> None:
         print(f"  {'total':<15}: {summary['total']}")
         print(f"  {'KB size':<15}: {kb.size}")
         print(f"{'='*50}")
+
+        # Force-build search index and persist FAISS if enabled
+        if args.faiss:
+            print("\nBuilding FAISS index...")
+            kb._build_faiss_index()
+            if kb._built_faiss:
+                faiss_path = args.output.with_suffix(".faiss")
+                print(f"FAISS index saved to {faiss_path}")
+            else:
+                print("WARNING: FAISS index build failed (check faiss-cpu + sentence-transformers)")
+        else:
+            kb._build_tfidf_index()
 
         # Quick test search
         print("\nTest search: 'SQL injection'")

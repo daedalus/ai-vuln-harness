@@ -82,3 +82,19 @@ stages:
       - openrouter:nvidia/nemotron-3-super-120b-a12b:free
       - openrouter:google/gemma-4-31b-it:free
     max_workers: 1
+
+embeddings:
+  enabled: false
+  model: "all-MiniLM-L6-v2"
+  similarity_threshold: 0.85
+  device: "cpu"
+
+findings_db:
+  enabled: false
+  path: "output/findings.db"
+  persist: false
+  historical_context: false
+
+rag_kb:
+  catalog_path: null
+  embedding_model: "all-MiniLM-L6-v2"

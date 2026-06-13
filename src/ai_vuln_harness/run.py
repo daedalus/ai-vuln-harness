@@ -2666,6 +2666,13 @@ def _build_run_kwargs(args: argparse.Namespace, *, target_mode: bool = False) ->
         "sandbox_compile": args.sandbox_compile,
         "target_mode": target_mode,
         "enforce_severity_gating": args.enforce_severity_gating,
+        "enable_embeddings": args.enable_embeddings,
+        "similarity_threshold": args.similarity_threshold,
+        "enable_findings_db": args.enable_findings_db,
+        "persist_findings": args.persist_findings,
+        "historical_context": args.historical_context,
+        "enable_fts_suppressions": args.enable_fts_suppressions,
+        "rag_catalog": args.rag_catalog,
     }
 
 
@@ -2824,6 +2831,45 @@ def main() -> None:
         default=False,
         help="Downgrade High/Critical findings to Medium if only Tier 3 (Theoretical). "
         "Requires Tier 1 (Confirmed) or Tier 2 (Plausible) for High/Critical severity.",
+    )
+    parser.add_argument(
+        "--enable-embeddings",
+        action="store_true",
+        help="Enable embedding-based features (semantic dedup, fuzzy suppressions). "
+        "Requires sentence-transformers + faiss-cpu.",
+    )
+    parser.add_argument(
+        "--similarity-threshold",
+        type=float,
+        default=0.85,
+        help="Cosine similarity threshold for semantic merge and fuzzy suppression (default: 0.85).",
+    )
+    parser.add_argument(
+        "--enable-findings-db",
+        type=Path,
+        default=None,
+        help="Path to findings SQLite DB for cross-run search and persistence.",
+    )
+    parser.add_argument(
+        "--persist-findings",
+        action="store_true",
+        help="Store scan results in findings DB (requires --enable-findings-db).",
+    )
+    parser.add_argument(
+        "--historical-context",
+        action="store_true",
+        help="Load related historical findings into hunt context (requires --enable-findings-db).",
+    )
+    parser.add_argument(
+        "--enable-fts-suppressions",
+        action="store_true",
+        help="Use FTS5 fuzzy matching for suppressions (requires --enable-embeddings for embedding match).",
+    )
+    parser.add_argument(
+        "--rag-catalog",
+        type=Path,
+        default=None,
+        help="Path to expanded CWE catalog JSON for RAG KB (default: built-in 15 patterns).",
     )
     args = parser.parse_args()
 
