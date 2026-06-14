@@ -2276,6 +2276,18 @@ def run(  # noqa: PLR0913
         findings, repo, snippets, all_tasks, scope_notes, cfg, state,
     )
 
+    # Output content review gate (A3 containment)
+    from ai_vuln_harness.stages.output_review import review_findings
+    review_risk_level = cfg.get("output_review", {}).get("risk_level", "standard")
+    findings, review_blocked = review_findings(findings, risk_level=review_risk_level)
+    if review_blocked:
+        logger.warning(
+            "Output review gate blocked %d findings (weaponizable content)",
+            len(review_blocked),
+        )
+        state.put_meta("review_blocked_count", str(len(review_blocked)))
+        _persist_jsonl(output_dir / "review_blocked.jsonl", review_blocked)
+
     report = _assemble_report(
         repo=str(repo),
         findings=findings,
