@@ -18,6 +18,12 @@ call_llm retry strategy:
     instead of ``message.content`` — merge both after the API call.
   - ``max_tokens`` must be 8192 minimum; reasoning models consume large output
     budgets and 4096 causes truncation.
+
+Refusal detection:
+  - Models sometimes refuse to analyze code ("I can't help with that").
+  - ``_is_refusal(content)`` catches known refusal patterns.
+  - Refusals are logged at WARNING level with ``refusal=True`` tag.
+  - Pipeline stats track refusal count per model via ``refusal_counts`` dict.
 """
 
 from __future__ import annotations
@@ -37,6 +43,65 @@ import urllib.request
 from collections import Counter
 from pathlib import Path
 from urllib.parse import urlparse
+
+
+# ---------------------------------------------------------------------------
+# Refusal detection
+# ---------------------------------------------------------------------------
+
+_REFUSAL_PATTERNS = [
+    # OpenAI-style refusals
+    r"\bI('m|\s+am)\s+unable\s+to\s+(assist|help|comply|fulfill)",
+    r"\bI\s+can('t|not|\s+not)\s+(assist|help|comply|fulfill|do\s+that)",
+    r"\bI\s+don('t|\s+not)\s+(think|believe)\s+I\s+(can|should)",
+    r"\bmy\s+guidelines\s+(prevent|don't\s+allow|prohibit)",
+    r"\bI\s+must\s+(decline|refuse|not\s+comply)",
+    # Anthropic-style refusals
+    r"\bI\s+appreciate\s+your\s+interest.*but\s+I\s+(can't|cannot|won't|am\s+unable)",
+    r"\bI('m|\s+am)\s+not\s+able\s+to\s+(assist|help|provide)",
+    r"\bI\s+don('t|\s+not)\s+feel\s+comfortable",
+    r"\bthis\s+(goes?\s+against|violates|conflicts\s+with)\s+my\s+(guidelines|principles)",
+    # Generic safety refusals
+    r"\bI\s+(can't|cannot|can\s+not)\s+assist\s+with\s+(that|this|those|requests?\s+that)",
+    r"\bI\s+won('t|\s+not)\s+(help|assist|comply)\s+with\s+(that|this)",
+    r"\bI\s+am\s+not\s+(authorized|permitted|allowed)\s+to",
+    r"\bI\s+must\s+respect\s+(safety|my\s+guidelines|content\s+policies)",
+    r"\bI\s+need\s+to\s+decline\s+this",
+    # Chinese model refusals (common in free-tier models)
+    "\u6211\u65e0\u6cd5\u63d0\u4f9b\u6b64\u7c7b\u5e2e\u52a9",  # 我无法提供此类帮助
+    "\u6211\u4e0d\u80fd\u534f\u52a9\u5b8c\u6210\u8fd9\u4e2a\u4efb\u52a1",  # 我不能协助完成这个任务
+]
+
+# Compiled once at import time
+_REFUSAL_RE = [_re.compile(p, _re.IGNORECASE) for p in _REFUSAL_PATTERNS]
+
+# Module-level refusal counter — keyed by "provider/model"
+_refusal_counts: Counter[str] = Counter()
+
+
+def _is_refusal(content: str) -> bool:
+    """Detect whether an LLM response is a refusal rather than useful output.
+
+    Returns True when the content matches known refusal patterns.  Designed
+    to have zero false positives on legitimate security analysis output —
+    patterns require the *first-person refusal frame* ("I can't", "I won't"),
+    not just the presence of the word "can't" in code context.
+    """
+    if not content or len(content.strip()) < 5:
+        return False
+
+    text = content.strip()
+
+    # Quick heuristic: if the response contains JSON braces, it's likely
+    # structured output (findings), not a refusal.
+    if "{" in text[:200]:
+        return False
+
+    for pattern in _REFUSAL_RE:
+        if pattern.search(text):
+            return True
+
+    return False
 
 
 def _preferred_by_keyword(models: list[str], keywords: tuple[str, ...]) -> list[str]:
@@ -666,7 +731,31 @@ def _call_llm_once(
         provider,
         model_name,
     )
+
+    # Detect model refusal
+    if _is_refusal(content):
+        _refusal_counts[f"{provider}/{model_name}"] += 1
+        log.warning(
+            "REFUSAL from %s %s (first 120 chars): %s",
+            provider,
+            model_name,
+            content.strip()[:120],
+        )
+
     return content
+
+
+def get_refusal_counts() -> dict[str, int]:
+    """Return the refusal counts accumulated during this process.
+
+    Keys are ``"provider/model"`` strings, values are refusal counts.
+    """
+    return dict(_refusal_counts)
+
+
+def reset_refusal_counts() -> None:
+    """Reset the refusal counter (useful between runs)."""
+    _refusal_counts.clear()
 
 
 def _call_llm_with_retry(

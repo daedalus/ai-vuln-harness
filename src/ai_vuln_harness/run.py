@@ -2295,6 +2295,19 @@ def run(  # noqa: PLR0913
     )
     state.put_meta("post_processor_dashboard", json.dumps(post_result["dashboard"]))
 
+    # Log refusal summary
+    from ai_vuln_harness.stages.runtime import get_refusal_counts
+    refusal_counts = get_refusal_counts()
+    if refusal_counts:
+        total_refusals = sum(refusal_counts.values())
+        logger.warning(
+            "Model refusals detected: %d total across %d models: %s",
+            total_refusals,
+            len(refusal_counts),
+            dict(refusal_counts),
+        )
+        state.put_meta("refusal_counts", json.dumps(refusal_counts))
+
     state.put_meta("last_mode", mode)
     state.finish_run(run_id)
     if cache:
@@ -2383,6 +2396,14 @@ def _assemble_report(
         report["fuzz_artifacts"] = fuzz_artifacts
     if exploit_synthesis_records:
         report["exploit_synthesis"] = exploit_synthesis_records
+
+    # Attach refusal counts from LLM calls
+    from ai_vuln_harness.stages.runtime import get_refusal_counts
+    refusal_counts = get_refusal_counts()
+    if refusal_counts:
+        report["refusal_counts"] = refusal_counts
+        report["total_refusals"] = sum(refusal_counts.values())
+
     return report
 
 
