@@ -2071,16 +2071,14 @@ def run(  # noqa: PLR0913
     work_dir = Path.cwd()
 
     # --zero-day expands into non-helpful features disabled
-    # Gapfill and chains are KEPT — they help find zero days
+    # Gapfill, chains, and CVE corpus (as negatives) are KEPT
     if zero_day:
         no_exposure = True
         no_feedback = True
-        no_cve_corpus = True
         no_rag_kb = True
         no_evidence = True
         no_fetch_cves = True
         no_scan_git_cves = True
-        cve_corpus = None
 
     cfg = json.loads((pkg_dir / "config/defaults.json").read_text())
     cfg = _apply_runtime_flags(
@@ -2963,8 +2961,9 @@ def main() -> None:
         "--zero-day",
         action="store_true",
         help="Zero-day hunting mode: disables exposure tracking, feedback loop, "
-        "CVE corpus, RAG KB enrichment, and evidence collection. "
-        "Keeps gapfill, chains, shield, and suppressions enabled.",
+        "RAG KB enrichment, and evidence collection. Keeps gapfill, chains, "
+        "CVE corpus (as negatives to suppress known CVE matches), shield, "
+        "and suppressions enabled.",
     )
     parser.add_argument("--no-gapfill", action="store_true", help="Skip gapfill loop stage.")
     parser.add_argument("--no-chains", action="store_true", help="Skip exploit chain synthesis.")
