@@ -10,6 +10,7 @@ from ai_vuln_harness.stages.cve_corpus import (
     filter_cves_by_domain,
     format_cve_entries,
     load_cve_corpus,
+    suppress_known_cves,
 )
 
 
@@ -166,3 +167,85 @@ class FormatCveEntriesTests(unittest.TestCase):
         result = format_cve_entries(entries)
         self.assertIn("CVE-2024-0001", result)
         self.assertIn("CVE-2024-0002", result)
+
+
+class SuppressKnownCvesTests(unittest.TestCase):
+    """Tests for suppress_known_cves()."""
+
+    def test_empty_corpus_no_suppression(self):
+        findings = [{"desc": "SQL injection", "class": "sql-injection"}]
+        novel, known = suppress_known_cves(findings, [])
+        self.assertEqual(len(novel), 1)
+        self.assertEqual(len(known), 0)
+
+    def test_match_by_cve_id_in_description(self):
+        findings = [
+            {"desc": "Buffer overflow related to CVE-2024-12345 in parser", "class": "buffer-overflow"},
+            {"desc": "Novel integer overflow", "class": "integer-overflow"},
+        ]
+        corpus = [
+            {"cve_id": "CVE-2024-12345", "class": "buffer-overflow", "description": "Buffer overflow in parser"},
+        ]
+        novel, known = suppress_known_cves(findings, corpus)
+        self.assertEqual(len(novel), 1)
+        self.assertEqual(len(known), 1)
+        self.assertIn("CVE-2024-12345", known[0]["suppression_reason"])
+
+    def test_match_by_class_and_keywords(self):
+        findings = [
+            {"desc": "Heap corruption via double free in allocator", "class": "use-after-free"},
+        ]
+        corpus = [
+            {"cve_id": "CVE-2024-99999", "class": "use-after-free", "description": "Heap corruption via double free in allocator module"},
+        ]
+        novel, known = suppress_known_cves(findings, corpus)
+        self.assertEqual(len(novel), 0)
+        self.assertEqual(len(known), 1)
+
+    def test_no_match_different_class(self):
+        findings = [
+            {"desc": "SQL injection in login", "class": "sql-injection"},
+        ]
+        corpus = [
+            {"cve_id": "CVE-2024-11111", "class": "buffer-overflow", "description": "Buffer overflow in parser"},
+        ]
+        novel, known = suppress_known_cves(findings, corpus)
+        self.assertEqual(len(novel), 1)
+        self.assertEqual(len(known), 0)
+
+    def test_no_match_different_keywords(self):
+        findings = [
+            {"desc": "Use-after-free in memory allocator", "class": "use-after-free"},
+        ]
+        corpus = [
+            {"cve_id": "CVE-2024-22222", "class": "use-after-free", "description": "Network socket closure race condition"},
+        ]
+        novel, known = suppress_known_cves(findings, corpus)
+        self.assertEqual(len(novel), 1)
+        self.assertEqual(len(known), 0)
+
+    def test_annotated_with_suppression_info(self):
+        findings = [
+            {"desc": "Bug matching CVE-2024-33333", "class": "xss"},
+        ]
+        corpus = [
+            {"cve_id": "CVE-2024-33333", "class": "xss", "description": "XSS in template"},
+        ]
+        _, known = suppress_known_cves(findings, corpus)
+        self.assertTrue(known[0].get("suppressed_by_cve_corpus"))
+        self.assertIn("CVE-2024-33333", known[0]["suppression_reason"])
+
+    def test_multiple_findings_mixed(self):
+        findings = [
+            {"desc": "Matches CVE-2024-0001 exactly", "class": "buffer-overflow"},
+            {"desc": "Novel SSRF via redirect", "class": "ssrf"},
+            {"desc": "Also matches CVE-2024-0002", "class": "sql-injection"},
+        ]
+        corpus = [
+            {"cve_id": "CVE-2024-0001", "class": "buffer-overflow", "description": "Buffer overflow"},
+            {"cve_id": "CVE-2024-0002", "class": "sql-injection", "description": "SQL injection in login"},
+        ]
+        novel, known = suppress_known_cves(findings, corpus)
+        self.assertEqual(len(novel), 1)
+        self.assertEqual(len(known), 2)
+        self.assertEqual(novel[0]["class"], "ssrf")

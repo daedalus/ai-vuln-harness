@@ -2150,7 +2150,7 @@ def run(  # noqa: PLR0913
         load_packs_cache,
     )
 
-    _inject_cve_entries(
+    cve_entries = _inject_cve_entries(
         packs, repo, snippets, cache, cve_corpus, no_fetch_cves, no_scan_git_cves
     )
     state.put_meta("pack_count", str(len(packs)))
@@ -2177,6 +2177,19 @@ def run(  # noqa: PLR0913
         model_pool,
         output_dir,
     )
+
+    # Suppress findings that match known CVEs (negative filter)
+    if cve_entries:
+        from .stages.cve_corpus import suppress_known_cves
+        all_findings, cve_suppressed = suppress_known_cves(all_findings, cve_entries)
+        if cve_suppressed:
+            logger.info(
+                "CVE corpus suppressed %d findings (known CVEs, not zero days)",
+                len(cve_suppressed),
+            )
+            state.put_meta("cve_suppressed_count", str(len(cve_suppressed)))
+            _persist_jsonl(output_dir / "cve_suppressed.jsonl", cve_suppressed)
+
     all_findings, localization_unreachable = _run_localization_stage(
         all_findings,
         snippet_db,
@@ -2385,7 +2398,7 @@ def _inject_cve_entries(
     cve_corpus: Path | None,
     no_fetch_cves: bool,
     no_scan_git_cves: bool = False,
-) -> None:
+) -> list[dict]:
     from .stages.cve_corpus import filter_cves_by_domain
     from .stages.cve_fetcher import build_cve_corpus
 
@@ -2398,13 +2411,14 @@ def _inject_cve_entries(
         no_scan_git=no_scan_git_cves,
     )
     if not cve_entries:
-        return
+        return []
     for pack in packs:
         domain = pack.get("agent", "")
         relevant = filter_cves_by_domain(cve_entries, domain)
         if relevant:
             pack["known_entries"] = relevant
     logger.info("injected %d CVE entries across %d packs", len(cve_entries), len(packs))
+    return cve_entries
 
 
 def _assemble_report(

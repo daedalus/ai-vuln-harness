@@ -93,3 +93,90 @@ def format_cve_entries(entries: list[dict]) -> str:
         cls = e["class"]
         lines.append(f"  - {cve} [{cls}]: {desc}")
     return "\n".join(lines)
+
+
+def suppress_known_cves(
+    findings: list[dict],
+    corpus: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """Suppress findings that match known CVEs from the corpus.
+
+    A finding is considered a known CVE match if:
+    1. Its description contains a CVE ID that appears in the corpus, OR
+    2. Its vuln_class matches a corpus entry's class AND its description
+       shares significant keywords with the corpus entry's description.
+
+    Parameters
+    ----------
+    findings:
+        List of finding dicts from the hunt.
+    corpus:
+        List of CVE corpus entries (from ``load_cve_corpus`` or
+        ``build_cve_corpus``).
+
+    Returns
+    -------
+    ``(novel, known)`` — findings that are novel (potential zero days)
+    and findings that match known CVEs (suppressed).
+    """
+    if not corpus:
+        return findings, []
+
+    # Build lookup structures from corpus
+    corpus_cve_ids: set[str] = set()
+    corpus_classes: dict[str, list[dict]] = {}
+    corpus_desc_keywords: dict[str, set[str]] = {}
+
+    for entry in corpus:
+        cve_id = entry.get("cve_id", "")
+        if cve_id:
+            corpus_cve_ids.add(cve_id.upper())
+
+        cls = entry.get("class", "").lower().strip()
+        if cls:
+            corpus_classes.setdefault(cls, []).append(entry)
+
+        desc = entry.get("description", "").lower()
+        if desc:
+            keywords = set(w for w in desc.split() if len(w) > 3)
+            corpus_desc_keywords.setdefault(cls, keywords)
+
+    novel: list[dict] = []
+    known: list[dict] = []
+
+    for f in findings:
+        is_known = False
+        reason = ""
+
+        # Check 1: finding mentions a known CVE ID
+        f_desc = str(f.get("desc") or f.get("description") or "").upper()
+        for cve_id in corpus_cve_ids:
+            if cve_id in f_desc:
+                is_known = True
+                reason = f"matches known CVE {cve_id}"
+                break
+
+        # Check 2: same class + description keyword overlap
+        if not is_known:
+            f_class = str(f.get("class") or f.get("vuln_class") or "").lower().strip()
+            f_desc_lower = str(f.get("desc") or f.get("description") or "").lower()
+            f_words = set(w for w in f_desc_lower.split() if len(w) > 3)
+
+            if f_class in corpus_classes:
+                for entry in corpus_classes[f_class]:
+                    entry_keywords = corpus_desc_keywords.get(f_class, set())
+                    overlap = f_words & entry_keywords
+                    # Require at least 3 keyword overlap to suppress
+                    if len(overlap) >= 3:
+                        is_known = True
+                        reason = f"matches {entry.get('cve_id', '?')} (class={f_class}, keywords={overlap})"
+                        break
+
+        if is_known:
+            f["suppressed_by_cve_corpus"] = True
+            f["suppression_reason"] = reason
+            known.append(f)
+        else:
+            novel.append(f)
+
+    return novel, known
