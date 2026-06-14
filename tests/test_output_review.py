@@ -175,5 +175,23 @@ class ReviewFindingsTests(unittest.TestCase):
         self.assertEqual(blocked, [])
 
 
+class OutputReviewCLITests(unittest.TestCase):
+    """Tests for CLI flag integration."""
+
+    def test_help_shows_output_review_flags(self):
+        """--help should show --enable-output-review and --output-review-risk-level."""
+        import subprocess
+        import sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ai_vuln_harness.run", "--help"],
+            capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("--enable-output-review", result.stdout)
+        self.assertIn("--output-review-risk-level", result.stdout)
+        self.assertIn("standard", result.stdout)
+        self.assertIn("strict", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

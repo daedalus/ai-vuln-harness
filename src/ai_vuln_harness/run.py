@@ -2056,6 +2056,8 @@ def run(  # noqa: PLR0913
     no_cache: bool = False,
     target_mode: bool = False,
     enforce_severity_gating: bool = False,
+    enable_output_review: bool = False,
+    output_review_risk_level: str = "standard",
 ) -> dict:
     pkg_dir = Path(__file__).parent
     work_dir = Path.cwd()
@@ -2277,16 +2279,17 @@ def run(  # noqa: PLR0913
     )
 
     # Output content review gate (A3 containment)
-    from ai_vuln_harness.stages.output_review import review_findings
-    review_risk_level = cfg.get("output_review", {}).get("risk_level", "standard")
-    findings, review_blocked = review_findings(findings, risk_level=review_risk_level)
-    if review_blocked:
-        logger.warning(
-            "Output review gate blocked %d findings (weaponizable content)",
-            len(review_blocked),
-        )
-        state.put_meta("review_blocked_count", str(len(review_blocked)))
-        _persist_jsonl(output_dir / "review_blocked.jsonl", review_blocked)
+    if enable_output_review:
+        from ai_vuln_harness.stages.output_review import review_findings
+        review_risk_level = cfg.get("output_review", {}).get("risk_level", output_review_risk_level)
+        findings, review_blocked = review_findings(findings, risk_level=review_risk_level)
+        if review_blocked:
+            logger.warning(
+                "Output review gate blocked %d findings (weaponizable content)",
+                len(review_blocked),
+            )
+            state.put_meta("review_blocked_count", str(len(review_blocked)))
+            _persist_jsonl(output_dir / "review_blocked.jsonl", review_blocked)
 
     report = _assemble_report(
         repo=str(repo),
@@ -2706,6 +2709,8 @@ def _build_run_kwargs(args: argparse.Namespace, *, target_mode: bool = False) ->
         "historical_context": args.historical_context,
         "enable_fts_suppressions": args.enable_fts_suppressions,
         "rag_catalog": args.rag_catalog,
+        "enable_output_review": args.enable_output_review,
+        "output_review_risk_level": args.output_review_risk_level,
     }
 
 
@@ -2903,6 +2908,19 @@ def main() -> None:
         type=Path,
         default=None,
         help="Path to expanded CWE catalog JSON for RAG KB (default: built-in 15 patterns).",
+    )
+    parser.add_argument(
+        "--enable-output-review",
+        action="store_true",
+        help="Enable output content review gate that blocks weaponizable exploit content "
+        "from reports (shellcode, reverse shells, ROP chains, memory addresses).",
+    )
+    parser.add_argument(
+        "--output-review-risk-level",
+        choices=["standard", "strict"],
+        default="standard",
+        help="Output review risk level (default: standard). "
+        "'strict' also blocks on warn-tier patterns like exploit terminology.",
     )
     args = parser.parse_args()
 
