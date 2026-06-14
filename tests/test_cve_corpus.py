@@ -170,7 +170,7 @@ class FormatCveEntriesTests(unittest.TestCase):
 
 
 class SuppressKnownCvesTests(unittest.TestCase):
-    """Tests for suppress_known_cves() — semantic matching."""
+    """Tests for suppress_known_cves() — all 6 refinement layers."""
 
     def test_empty_corpus_no_suppression(self):
         findings = [{"desc": "SQL injection", "class": "sql-injection"}]
@@ -179,7 +179,7 @@ class SuppressKnownCvesTests(unittest.TestCase):
         self.assertEqual(len(known), 0)
 
     def test_exact_cve_id_match(self):
-        """Finding mentioning a known CVE ID is suppressed (fast path)."""
+        """Layer 1: exact CVE ID mention (fast path)."""
         findings = [
             {"desc": "Buffer overflow related to CVE-2024-12345 in parser", "class": "buffer-overflow"},
             {"desc": "Novel integer overflow", "class": "integer-overflow"},
@@ -191,33 +191,45 @@ class SuppressKnownCvesTests(unittest.TestCase):
         self.assertEqual(len(novel), 1)
         self.assertEqual(len(known), 1)
         self.assertIn("CVE-2024-12345", known[0]["suppression_reason"])
+        self.assertEqual(known[0]["suppression_confidence"], 1.0)
 
-    def test_no_match_without_embeddings(self):
-        """Without embeddings, only exact CVE ID matches work."""
+    def test_hard_negative_different_file(self):
+        """Layer 5: different file → no suppression."""
         findings = [
-            {"desc": "SQL injection in login", "class": "sql-injection"},
+            {"desc": "Buffer overflow", "class": "buffer-overflow", "file": "src/parser.c"},
         ]
         corpus = [
-            {"cve_id": "CVE-2024-11111", "class": "buffer-overflow", "description": "Buffer overflow in parser"},
+            {"cve_id": "CVE-2024-0001", "class": "buffer-overflow", "description": "Buffer overflow in parser", "file": "src/network.c"},
         ]
-        novel, known = suppress_known_cves(findings, corpus)
+        novel, known = suppress_known_cves(findings, corpus, threshold=0.3)
         self.assertEqual(len(novel), 1)
         self.assertEqual(len(known), 0)
 
-    def test_annotated_with_suppression_info(self):
-        """Suppressed findings should have metadata."""
+    def test_same_file_allows_suppression(self):
+        """Layer 5: same file allows suppression."""
         findings = [
-            {"desc": "Bug matching CVE-2024-33333", "class": "xss"},
+            {"desc": "Buffer overflow in parsing", "class": "buffer-overflow", "file": "src/parser.c"},
+        ]
+        corpus = [
+            {"cve_id": "CVE-2024-0001", "class": "buffer-overflow", "description": "Buffer overflow in parser module", "file": "src/parser.c"},
+        ]
+        novel, known = suppress_known_cves(findings, corpus, threshold=0.3)
+        self.assertEqual(len(known), 1)
+
+    def test_confidence_score_in_result(self):
+        """Layer 6: suppression_confidence should be set."""
+        findings = [
+            {"desc": "Matches CVE-2024-33333", "class": "xss"},
         ]
         corpus = [
             {"cve_id": "CVE-2024-33333", "class": "xss", "description": "XSS in template"},
         ]
         _, known = suppress_known_cves(findings, corpus)
-        self.assertTrue(known[0].get("suppressed_by_cve_corpus"))
-        self.assertIn("CVE-2024-33333", known[0]["suppression_reason"])
+        self.assertIn("suppression_confidence", known[0])
+        self.assertGreater(known[0]["suppression_confidence"], 0)
 
     def test_multiple_findings_mixed(self):
-        """Mix of known and novel findings."""
+        """Mix of exact, semantic, and novel findings."""
         findings = [
             {"desc": "Matches CVE-2024-0001 exactly", "class": "buffer-overflow"},
             {"desc": "Novel SSRF via redirect", "class": "ssrf"},
@@ -232,15 +244,23 @@ class SuppressKnownCvesTests(unittest.TestCase):
         self.assertEqual(len(known), 2)
         self.assertEqual(novel[0]["class"], "ssrf")
 
-    def test_threshold_parameter(self):
-        """Threshold controls matching strictness."""
+    def test_rich_text_encoding_includes_cwe(self):
+        """Layer 4: CWE should be part of the text encoding."""
+        from ai_vuln_harness.stages.cve_corpus import _build_finding_text
+        f = {"class": "buffer-overflow", "cwe": "CWE-120", "desc": "Stack overflow", "file": "src/main.c", "function": "parse"}
+        text = _build_finding_text(f)
+        self.assertIn("CWE-120", text)
+        self.assertIn("src/main.c", text)
+        self.assertIn("parse", text)
+
+    def test_no_match_without_embeddings(self):
+        """Without embeddings, only exact CVE ID matches work."""
         findings = [
-            {"desc": "Memory corruption bug", "class": "buffer-overflow"},
+            {"desc": "SQL injection in login", "class": "sql-injection"},
         ]
         corpus = [
-            {"cve_id": "CVE-2024-99999", "class": "buffer-overflow", "description": "Heap overflow via crafted input in parsing module"},
+            {"cve_id": "CVE-2024-11111", "class": "buffer-overflow", "description": "Buffer overflow in parser"},
         ]
-        # Very high threshold — should not match without embeddings
-        novel, known = suppress_known_cves(findings, corpus, threshold=0.99)
+        novel, known = suppress_known_cves(findings, corpus)
         self.assertEqual(len(novel), 1)
         self.assertEqual(len(known), 0)

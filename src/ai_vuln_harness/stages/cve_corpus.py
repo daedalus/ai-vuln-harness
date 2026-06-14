@@ -41,10 +41,63 @@ _CVE_CLASS_TO_DOMAIN: dict[str, str] = {
     "credential-exposure": "secrets",
 }
 
+# Thresholds: same-class matches need less semantic similarity
+_THRESHOLD_SAME_CLASS: float = 0.45
+_THRESHOLD_DIFF_CLASS: float = 0.85
+# Confidence tiers
+_CONFIDENCE_AUTO_SUPPRESS: float = 0.9
+_CONFIDENCE_FLAG_REVIEW: float = 0.7
+
 
 def _class_to_domain(class_name: str) -> str | None:
     norm = class_name.strip().lower().replace("_", "-").replace(" ", "-")
     return _CVE_CLASS_TO_DOMAIN.get(norm)
+
+
+def _build_finding_text(f: dict) -> str:
+    """Build rich text representation for embedding."""
+    parts = [
+        str(f.get("class") or f.get("vuln_class") or ""),
+        str(f.get("cwe") or ""),
+        str(f.get("file") or f.get("file_path") or ""),
+        str(f.get("function") or f.get("name") or ""),
+        str(f.get("desc") or f.get("description") or ""),
+    ]
+    return " ".join(p for p in parts if p)
+
+
+def _build_corpus_text(e: dict) -> str:
+    """Build rich text representation for corpus entry."""
+    parts = [
+        str(e.get("class") or ""),
+        str(e.get("cwe") or ""),
+        str(e.get("file") or ""),
+        str(e.get("function") or ""),
+        str(e.get("description") or ""),
+        str(e.get("cve_id") or ""),
+    ]
+    return " ".join(p for p in parts if p)
+
+
+def _hard_negative_check(finding: dict, corpus_entry: dict) -> str | None:
+    """Check hard negative rules. Returns rejection reason or None."""
+    f_file = str(finding.get("file") or finding.get("file_path") or "").lower()
+    c_file = str(corpus_entry.get("file") or "").lower()
+
+    # Rule 1: different file path — different bug location
+    if f_file and c_file and f_file != c_file:
+        f_base = f_file.rsplit("/", 1)[-1] if "/" in f_file else f_file
+        c_base = c_file.rsplit("/", 1)[-1] if "/" in c_file else c_file
+        if f_base != c_base:
+            return f"different file: {f_base} vs {c_base}"
+
+    # Rule 2: different function — different code path
+    f_func = str(finding.get("function") or finding.get("name") or "").lower()
+    c_func = str(corpus_entry.get("function") or "").lower()
+    if f_func and c_func and f_func != c_func:
+        return f"different function: {f_func} vs {c_func}"
+
+    return None
 
 
 def load_cve_corpus(path: Path) -> list[dict]:
@@ -98,36 +151,42 @@ def format_cve_entries(entries: list[dict]) -> str:
 def suppress_known_cves(
     findings: list[dict],
     corpus: list[dict],
-    threshold: float = 0.75,
+    threshold: float | None = None,
+    embedding_model: str = "all-MiniLM-L6-v2",
 ) -> tuple[list[dict], list[dict]]:
     """Suppress findings that semantically match known CVEs from the corpus.
 
-    Uses embedding cosine similarity to detect findings describing the same
-    vulnerability as a known CVE, even when wording differs significantly.
-
-    Matching strategy (in priority order):
-    1. Exact CVE ID mention in description (fast path, no embeddings needed)
-    2. Embedding cosine similarity >= threshold against any corpus entry
+    Six-layer matching strategy:
+    1. Exact CVE ID mention (fast path, no embeddings)
+    2. Two-pass semantic: class-prefilter → embedding similarity
+    3. Class-match boost: same-class uses lower threshold
+    4. Rich text encoding: CWE, file path, function name included
+    5. Hard negative rules: different file/function → skip
+    6. Confidence-weighted: auto-suppress / flag-review / pass
 
     Parameters
     ----------
     findings:
         List of finding dicts from the hunt.
     corpus:
-        List of CVE corpus entries (from ``load_cve_corpus`` or
-        ``build_cve_corpus``).
+        List of CVE corpus entries.
     threshold:
-        Minimum cosine similarity for semantic match (default 0.75).
+        Base similarity threshold (default: auto-set per class).
+        Override to use the same threshold for all comparisons.
+    embedding_model:
+        Sentence-transformers model name for encoding.
 
     Returns
     -------
     ``(novel, known)`` — findings that are novel (potential zero days)
-    and findings that match known CVEs (suppressed).
+    and findings that match known CVEs (suppressed).  Each suppressed
+    finding is annotated with ``suppressed_by_cve_corpus``,
+    ``suppression_reason``, and ``suppression_confidence``.
     """
     if not corpus:
         return findings, []
 
-    # --- Fast path: exact CVE ID match (no embeddings needed) ---
+    # --- Layer 1: Fast path — exact CVE ID match ---
     corpus_cve_ids: set[str] = set()
     for entry in corpus:
         cve_id = entry.get("cve_id", "")
@@ -136,7 +195,7 @@ def suppress_known_cves(
 
     novel: list[dict] = []
     known: list[dict] = []
-    need_semantic: list[tuple[int, dict]] = []  # (index, finding)
+    need_semantic: list[tuple[int, dict]] = []
 
     for idx, f in enumerate(findings):
         f_desc = str(f.get("desc") or f.get("description") or "").upper()
@@ -145,34 +204,28 @@ def suppress_known_cves(
             if cve_id in f_desc:
                 f["suppressed_by_cve_corpus"] = True
                 f["suppression_reason"] = f"exact CVE ID match: {cve_id}"
+                f["suppression_confidence"] = 1.0
                 known.append(f)
                 matched = True
                 break
         if not matched:
             need_semantic.append((idx, f))
 
-    # --- Semantic path: embedding cosine similarity ---
+    # --- Layers 2-6: Semantic matching ---
     if need_semantic:
         try:
             from ai_vuln_harness.stages.embeddings import EmbeddingIndex
 
-            index = EmbeddingIndex()
+            index = EmbeddingIndex(model_name=embedding_model)
             if not index.available:
-                # No embeddings available — fall back to keyword matching
                 novel.extend(f for _, f in need_semantic)
                 return novel, known
 
-            # Build text representations
-            finding_texts = [
-                f"{f.get('class', '')} {f.get('desc', '')} {f.get('description', '')}"
-                for _, f in need_semantic
-            ]
-            corpus_texts = [
-                f"{e.get('class', '')} {e.get('description', '')} {e.get('cve_id', '')}"
-                for e in corpus
-            ]
+            # Layer 4: Rich text encoding
+            finding_texts = [_build_finding_text(f) for _, f in need_semantic]
+            corpus_texts = [_build_corpus_text(e) for e in corpus]
 
-            # Encode all texts in one batch for efficiency
+            # Batch encode
             all_texts = finding_texts + corpus_texts
             index.encode_findings([{"desc": t} for t in all_texts])
             all_embeddings = index._embeddings
@@ -185,44 +238,81 @@ def suppress_known_cves(
             finding_embs = all_embeddings[:n_findings]
             corpus_embs = all_embeddings[n_findings:]
 
-            # Use FAISS for fast similarity search
             import faiss
             import numpy as np
 
+            # Layer 2: Two-pass — prefilter by class, then semantic
+            # Build class → corpus indices mapping
+            class_indices: dict[str, list[int]] = {}
+            for ci, entry in enumerate(corpus):
+                cls = str(entry.get("class") or "").lower().strip()
+                if cls:
+                    class_indices.setdefault(cls, []).append(ci)
+
+            # Build FAISS index over all corpus
             dim = finding_embs.shape[1]
             corpus_np = corpus_embs.astype("float32")
             faiss.normalize_L2(corpus_np)
-            faiss_index = faiss.IndexFlatIP(dim)
-            faiss_index.add(corpus_np)
+            full_index = faiss.IndexFlatIP(dim)
+            full_index.add(corpus_np)
 
-            # Query each finding against corpus
+            # Query all findings against corpus
             finding_np = finding_embs.astype("float32")
             faiss.normalize_L2(finding_np)
-            k = min(len(corpus), 5)
-            distances, indices = faiss_index.search(finding_np, k)
+            k = min(len(corpus), 10)
+            distances, indices = full_index.search(finding_np, k)
 
             for i, (orig_idx, f) in enumerate(need_semantic):
+                f_class = str(f.get("class") or f.get("vuln_class") or "").lower().strip()
                 matched = False
+
+                # Layer 3: Class-match boost — determine threshold
+                same_class_indices = set(class_indices.get(f_class, []))
+
                 for j in range(k):
                     sim = float(distances[i, j])
                     cve_idx = int(indices[i, j])
                     if cve_idx < 0 or cve_idx >= len(corpus):
                         continue
-                    if sim >= threshold:
-                        entry = corpus[cve_idx]
-                        f["suppressed_by_cve_corpus"] = True
-                        f["suppression_reason"] = (
-                            f"semantic match: {entry.get('cve_id', '?')} "
-                            f"(similarity={sim:.3f})"
-                        )
-                        known.append(f)
-                        matched = True
-                        break
+
+                    entry = corpus[cve_idx]
+                    entry_class = str(entry.get("class") or "").lower().strip()
+                    is_same_class = cve_idx in same_class_indices
+
+                    # Layer 3: adaptive threshold
+                    effective_threshold = threshold if threshold is not None else (
+                        _THRESHOLD_SAME_CLASS if is_same_class else _THRESHOLD_DIFF_CLASS
+                    )
+
+                    if sim < effective_threshold:
+                        continue
+
+                    # Layer 5: Hard negative rules
+                    rejection = _hard_negative_check(f, entry)
+                    if rejection:
+                        continue
+
+                    # Layer 6: Confidence scoring
+                    confidence = sim
+                    if is_same_class:
+                        confidence = min(1.0, sim + 0.1)  # class boost
+                    if len(entry.get("file", "")) > 0:
+                        confidence = min(1.0, confidence + 0.05)  # file match boost
+
+                    f["suppressed_by_cve_corpus"] = True
+                    f["suppression_reason"] = (
+                        f"semantic match: {entry.get('cve_id', '?')} "
+                        f"(similarity={sim:.3f}, class={'same' if is_same_class else 'diff'})"
+                    )
+                    f["suppression_confidence"] = round(confidence, 3)
+                    known.append(f)
+                    matched = True
+                    break
+
                 if not matched:
                     novel.append(f)
 
         except ImportError:
-            # Embeddings not available — pass through
             novel.extend(f for _, f in need_semantic)
 
     return novel, known
