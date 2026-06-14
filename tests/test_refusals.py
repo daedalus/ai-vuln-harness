@@ -9,7 +9,10 @@ from unittest.mock import patch, MagicMock
 from ai_vuln_harness.stages.runtime import (
     _is_refusal,
     _refusal_counts,
+    _mutate_prompt,
+    _rebuild_request_with_prompt,
     _call_llm_with_retry,
+    _REFUSAL_MUTATIONS,
     get_refusal_counts,
     reset_refusal_counts,
 )
@@ -123,16 +126,102 @@ class RefusalCountTests(unittest.TestCase):
         self.assertIsInstance(counts, dict)
 
 
+class PromptMutationTests(unittest.TestCase):
+    """Tests for _mutate_prompt and _rebuild_request_with_prompt."""
+
+    def test_mutate_prompt_attempt_0(self):
+        """First mutation adds security research preamble."""
+        result = _mutate_prompt("analyze this code", 0)
+        self.assertIn("security research", result)
+        self.assertIn("analyze this code", result)
+
+    def test_mutate_prompt_attempt_1(self):
+        """Second mutation adds defensive audit framing."""
+        result = _mutate_prompt("analyze this code", 1)
+        self.assertIn("defensive security audit", result)
+        self.assertIn("analyze this code", result)
+
+    def test_mutate_prompt_attempt_2(self):
+        """Third mutation uses empty preamble (strips trigger)."""
+        result = _mutate_prompt("analyze this code", 2)
+        self.assertEqual(result, "analyze this code")
+
+    def test_mutate_prompt_high_attempt_clamps(self):
+        """Attempts beyond available mutations use last mutation."""
+        result = _mutate_prompt("test", 99)
+        self.assertEqual(result, "test")
+
+    def test_rebuild_request_preserves_method_and_headers(self):
+        """Rebuilt request keeps original URL, headers, method."""
+        payload = {
+            "model": "test",
+            "messages": [{"role": "user", "content": "original"}],
+        }
+        req = urllib.request.Request(
+            url="https://example.com/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json", "Authorization": "Bearer key"},
+            method="POST",
+        )
+        new_req = _rebuild_request_with_prompt(req, "mutated prompt")
+        self.assertEqual(new_req.full_url, req.full_url)
+        self.assertEqual(new_req.headers.get("Authorization"), "Bearer key")
+
+    def test_rebuild_request_replaces_user_message(self):
+        """Rebuilt request has mutated user message."""
+        payload = {
+            "model": "test",
+            "messages": [
+                {"role": "system", "content": "You are helpful"},
+                {"role": "user", "content": "original prompt"},
+            ],
+        }
+        req = urllib.request.Request(
+            url="https://example.com/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        new_req = _rebuild_request_with_prompt(req, "mutated prompt")
+        new_payload = json.loads(new_req.data.decode())
+        messages = new_payload["messages"]
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertEqual(messages[0]["content"], "You are helpful")
+        self.assertEqual(messages[1]["role"], "user")
+        self.assertEqual(messages[1]["content"], "mutated prompt")
+
+    def test_rebuild_request_preserves_system_message(self):
+        """System message is not modified during prompt mutation."""
+        payload = {
+            "model": "test",
+            "messages": [
+                {"role": "system", "content": "system prompt"},
+                {"role": "user", "content": "user prompt"},
+            ],
+        }
+        req = urllib.request.Request(
+            url="https://example.com/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        new_req = _rebuild_request_with_prompt(req, "changed")
+        new_payload = json.loads(new_req.data.decode())
+        self.assertEqual(new_payload["messages"][0]["content"], "system prompt")
+
+
 class RefusalRetryTests(unittest.TestCase):
     """Tests for refusal retry logic in _call_llm_with_retry."""
 
     def setUp(self):
         reset_refusal_counts()
 
-    def _make_request(self):
+    def _make_request(self, prompt="analyze this code"):
+        payload = {
+            "model": "test",
+            "messages": [{"role": "user", "content": prompt}],
+        }
         req = urllib.request.Request(
             url="https://example.com/chat/completions",
-            data=json.dumps({"model": "test"}).encode(),
+            data=json.dumps(payload).encode(),
             headers={"Content-Type": "application/json"},
         )
         return req, ssl.create_default_context()
@@ -141,10 +230,14 @@ class RefusalRetryTests(unittest.TestCase):
         """First call returns refusal, second call returns valid content."""
         call_count = 0
         refusal_content = "I'm unable to assist with that request."
+        seen_prompts = []
 
         def mock_call_once(req, ctx, timeout, model_name, provider):
             nonlocal call_count
             call_count += 1
+            payload = json.loads(req.data.decode())
+            user_msg = payload.get("messages", [{}])[-1].get("content", "")
+            seen_prompts.append(user_msg)
             if call_count == 1:
                 return refusal_content
             return '{"findings": [{"class": "sql-injection"}]}'
@@ -160,10 +253,18 @@ class RefusalRetryTests(unittest.TestCase):
         self.assertEqual(call_count, 2)
         self.assertIn("findings", result)
         self.assertEqual(get_refusal_counts().get("test-provider/test-model"), 1)
+        # Verify prompt was mutated on retry
+        self.assertEqual(seen_prompts[0], "analyze this code")
+        self.assertIn("security research", seen_prompts[1])
 
     def test_refusal_retries_exhausted(self):
         """All 3 attempts return refusal — returns refusal content."""
+        seen_prompts = []
+
         def mock_call_once(req, ctx, timeout, model_name, provider):
+            payload = json.loads(req.data.decode())
+            user_msg = payload.get("messages", [{}])[-1].get("content", "")
+            seen_prompts.append(user_msg)
             return "I cannot help with that."
 
         req, ctx = self._make_request()
@@ -176,6 +277,10 @@ class RefusalRetryTests(unittest.TestCase):
 
         self.assertTrue(_is_refusal(result))
         self.assertEqual(get_refusal_counts().get("test-provider/test-model"), 2)
+        # Verify prompt mutated on each retry
+        self.assertEqual(seen_prompts[0], "analyze this code")
+        self.assertIn("security research", seen_prompts[1])
+        self.assertIn("defensive security audit", seen_prompts[2])
 
     def test_no_refusal_no_retry(self):
         """Non-refusal response returns immediately."""
