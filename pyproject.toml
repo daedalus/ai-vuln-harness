@@ -132,7 +132,9 @@ disable = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short --cov=src/ai_vuln_harness --cov-fail-under=70"
-filterwarnings = ["ignore::DeprecationWarning"]
+filterwarnings = [
+    "ignore:builtin type Swig:DeprecationWarning",
+]
 
 [tool.coverage.run]
 source = ["src/ai_vuln_harness"]
