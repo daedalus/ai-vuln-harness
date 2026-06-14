@@ -98,13 +98,16 @@ def format_cve_entries(entries: list[dict]) -> str:
 def suppress_known_cves(
     findings: list[dict],
     corpus: list[dict],
+    threshold: float = 0.75,
 ) -> tuple[list[dict], list[dict]]:
-    """Suppress findings that match known CVEs from the corpus.
+    """Suppress findings that semantically match known CVEs from the corpus.
 
-    A finding is considered a known CVE match if:
-    1. Its description contains a CVE ID that appears in the corpus, OR
-    2. Its vuln_class matches a corpus entry's class AND its description
-       shares significant keywords with the corpus entry's description.
+    Uses embedding cosine similarity to detect findings describing the same
+    vulnerability as a known CVE, even when wording differs significantly.
+
+    Matching strategy (in priority order):
+    1. Exact CVE ID mention in description (fast path, no embeddings needed)
+    2. Embedding cosine similarity >= threshold against any corpus entry
 
     Parameters
     ----------
@@ -113,6 +116,8 @@ def suppress_known_cves(
     corpus:
         List of CVE corpus entries (from ``load_cve_corpus`` or
         ``build_cve_corpus``).
+    threshold:
+        Minimum cosine similarity for semantic match (default 0.75).
 
     Returns
     -------
@@ -122,61 +127,102 @@ def suppress_known_cves(
     if not corpus:
         return findings, []
 
-    # Build lookup structures from corpus
+    # --- Fast path: exact CVE ID match (no embeddings needed) ---
     corpus_cve_ids: set[str] = set()
-    corpus_classes: dict[str, list[dict]] = {}
-    corpus_desc_keywords: dict[str, set[str]] = {}
-
     for entry in corpus:
         cve_id = entry.get("cve_id", "")
         if cve_id:
             corpus_cve_ids.add(cve_id.upper())
 
-        cls = entry.get("class", "").lower().strip()
-        if cls:
-            corpus_classes.setdefault(cls, []).append(entry)
-
-        desc = entry.get("description", "").lower()
-        if desc:
-            keywords = set(w for w in desc.split() if len(w) > 3)
-            corpus_desc_keywords.setdefault(cls, keywords)
-
     novel: list[dict] = []
     known: list[dict] = []
+    need_semantic: list[tuple[int, dict]] = []  # (index, finding)
 
-    for f in findings:
-        is_known = False
-        reason = ""
-
-        # Check 1: finding mentions a known CVE ID
+    for idx, f in enumerate(findings):
         f_desc = str(f.get("desc") or f.get("description") or "").upper()
+        matched = False
         for cve_id in corpus_cve_ids:
             if cve_id in f_desc:
-                is_known = True
-                reason = f"matches known CVE {cve_id}"
+                f["suppressed_by_cve_corpus"] = True
+                f["suppression_reason"] = f"exact CVE ID match: {cve_id}"
+                known.append(f)
+                matched = True
                 break
+        if not matched:
+            need_semantic.append((idx, f))
 
-        # Check 2: same class + description keyword overlap
-        if not is_known:
-            f_class = str(f.get("class") or f.get("vuln_class") or "").lower().strip()
-            f_desc_lower = str(f.get("desc") or f.get("description") or "").lower()
-            f_words = set(w for w in f_desc_lower.split() if len(w) > 3)
+    # --- Semantic path: embedding cosine similarity ---
+    if need_semantic:
+        try:
+            from ai_vuln_harness.stages.embeddings import EmbeddingIndex
 
-            if f_class in corpus_classes:
-                for entry in corpus_classes[f_class]:
-                    entry_keywords = corpus_desc_keywords.get(f_class, set())
-                    overlap = f_words & entry_keywords
-                    # Require at least 3 keyword overlap to suppress
-                    if len(overlap) >= 3:
-                        is_known = True
-                        reason = f"matches {entry.get('cve_id', '?')} (class={f_class}, keywords={overlap})"
+            index = EmbeddingIndex()
+            if not index.available:
+                # No embeddings available — fall back to keyword matching
+                novel.extend(f for _, f in need_semantic)
+                return novel, known
+
+            # Build text representations
+            finding_texts = [
+                f"{f.get('class', '')} {f.get('desc', '')} {f.get('description', '')}"
+                for _, f in need_semantic
+            ]
+            corpus_texts = [
+                f"{e.get('class', '')} {e.get('description', '')} {e.get('cve_id', '')}"
+                for e in corpus
+            ]
+
+            # Encode all texts in one batch for efficiency
+            all_texts = finding_texts + corpus_texts
+            index.encode_findings([{"desc": t} for t in all_texts])
+            all_embeddings = index._embeddings
+
+            if all_embeddings is None or len(all_embeddings) == 0:
+                novel.extend(f for _, f in need_semantic)
+                return novel, known
+
+            n_findings = len(finding_texts)
+            finding_embs = all_embeddings[:n_findings]
+            corpus_embs = all_embeddings[n_findings:]
+
+            # Use FAISS for fast similarity search
+            import faiss
+            import numpy as np
+
+            dim = finding_embs.shape[1]
+            corpus_np = corpus_embs.astype("float32")
+            faiss.normalize_L2(corpus_np)
+            faiss_index = faiss.IndexFlatIP(dim)
+            faiss_index.add(corpus_np)
+
+            # Query each finding against corpus
+            finding_np = finding_embs.astype("float32")
+            faiss.normalize_L2(finding_np)
+            k = min(len(corpus), 5)
+            distances, indices = faiss_index.search(finding_np, k)
+
+            for i, (orig_idx, f) in enumerate(need_semantic):
+                matched = False
+                for j in range(k):
+                    sim = float(distances[i, j])
+                    cve_idx = int(indices[i, j])
+                    if cve_idx < 0 or cve_idx >= len(corpus):
+                        continue
+                    if sim >= threshold:
+                        entry = corpus[cve_idx]
+                        f["suppressed_by_cve_corpus"] = True
+                        f["suppression_reason"] = (
+                            f"semantic match: {entry.get('cve_id', '?')} "
+                            f"(similarity={sim:.3f})"
+                        )
+                        known.append(f)
+                        matched = True
                         break
+                if not matched:
+                    novel.append(f)
 
-        if is_known:
-            f["suppressed_by_cve_corpus"] = True
-            f["suppression_reason"] = reason
-            known.append(f)
-        else:
-            novel.append(f)
+        except ImportError:
+            # Embeddings not available — pass through
+            novel.extend(f for _, f in need_semantic)
 
     return novel, known

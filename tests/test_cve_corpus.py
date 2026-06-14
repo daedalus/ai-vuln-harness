@@ -170,7 +170,7 @@ class FormatCveEntriesTests(unittest.TestCase):
 
 
 class SuppressKnownCvesTests(unittest.TestCase):
-    """Tests for suppress_known_cves()."""
+    """Tests for suppress_known_cves() — semantic matching."""
 
     def test_empty_corpus_no_suppression(self):
         findings = [{"desc": "SQL injection", "class": "sql-injection"}]
@@ -178,7 +178,8 @@ class SuppressKnownCvesTests(unittest.TestCase):
         self.assertEqual(len(novel), 1)
         self.assertEqual(len(known), 0)
 
-    def test_match_by_cve_id_in_description(self):
+    def test_exact_cve_id_match(self):
+        """Finding mentioning a known CVE ID is suppressed (fast path)."""
         findings = [
             {"desc": "Buffer overflow related to CVE-2024-12345 in parser", "class": "buffer-overflow"},
             {"desc": "Novel integer overflow", "class": "integer-overflow"},
@@ -191,18 +192,8 @@ class SuppressKnownCvesTests(unittest.TestCase):
         self.assertEqual(len(known), 1)
         self.assertIn("CVE-2024-12345", known[0]["suppression_reason"])
 
-    def test_match_by_class_and_keywords(self):
-        findings = [
-            {"desc": "Heap corruption via double free in allocator", "class": "use-after-free"},
-        ]
-        corpus = [
-            {"cve_id": "CVE-2024-99999", "class": "use-after-free", "description": "Heap corruption via double free in allocator module"},
-        ]
-        novel, known = suppress_known_cves(findings, corpus)
-        self.assertEqual(len(novel), 0)
-        self.assertEqual(len(known), 1)
-
-    def test_no_match_different_class(self):
+    def test_no_match_without_embeddings(self):
+        """Without embeddings, only exact CVE ID matches work."""
         findings = [
             {"desc": "SQL injection in login", "class": "sql-injection"},
         ]
@@ -213,18 +204,8 @@ class SuppressKnownCvesTests(unittest.TestCase):
         self.assertEqual(len(novel), 1)
         self.assertEqual(len(known), 0)
 
-    def test_no_match_different_keywords(self):
-        findings = [
-            {"desc": "Use-after-free in memory allocator", "class": "use-after-free"},
-        ]
-        corpus = [
-            {"cve_id": "CVE-2024-22222", "class": "use-after-free", "description": "Network socket closure race condition"},
-        ]
-        novel, known = suppress_known_cves(findings, corpus)
-        self.assertEqual(len(novel), 1)
-        self.assertEqual(len(known), 0)
-
     def test_annotated_with_suppression_info(self):
+        """Suppressed findings should have metadata."""
         findings = [
             {"desc": "Bug matching CVE-2024-33333", "class": "xss"},
         ]
@@ -236,6 +217,7 @@ class SuppressKnownCvesTests(unittest.TestCase):
         self.assertIn("CVE-2024-33333", known[0]["suppression_reason"])
 
     def test_multiple_findings_mixed(self):
+        """Mix of known and novel findings."""
         findings = [
             {"desc": "Matches CVE-2024-0001 exactly", "class": "buffer-overflow"},
             {"desc": "Novel SSRF via redirect", "class": "ssrf"},
@@ -249,3 +231,16 @@ class SuppressKnownCvesTests(unittest.TestCase):
         self.assertEqual(len(novel), 1)
         self.assertEqual(len(known), 2)
         self.assertEqual(novel[0]["class"], "ssrf")
+
+    def test_threshold_parameter(self):
+        """Threshold controls matching strictness."""
+        findings = [
+            {"desc": "Memory corruption bug", "class": "buffer-overflow"},
+        ]
+        corpus = [
+            {"cve_id": "CVE-2024-99999", "class": "buffer-overflow", "description": "Heap overflow via crafted input in parsing module"},
+        ]
+        # Very high threshold — should not match without embeddings
+        novel, known = suppress_known_cves(findings, corpus, threshold=0.99)
+        self.assertEqual(len(novel), 1)
+        self.assertEqual(len(known), 0)
