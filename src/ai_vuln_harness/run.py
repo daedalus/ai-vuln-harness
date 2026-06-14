@@ -2058,9 +2058,30 @@ def run(  # noqa: PLR0913
     enforce_severity_gating: bool = False,
     enable_output_review: bool = False,
     output_review_risk_level: str = "standard",
+    zero_day: bool = False,
+    no_gapfill: bool = False,
+    no_chains: bool = False,
+    no_exposure: bool = False,
+    no_feedback: bool = False,
+    no_cve_corpus: bool = False,
+    no_rag_kb: bool = False,
+    no_evidence: bool = False,
 ) -> dict:
     pkg_dir = Path(__file__).parent
     work_dir = Path.cwd()
+
+    # --zero-day expands into non-helpful features disabled
+    # Gapfill and chains are KEPT — they help find zero days
+    if zero_day:
+        no_exposure = True
+        no_feedback = True
+        no_cve_corpus = True
+        no_rag_kb = True
+        no_evidence = True
+        no_fetch_cves = True
+        no_scan_git_cves = True
+        cve_corpus = None
+
     cfg = json.loads((pkg_dir / "config/defaults.json").read_text())
     cfg = _apply_runtime_flags(
         cfg,
@@ -2190,21 +2211,25 @@ def run(  # noqa: PLR0913
         cfg,
     )
 
-    validated, all_gaps, gapfill_tasks = _run_gapfill_loop(
-        recon_tasks,
-        validated,
-        all_gaps,
-        packs,
-        hunt_models,
-        domain_map,
-        auth,
-        cache,
-        hunt_workers,
-        model_pool,
-        scope_notes,
-    )
+    if no_gapfill:
+        gapfill_tasks = []
+        all_tasks = recon_tasks
+    else:
+        validated, all_gaps, gapfill_tasks = _run_gapfill_loop(
+            recon_tasks,
+            validated,
+            all_gaps,
+            packs,
+            hunt_models,
+            domain_map,
+            auth,
+            cache,
+            hunt_workers,
+            model_pool,
+            scope_notes,
+        )
+        all_tasks = recon_tasks + gapfill_tasks
     state.put_meta("gapfill_task_count", str(len(gapfill_tasks)))
-    all_tasks = recon_tasks + gapfill_tasks
 
     promoted, suppressed_by_vote = merge_hunter_outputs(
         [validated],
@@ -2228,7 +2253,7 @@ def run(  # noqa: PLR0913
     findings, registry_suppressed = registry.filter(promoted)
     state.put_meta("registry_suppressed", str(len(registry_suppressed)))
 
-    chains = synthesize_exploit_chains(findings, snippets)
+    chains = [] if no_chains else synthesize_exploit_chains(findings, snippets)
     fuzz_artifacts = _run_fuzz_orchestrator_stage(
         findings,
         snippet_db,
@@ -2263,16 +2288,20 @@ def run(  # noqa: PLR0913
     _run_trace_stage(findings, state)
 
     # Evidence collector: populate Engagement Graph
-    graph_path = output_dir / "engagement_graph.db"
-    with EngagementGraph(graph_path) as graph:
-        evidence_summary = run_evidence_collector(
-            findings, snippets, chains, graph,
-        )
+    if no_evidence:
+        evidence_summary = {}
+    else:
+        graph_path = output_dir / "engagement_graph.db"
+        with EngagementGraph(graph_path) as graph:
+            evidence_summary = run_evidence_collector(
+                findings, snippets, chains, graph,
+            )
     state.put_meta("evidence_collected", json.dumps(evidence_summary))
 
     # RAG Knowledge Base: enrich findings with CWE matches
-    rag_kb = VulnerabilityKB()
-    _enrich_findings_with_cwe(findings, rag_kb)
+    if not no_rag_kb:
+        rag_kb = VulnerabilityKB()
+        _enrich_findings_with_cwe(findings, rag_kb)
 
     exposure_metrics, feedback_tasks = _post_process_findings(
         findings, repo, snippets, all_tasks, scope_notes, cfg, state,
@@ -2711,6 +2740,14 @@ def _build_run_kwargs(args: argparse.Namespace, *, target_mode: bool = False) ->
         "rag_catalog": args.rag_catalog,
         "enable_output_review": args.enable_output_review,
         "output_review_risk_level": args.output_review_risk_level,
+        "zero_day": args.zero_day,
+        "no_gapfill": args.no_gapfill,
+        "no_chains": args.no_chains,
+        "no_exposure": args.no_exposure,
+        "no_feedback": args.no_feedback,
+        "no_cve_corpus": args.no_cve_corpus,
+        "no_rag_kb": args.no_rag_kb,
+        "no_evidence": args.no_evidence,
     }
 
 
@@ -2922,6 +2959,20 @@ def main() -> None:
         help="Output review risk level (default: standard). "
         "'strict' also blocks on warn-tier patterns like exploit terminology.",
     )
+    parser.add_argument(
+        "--zero-day",
+        action="store_true",
+        help="Zero-day hunting mode: disables exposure tracking, feedback loop, "
+        "CVE corpus, RAG KB enrichment, and evidence collection. "
+        "Keeps gapfill, chains, shield, and suppressions enabled.",
+    )
+    parser.add_argument("--no-gapfill", action="store_true", help="Skip gapfill loop stage.")
+    parser.add_argument("--no-chains", action="store_true", help="Skip exploit chain synthesis.")
+    parser.add_argument("--no-exposure", action="store_true", help="Skip exposure-window tracking.")
+    parser.add_argument("--no-feedback", action="store_true", help="Skip feedback loop stage.")
+    parser.add_argument("--no-cve-corpus", action="store_true", help="Skip CVE corpus loading.")
+    parser.add_argument("--no-rag-kb", action="store_true", help="Skip RAG KB CWE enrichment.")
+    parser.add_argument("--no-evidence", action="store_true", help="Skip evidence collection (engagement graph).")
     args = parser.parse_args()
 
     _setup_proxy(args.proxy)
