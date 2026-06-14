@@ -734,7 +734,6 @@ def _call_llm_once(
 
     # Detect model refusal
     if _is_refusal(content):
-        _refusal_counts[f"{provider}/{model_name}"] += 1
         log.warning(
             "REFUSAL from %s %s (first 120 chars): %s",
             provider,
@@ -773,6 +772,20 @@ def _call_llm_with_retry(
     for attempt in range(3):
         try:
             content = _call_llm_once(req, ctx, timeout, model_name, provider)
+
+            # Refusal retry: some models refuse flakily — retry up to 2 times
+            if _is_refusal(content) and attempt < 2:
+                log.warning(
+                    "refusal attempt %d/3 from %s %s, retrying in %ds",
+                    attempt + 1,
+                    provider,
+                    model_name,
+                    5 * (attempt + 1),
+                )
+                _refusal_counts[f"{provider}/{model_name}"] += 1
+                time.sleep(5 * (attempt + 1))
+                continue
+
             if ck and cache:
                 cache.put(ck, content)
             return content

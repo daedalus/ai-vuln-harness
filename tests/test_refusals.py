@@ -1,8 +1,18 @@
 """Tests for refusal detection in stages/runtime.py."""
 
+import json
 import unittest
+import urllib.request
+import ssl
+from unittest.mock import patch, MagicMock
 
-from ai_vuln_harness.stages.runtime import _is_refusal, _refusal_counts, get_refusal_counts, reset_refusal_counts
+from ai_vuln_harness.stages.runtime import (
+    _is_refusal,
+    _refusal_counts,
+    _call_llm_with_retry,
+    get_refusal_counts,
+    reset_refusal_counts,
+)
 
 
 class IsRefusalTests(unittest.TestCase):
@@ -111,6 +121,80 @@ class RefusalCountTests(unittest.TestCase):
     def test_counts_are_dict(self):
         counts = get_refusal_counts()
         self.assertIsInstance(counts, dict)
+
+
+class RefusalRetryTests(unittest.TestCase):
+    """Tests for refusal retry logic in _call_llm_with_retry."""
+
+    def setUp(self):
+        reset_refusal_counts()
+
+    def _make_request(self):
+        req = urllib.request.Request(
+            url="https://example.com/chat/completions",
+            data=json.dumps({"model": "test"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        return req, ssl.create_default_context()
+
+    def test_refusal_retries_then_succeeds(self):
+        """First call returns refusal, second call returns valid content."""
+        call_count = 0
+        refusal_content = "I'm unable to assist with that request."
+
+        def mock_call_once(req, ctx, timeout, model_name, provider):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return refusal_content
+            return '{"findings": [{"class": "sql-injection"}]}'
+
+        req, ctx = self._make_request()
+        with patch("ai_vuln_harness.stages.runtime._call_llm_once", side_effect=mock_call_once):
+            with patch("ai_vuln_harness.stages.runtime.time.sleep"):
+                result = _call_llm_with_retry(
+                    req, ctx, 30, "test-model", "test-provider",
+                    "https://example.com", None, None,
+                )
+
+        self.assertEqual(call_count, 2)
+        self.assertIn("findings", result)
+        self.assertEqual(get_refusal_counts().get("test-provider/test-model"), 1)
+
+    def test_refusal_retries_exhausted(self):
+        """All 3 attempts return refusal — returns refusal content."""
+        def mock_call_once(req, ctx, timeout, model_name, provider):
+            return "I cannot help with that."
+
+        req, ctx = self._make_request()
+        with patch("ai_vuln_harness.stages.runtime._call_llm_once", side_effect=mock_call_once):
+            with patch("ai_vuln_harness.stages.runtime.time.sleep"):
+                result = _call_llm_with_retry(
+                    req, ctx, 30, "test-model", "test-provider",
+                    "https://example.com", None, None,
+                )
+
+        self.assertTrue(_is_refusal(result))
+        self.assertEqual(get_refusal_counts().get("test-provider/test-model"), 2)
+
+    def test_no_refusal_no_retry(self):
+        """Non-refusal response returns immediately."""
+        call_count = 0
+
+        def mock_call_once(req, ctx, timeout, model_name, provider):
+            nonlocal call_count
+            call_count += 1
+            return '{"findings": []}'
+
+        req, ctx = self._make_request()
+        with patch("ai_vuln_harness.stages.runtime._call_llm_once", side_effect=mock_call_once):
+            result = _call_llm_with_retry(
+                req, ctx, 30, "test-model", "test-provider",
+                "https://example.com", None, None,
+            )
+
+        self.assertEqual(call_count, 1)
+        self.assertEqual(get_refusal_counts(), {})
 
 
 if __name__ == "__main__":
