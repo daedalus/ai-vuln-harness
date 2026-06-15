@@ -125,7 +125,7 @@ def _ingest_snippets(
     cfg: dict,
 ) -> tuple[list[dict], dict]:
     snippet_db_path = output_dir / "snippet_db.pkl"
-    if reingest and snippet_db_path.exists():
+    if not reingest and snippet_db_path.exists():
         snippet_db = pickle.loads(snippet_db_path.read_bytes())
         snippets = list(snippet_db.values())
     else:
@@ -2056,7 +2056,7 @@ def run(  # noqa: PLR0913
     no_cache: bool = False,
     target_mode: bool = False,
     enforce_severity_gating: bool = False,
-    enable_output_review: bool = False,
+    enable_output_review: bool = True,
     output_review_risk_level: str = "standard",
     zero_day: bool = False,
     no_gapfill: bool = False,
@@ -2750,7 +2750,7 @@ def _build_run_kwargs(args: argparse.Namespace, *, target_mode: bool = False) ->
         "historical_context": args.historical_context,
         "enable_fts_suppressions": args.enable_fts_suppressions,
         "rag_catalog": args.rag_catalog,
-        "enable_output_review": args.enable_output_review,
+        "enable_output_review": not args.no_output_review,
         "output_review_risk_level": args.output_review_risk_level,
         "zero_day": args.zero_day,
         "no_gapfill": args.no_gapfill,
@@ -2959,10 +2959,10 @@ def main() -> None:
         help="Path to expanded CWE catalog JSON for RAG KB (default: built-in 15 patterns).",
     )
     parser.add_argument(
-        "--enable-output-review",
+        "--no-output-review",
         action="store_true",
-        help="Enable output content review gate that blocks weaponizable exploit content "
-        "from reports (shellcode, reverse shells, ROP chains, memory addresses).",
+        help="Disable output content review gate (enabled by default). "
+        "The gate blocks weaponizable exploit content from reports.",
     )
     parser.add_argument(
         "--output-review-risk-level",

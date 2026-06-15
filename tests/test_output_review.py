@@ -179,7 +179,7 @@ class OutputReviewCLITests(unittest.TestCase):
     """Tests for CLI flag integration."""
 
     def test_help_shows_output_review_flags(self):
-        """--help should show --enable-output-review and --output-review-risk-level."""
+        """--help should show --no-output-review and --output-review-risk-level."""
         import subprocess
         import sys
         result = subprocess.run(
@@ -187,7 +187,7 @@ class OutputReviewCLITests(unittest.TestCase):
             capture_output=True, text=True, timeout=10,
         )
         self.assertEqual(result.returncode, 0)
-        self.assertIn("--enable-output-review", result.stdout)
+        self.assertIn("--no-output-review", result.stdout)
         self.assertIn("--output-review-risk-level", result.stdout)
         self.assertIn("standard", result.stdout)
         self.assertIn("strict", result.stdout)

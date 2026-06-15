@@ -24,6 +24,11 @@ Refusal detection:
   - ``_is_refusal(content)`` catches known refusal patterns.
   - Refusals are logged at WARNING level with ``refusal=True`` tag.
   - Pipeline stats track refusal count per model via ``refusal_counts`` dict.
+  - On refusal, the retry rewrites the prompt with security-research framing
+    preambles (``_REFUSAL_MUTATIONS``). This is automated jailbreak-mitigation
+    against safety systems — the output review gate MUST be active when
+    refusal-retries are enabled to prevent weaponizable content from reaching
+    reports via the retry path.
 """
 
 from __future__ import annotations
@@ -67,7 +72,10 @@ _REFUSAL_PATTERNS = [
     r"\bI\s+am\s+not\s+(authorized|permitted|allowed)\s+to",
     r"\bI\s+must\s+respect\s+(safety|my\s+guidelines|content\s+policies)",
     r"\bI\s+need\s+to\s+decline\s+this",
-    # Chinese model refusals (common in free-tier models)
+]
+
+# Plain-text refusal strings (not regexes) — matched as substrings
+_REFUSAL_STRINGS = [
     "\u6211\u65e0\u6cd5\u63d0\u4f9b\u6b64\u7c7b\u5e2e\u52a9",  # 我无法提供此类帮助
     "\u6211\u4e0d\u80fd\u534f\u52a9\u5b8c\u6210\u8fd9\u4e2a\u4efb\u52a1",  # 我不能协助完成这个任务
 ]
@@ -109,6 +117,12 @@ def _is_refusal(content: str) -> bool:
 
     for pattern in _REFUSAL_RE:
         if pattern.search(text):
+            return True
+
+    # Plain-text substring match (Chinese refusals, etc.)
+    text_lower = text.lower()
+    for s in _REFUSAL_STRINGS:
+        if s in text_lower:
             return True
 
     return False
@@ -249,6 +263,16 @@ def _validate_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         raise ValueError(f"unsupported URL scheme: {parsed.scheme}")
+    # Host allowlist: only permitted provider hosts
+    _ALLOWED_HOSTS = {
+        "openrouter.ai", "api.groq.com", "api.cerebras.ai",
+        "generativelanguage.googleapis.com", "opencode.ai",
+        "api.xiaomimimo.com", "api.openai.com",
+        "osv.dev", "api.osv.dev",
+    }
+    host = parsed.hostname or ""
+    if host and host not in _ALLOWED_HOSTS and not host.endswith(".opencode.ai"):
+        raise ValueError(f"host not in allowlist: {host}")
     return url
 
 
@@ -359,15 +383,34 @@ def cache_key(stage: str, model: str, text: str) -> str:
 
 
 class JsonCache:
+    """JSON-serialized cache with HMAC integrity check.
+
+    Replaces pickle-based caching to avoid arbitrary code execution
+    from corrupted cache files.
+    """
+
+    _HMAC_KEY = b"ai-vuln-harness-cache-v1"
+
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self.path.exists():
             try:
-                raw = pickle.loads(self.path.read_bytes())
-            except (pickle.UnpicklingError, EOFError):
-                raw = json.loads(self.path.read_text() or "{}")
-            self.data = raw if isinstance(raw, dict) else {}
+                raw_bytes = self.path.read_bytes()
+                # Verify HMAC integrity
+                if len(raw_bytes) > 32:
+                    stored_mac = raw_bytes[:32]
+                    payload = raw_bytes[32:]
+                    expected_mac = hashlib.hmac_sha256(self._HMAC_KEY, payload).digest()
+                    if stored_mac == expected_mac:
+                        self.data = json.loads(payload.decode())
+                    else:
+                        log.warning("Cache HMAC mismatch, treating as empty")
+                        self.data = {}
+                else:
+                    self.data = {}
+            except (json.JSONDecodeError, OSError):
+                self.data = {}
         else:
             self.data = {}
 
@@ -376,19 +419,21 @@ class JsonCache:
 
     def put(self, key: str, value: object) -> None:
         self.data[key] = value
-        self.path.write_bytes(pickle.dumps(self.data))
+        payload = json.dumps(self.data).encode()
+        mac = hashlib.hmac_sha256(self._HMAC_KEY, payload).digest()
+        self.path.write_bytes(mac + payload)
 
 
 def save_packs_json(packs: list[dict], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(pickle.dumps(packs))
+    path.write_text(json.dumps(packs, indent=2))
 
 
 def load_packs_json(path: Path) -> list[dict]:
     try:
-        return pickle.loads(path.read_bytes())
-    except (pickle.UnpicklingError, EOFError):
         return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
 
 
 class StateDB:
