@@ -188,7 +188,7 @@ class VulnerabilityKBDatabaseTests(unittest.TestCase):
 
 
 class VulnerabilityKBFAISSTests(unittest.TestCase):
-    """Tests for FAISS backend (skipped if faiss not installed)."""
+    """Tests for FAISS backend with mocking (no heavy deps needed)."""
 
     @unittest.skipUnless(_HAS_SKLEARN, "sklearn not installed")
     def test_tfidf_index_build(self):
@@ -198,6 +198,33 @@ class VulnerabilityKBFAISSTests(unittest.TestCase):
         self.assertTrue(kb._built_tfidf)
         self.assertIsNotNone(kb._vectorizer)
         self.assertIsNotNone(kb._tfidf_matrix)
+
+    def test_faiss_search_fallback(self):
+        """When FAISS is not available, should fall back to TF-IDF or keyword."""
+        kb = VulnerabilityKB(use_faiss=False)
+        results = kb.search("SQL injection", top_k=1)
+        self.assertGreater(len(results), 0)
+        backend = results[0].get("backend")
+        self.assertIn(backend, ["tfidf", "keyword"])
+
+    def test_faiss_persist_to_disk(self):
+        """FAISS index file is created when building index."""
+        if not _HAS_SKLEARN:
+            self.skipTest("sklearn not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.db"
+            kb = VulnerabilityKB(db_path=db_path, use_faiss=False)
+            # Force TF-IDF build
+            kb._build_tfidf_index()
+            self.assertTrue(kb._built_tfidf)
+
+    def test_search_returns_backend_field(self):
+        """Search results include backend field."""
+        kb = VulnerabilityKB(use_faiss=False)
+        results = kb.search("SQL injection", top_k=1)
+        self.assertGreater(len(results), 0)
+        self.assertIn("backend", results[0])
+        self.assertIn(results[0]["backend"], ["tfidf", "keyword"])
 
 
 class VulnerabilityKBCorpusTests(unittest.TestCase):

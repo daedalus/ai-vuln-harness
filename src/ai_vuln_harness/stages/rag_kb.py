@@ -11,9 +11,12 @@ Reference: DeepAudit's RAG knowledge base (CWE/CVE via ChromaDB).
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+log = logging.getLogger(__name__)
 
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
@@ -343,7 +346,7 @@ class VulnerabilityKB:
         if self._built_tfidf:
             return
 
-        print(f"Building TF-IDF index for {len(self._patterns)} patterns...")
+        log.info("Building TF-IDF index for %d patterns...", len(self._patterns))
         docs = []
         for p in self._patterns:
             doc = f"{p['title']} {p['description']} {' '.join(p.get('patterns', []))}"
@@ -356,7 +359,7 @@ class VulnerabilityKB:
         )
         self._tfidf_matrix = self._vectorizer.fit_transform(docs)
         self._built_tfidf = True
-        print(f"  TF-IDF index built: {self._tfidf_matrix.shape[1]} features, {len(self._patterns)} documents")
+        log.info("TF-IDF index built: %d features, %d documents", self._tfidf_matrix.shape[1], len(self._patterns))
 
     def _build_faiss_index(self) -> None:
         """Build FAISS index from patterns."""
@@ -373,13 +376,13 @@ class VulnerabilityKB:
                 try:
                     self._faiss_index = faiss.read_index(str(index_path))
                     self._built_faiss = True
-                    print(f"  Loaded FAISS index from {index_path}")
+                    log.info("Loaded FAISS index from %s", index_path)
                     return
                 except Exception:
                     pass
 
         # Build fresh index
-        print(f"Building FAISS index for {len(self._patterns)} patterns...")
+        log.info("Building FAISS index for %d patterns...", len(self._patterns))
         texts = []
         for p in self._patterns:
             text = f"{p['title']} {p['description']} {' '.join(p.get('patterns', []))}"
@@ -393,7 +396,7 @@ class VulnerabilityKB:
             embeddings = self._faiss_model.encode(batch, show_progress_bar=False)
             all_embeddings.append(embeddings)
             if (i // batch_size) % 10 == 0:
-                print(f"  Encoded {min(i + batch_size, len(texts))}/{len(texts)} patterns...")
+                log.debug("Encoded %d/%d patterns...", min(i + batch_size, len(texts)), len(texts))
 
         self._faiss_embeddings = np.vstack(all_embeddings)
         embeddings_np = self._faiss_embeddings.astype("float32")
@@ -403,14 +406,14 @@ class VulnerabilityKB:
         self._faiss_index = faiss.IndexFlatIP(dimension)
         self._faiss_index.add(embeddings_np)
         self._built_faiss = True
-        print(f"  FAISS index built: {dimension}d, {len(self._patterns)} vectors")
+        log.info("FAISS index built: %dd, %d vectors", dimension, len(self._patterns))
 
         # Save to disk
         if self._db_path:
             index_path = Path(str(self._db_path)).with_suffix(".faiss")
             try:
                 faiss.write_index(self._faiss_index, str(index_path))
-                print(f"  Saved FAISS index to {index_path}")
+                log.info("Saved FAISS index to %s", index_path)
             except Exception:
                 pass
 
