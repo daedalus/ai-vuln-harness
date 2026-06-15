@@ -188,7 +188,7 @@ class VulnerabilityKBDatabaseTests(unittest.TestCase):
 
 
 class VulnerabilityKBFAISSTests(unittest.TestCase):
-    """Tests for FAISS backend with mocking (no heavy deps needed)."""
+    """Tests for FAISS backend with mocking at the import boundary."""
 
     @unittest.skipUnless(_HAS_SKLEARN, "sklearn not installed")
     def test_tfidf_index_build(self):
@@ -199,24 +199,188 @@ class VulnerabilityKBFAISSTests(unittest.TestCase):
         self.assertIsNotNone(kb._vectorizer)
         self.assertIsNotNone(kb._tfidf_matrix)
 
-    def test_faiss_search_fallback(self):
+    def test_faiss_build_index_mocked(self):
+        """FAISS index build with mocked faiss and numpy."""
+        import unittest.mock as mock
+        import numpy as np
+        import ai_vuln_harness.stages.rag_kb as rag_kb_mod
+
+        fake_faiss = mock.MagicMock()
+        fake_model = mock.MagicMock()
+        fake_model.encode.return_value = np.zeros((15, 64), dtype="float32")
+        fake_faiss.IndexFlatIP.return_value = mock.MagicMock()
+
+        with mock.patch.object(rag_kb_mod, "_HAS_FAISS", True):
+            rag_kb_mod.faiss = fake_faiss
+            rag_kb_mod.np = np
+            try:
+                kb = VulnerabilityKB(use_faiss=True)
+                kb._faiss_model = fake_model
+                kb._build_faiss_index()
+                self.assertTrue(kb._built_faiss)
+                fake_faiss.IndexFlatIP.assert_called_once()
+            finally:
+                del rag_kb_mod.faiss
+                del rag_kb_mod.np
+
+    def test_faiss_persist_to_disk_mocked(self):
+        """FAISS index saves to .faiss file after build."""
+        import unittest.mock as mock
+        import numpy as np
+        import ai_vuln_harness.stages.rag_kb as rag_kb_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.db"
+            fake_faiss = mock.MagicMock()
+            fake_model = mock.MagicMock()
+            fake_model.encode.return_value = np.zeros((15, 64), dtype="float32")
+            fake_faiss.IndexFlatIP.return_value = mock.MagicMock()
+
+            with mock.patch.object(rag_kb_mod, "_HAS_FAISS", True):
+                rag_kb_mod.faiss = fake_faiss
+                rag_kb_mod.np = np
+                try:
+                    kb = VulnerabilityKB(db_path=db_path, use_faiss=True)
+                    kb._faiss_model = fake_model
+                    kb._build_faiss_index()
+                    self.assertTrue(kb._built_faiss)
+                    # faiss.write_index called with (index, path)
+                    self.assertEqual(fake_faiss.write_index.call_count, 1)
+                    call_args = fake_faiss.write_index.call_args
+                    self.assertEqual(call_args[0][1], str(db_path.with_suffix(".faiss")))
+                finally:
+                    del rag_kb_mod.faiss
+                    del rag_kb_mod.np
+
+    def test_faiss_load_from_disk_mocked(self):
+        """FAISS index loads from .faiss file on second open."""
+        import unittest.mock as mock
+        import numpy as np
+        import ai_vuln_harness.stages.rag_kb as rag_kb_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.db"
+            index_path = db_path.with_suffix(".faiss")
+            index_path.write_bytes(b"fake faiss index")
+
+            fake_faiss = mock.MagicMock()
+            fake_faiss.read_index.return_value = mock.MagicMock()
+            fake_model = mock.MagicMock()
+
+            with mock.patch.object(rag_kb_mod, "_HAS_FAISS", True):
+                rag_kb_mod.faiss = fake_faiss
+                rag_kb_mod.np = np
+                try:
+                    kb = VulnerabilityKB(db_path=db_path, use_faiss=True)
+                    kb._faiss_model = fake_model
+                    # read_index should be called with the path
+                    self.assertEqual(fake_faiss.read_index.call_count, 1)
+                    self.assertEqual(fake_faiss.read_index.call_args[0][0], str(index_path))
+                    self.assertTrue(kb._built_faiss)
+                finally:
+                    del rag_kb_mod.faiss
+                    del rag_kb_mod.np
+
+    def test_faiss_search_mocked(self):
+        """FAISS search with mocked model returns backend='faiss'."""
+        import unittest.mock as mock
+        import numpy as np
+        import ai_vuln_harness.stages.rag_kb as rag_kb_mod
+
+        fake_faiss = mock.MagicMock()
+        fake_model = mock.MagicMock()
+        fake_model.encode.return_value = np.zeros((15, 64), dtype="float32")
+        fake_index = mock.MagicMock()
+        fake_index.search.return_value = (
+            np.array([[0.8, 0.6, 0.4]]),
+            np.array([[0, 1, 2]]),
+        )
+        fake_faiss.IndexFlatIP.return_value = fake_index
+        fake_faiss.normalize_L2 = mock.MagicMock()
+
+        with mock.patch.object(rag_kb_mod, "_HAS_FAISS", True):
+            rag_kb_mod.faiss = fake_faiss
+            rag_kb_mod.np = np
+            try:
+                kb = rag_kb_mod.VulnerabilityKB(use_faiss=True)
+                kb._faiss_model = fake_model
+                kb._use_faiss = True  # Force enable FAISS
+                kb._build_faiss_index()
+                self.assertTrue(kb._built_faiss)
+                results = kb.search("SQL injection", top_k=3)
+                self.assertGreater(len(results), 0)
+                self.assertEqual(results[0]["backend"], "faiss")
+            finally:
+                del rag_kb_mod.faiss
+                del rag_kb_mod.np
+
+    def test_faiss_load_from_disk_mocked(self):
+        """FAISS index loads from .faiss file on second open."""
+        import unittest.mock as mock
+        import numpy as np
+        import ai_vuln_harness.stages.rag_kb as rag_kb_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.db"
+            index_path = db_path.with_suffix(".faiss")
+            index_path.write_bytes(b"fake faiss index")
+
+            fake_faiss = mock.MagicMock()
+            fake_faiss.read_index.return_value = mock.MagicMock()
+            fake_model = mock.MagicMock()
+
+            with mock.patch.object(rag_kb_mod, "_HAS_FAISS", True):
+                rag_kb_mod.faiss = fake_faiss
+                rag_kb_mod.np = np
+                try:
+                    kb = rag_kb_mod.VulnerabilityKB(db_path=db_path, use_faiss=True)
+                    kb._faiss_model = fake_model
+                    kb._use_faiss = True  # Force enable FAISS
+                    kb._build_faiss_index()
+                    self.assertTrue(kb._built_faiss)
+                    self.assertEqual(fake_faiss.read_index.call_count, 1)
+                    self.assertEqual(fake_faiss.read_index.call_args[0][0], str(index_path))
+                finally:
+                    del rag_kb_mod.faiss
+                    del rag_kb_mod.np
+
+    def test_faiss_load_from_disk_mocked(self):
+        """FAISS index loads from .faiss file on second open."""
+        import unittest.mock as mock
+        import numpy as np
+        import ai_vuln_harness.stages.rag_kb as rag_kb_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.db"
+            index_path = db_path.with_suffix(".faiss")
+            index_path.write_bytes(b"fake faiss index")
+
+            fake_faiss = mock.MagicMock()
+            fake_faiss.read_index.return_value = mock.MagicMock()
+            fake_model = mock.MagicMock()
+
+            with mock.patch.object(rag_kb_mod, "_HAS_FAISS", True):
+                rag_kb_mod.faiss = fake_faiss
+                rag_kb_mod.np = np
+                try:
+                    kb = VulnerabilityKB(db_path=db_path, use_faiss=True)
+                    kb._faiss_model = fake_model
+                    # Force build (which should load from disk)
+                    kb._build_faiss_index()
+                    self.assertTrue(kb._built_faiss)
+                    self.assertEqual(fake_faiss.read_index.call_count, 1)
+                    self.assertEqual(fake_faiss.read_index.call_args[0][0], str(index_path))
+                finally:
+                    del rag_kb_mod.faiss
+                    del rag_kb_mod.np
+
+    def test_faiss_fallback_to_tfidf(self):
         """When FAISS is not available, should fall back to TF-IDF or keyword."""
         kb = VulnerabilityKB(use_faiss=False)
         results = kb.search("SQL injection", top_k=1)
         self.assertGreater(len(results), 0)
         backend = results[0].get("backend")
         self.assertIn(backend, ["tfidf", "keyword"])
-
-    def test_faiss_persist_to_disk(self):
-        """FAISS index file is created when building index."""
-        if not _HAS_SKLEARN:
-            self.skipTest("sklearn not installed")
-        with tempfile.TemporaryDirectory() as tmp:
-            db_path = Path(tmp) / "test.db"
-            kb = VulnerabilityKB(db_path=db_path, use_faiss=False)
-            # Force TF-IDF build
-            kb._build_tfidf_index()
-            self.assertTrue(kb._built_tfidf)
 
     def test_search_returns_backend_field(self):
         """Search results include backend field."""
