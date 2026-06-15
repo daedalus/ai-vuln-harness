@@ -343,6 +343,7 @@ class VulnerabilityKB:
         if self._built_tfidf:
             return
 
+        print(f"Building TF-IDF index for {len(self._patterns)} patterns...")
         docs = []
         for p in self._patterns:
             doc = f"{p['title']} {p['description']} {' '.join(p.get('patterns', []))}"
@@ -355,6 +356,7 @@ class VulnerabilityKB:
         )
         self._tfidf_matrix = self._vectorizer.fit_transform(docs)
         self._built_tfidf = True
+        print(f"  TF-IDF index built: {self._tfidf_matrix.shape[1]} features, {len(self._patterns)} documents")
 
     def _build_faiss_index(self) -> None:
         """Build FAISS index from patterns."""
@@ -371,32 +373,44 @@ class VulnerabilityKB:
                 try:
                     self._faiss_index = faiss.read_index(str(index_path))
                     self._built_faiss = True
-                    if hasattr(self, '_verbose') and self._verbose:
-                        print(f"  Loaded FAISS index from {index_path}")
+                    print(f"  Loaded FAISS index from {index_path}")
                     return
                 except Exception:
                     pass
 
         # Build fresh index
+        print(f"Building FAISS index for {len(self._patterns)} patterns...")
         texts = []
         for p in self._patterns:
             text = f"{p['title']} {p['description']} {' '.join(p.get('patterns', []))}"
             texts.append(text)
 
-        self._faiss_embeddings = self._faiss_model.encode(texts, show_progress_bar=False)
-        embeddings_np = np.array(self._faiss_embeddings).astype("float32")
+        # Encode in batches for progress reporting
+        batch_size = 1000
+        all_embeddings = []
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            embeddings = self._faiss_model.encode(batch, show_progress_bar=False)
+            all_embeddings.append(embeddings)
+            if (i // batch_size) % 10 == 0:
+                print(f"  Encoded {min(i + batch_size, len(texts))}/{len(texts)} patterns...")
+
+        self._faiss_embeddings = np.vstack(all_embeddings)
+        embeddings_np = self._faiss_embeddings.astype("float32")
 
         dimension = embeddings_np.shape[1]
         faiss.normalize_L2(embeddings_np)
         self._faiss_index = faiss.IndexFlatIP(dimension)
         self._faiss_index.add(embeddings_np)
         self._built_faiss = True
+        print(f"  FAISS index built: {dimension}d, {len(self._patterns)} vectors")
 
         # Save to disk
         if self._db_path:
             index_path = Path(str(self._db_path)).with_suffix(".faiss")
             try:
                 faiss.write_index(self._faiss_index, str(index_path))
+                print(f"  Saved FAISS index to {index_path}")
             except Exception:
                 pass
 

@@ -153,7 +153,13 @@ class JsonCacheTests(unittest.TestCase):
         self.assertEqual(cache.get("k"), "v2")
 
     def test_init_from_existing_file(self):
-        self.path.write_text(json.dumps({"existing": "data"}))
+        # Create a properly formatted cache file with HMAC
+        import hmac as _hmac
+        import hashlib
+        key = b"ai-vuln-harness-cache-v1"
+        payload = json.dumps({"existing": "data"}).encode()
+        mac = _hmac.new(key, payload, hashlib.sha256).digest()
+        self.path.write_bytes(mac + payload)
         cache = JsonCache(self.path)
         self.assertEqual(cache.get("existing"), "data")
 

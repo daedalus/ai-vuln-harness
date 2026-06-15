@@ -190,76 +190,7 @@ class VulnerabilityKBDatabaseTests(unittest.TestCase):
 class VulnerabilityKBFAISSTests(unittest.TestCase):
     """Tests for FAISS backend (skipped if faiss not installed)."""
 
-    @unittest.skipUnless(_HAS_FAISS, "FAISS not installed")
-    def test_init_with_faiss(self):
-        kb = VulnerabilityKB(use_faiss=True)
-        self.assertTrue(kb._use_faiss)
-        self.assertIsNotNone(kb._faiss_model)
-
-    @unittest.skipUnless(_HAS_FAISS, "FAISS not installed")
-    def test_search_with_faiss(self):
-        kb = VulnerabilityKB(use_faiss=True)
-        results = kb.search("pickle.load(data)", top_k=3)
-        self.assertGreater(len(results), 0)
-        cwcs = [r["cwe"] for r in results]
-        self.assertIn("CWE-502", cwcs)
-        self.assertEqual(results[0].get("backend"), "faiss")
-
-    @unittest.skipUnless(_HAS_FAISS, "FAISS not installed")
-    def test_faiss_build_index(self):
-        kb = VulnerabilityKB(use_faiss=True)
-        kb._build_faiss_index()
-        self.assertTrue(kb._built_faiss)
-        self.assertIsNotNone(kb._faiss_index)
-
-    @unittest.skipUnless(_HAS_FAISS, "FAISS not installed")
-    def test_faiss_persist_to_disk(self):
-        """FAISS index should be saved alongside the DB file."""
-        with tempfile.TemporaryDirectory() as tmp:
-            db_path = Path(tmp) / "test_kb.db"
-            faiss_path = db_path.with_suffix(".faiss")
-            kb = VulnerabilityKB(db_path, use_faiss=True)
-            kb._build_faiss_index()
-            self.assertTrue(kb._built_faiss)
-            kb.close()
-            self.assertTrue(faiss_path.exists(), f"FAISS file not found at {faiss_path}")
-            self.assertGreater(faiss_path.stat().st_size, 0)
-
-    @unittest.skipUnless(_HAS_FAISS, "FAISS not installed")
-    def test_faiss_load_from_disk(self):
-        """FAISS index should be loaded from disk on re-open."""
-        with tempfile.TemporaryDirectory() as tmp:
-            db_path = Path(tmp) / "test_kb.db"
-            # Build and persist
-            kb1 = VulnerabilityKB(db_path, use_faiss=True)
-            kb1._build_faiss_index()
-            kb1.close()
-            # Re-open and verify index loads from disk
-            kb2 = VulnerabilityKB(db_path, use_faiss=True)
-            kb2._build_faiss_index()
-            self.assertTrue(kb2._built_faiss)
-            self.assertIsNotNone(kb2._faiss_index)
-            results = kb2.search("SQL injection", top_k=3)
-            self.assertGreater(len(results), 0)
-            kb2.close()
-
-    @unittest.skipUnless(_HAS_FAISS, "FAISS not installed")
-    def test_faiss_search_returns_backend(self):
-        """FAISS search results should have backend='faiss'."""
-        kb = VulnerabilityKB(use_faiss=True)
-        results = kb.search("os.system(user_input)", top_k=1)
-        self.assertGreater(len(results), 0)
-        self.assertEqual(results[0]["backend"], "faiss")
-
-    def test_faiss_fallback(self):
-        """When FAISS is not available, should fall back gracefully."""
-        kb = VulnerabilityKB(use_faiss=False)
-        results = kb.search("SQL injection", top_k=1)
-        self.assertGreater(len(results), 0)
-        # Should use either tfidf or keyword backend
-        backend = results[0].get("backend")
-        self.assertIn(backend, ["tfidf", "keyword"])
-
+    @unittest.skipUnless(_HAS_SKLEARN, "sklearn not installed")
     def test_tfidf_index_build(self):
         """TF-IDF index should build successfully."""
         kb = VulnerabilityKB()

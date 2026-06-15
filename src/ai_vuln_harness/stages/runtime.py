@@ -34,6 +34,7 @@ Refusal detection:
 from __future__ import annotations
 
 import hashlib
+import hmac as _hmac
 import json
 import logging
 import math
@@ -259,17 +260,19 @@ def _strip_provider(model_id: str) -> str:
     return rest if prov in _KNOWN_PROVIDERS and sep else model_id
 
 
+# Host allowlist: only permitted provider hosts (module-level for performance)
+_ALLOWED_HOSTS = {
+    "openrouter.ai", "api.groq.com", "api.cerebras.ai",
+    "generativelanguage.googleapis.com", "opencode.ai",
+    "api.xiaomimimo.com", "api.openai.com",
+    "osv.dev", "api.osv.dev",
+}
+
+
 def _validate_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         raise ValueError(f"unsupported URL scheme: {parsed.scheme}")
-    # Host allowlist: only permitted provider hosts
-    _ALLOWED_HOSTS = {
-        "openrouter.ai", "api.groq.com", "api.cerebras.ai",
-        "generativelanguage.googleapis.com", "opencode.ai",
-        "api.xiaomimimo.com", "api.openai.com",
-        "osv.dev", "api.osv.dev",
-    }
     host = parsed.hostname or ""
     if host and host not in _ALLOWED_HOSTS and not host.endswith(".opencode.ai"):
         raise ValueError(f"host not in allowlist: {host}")
@@ -401,8 +404,8 @@ class JsonCache:
                 if len(raw_bytes) > 32:
                     stored_mac = raw_bytes[:32]
                     payload = raw_bytes[32:]
-                    expected_mac = hashlib.hmac_sha256(self._HMAC_KEY, payload).digest()
-                    if stored_mac == expected_mac:
+                    expected_mac = _hmac.new(self._HMAC_KEY, payload, hashlib.sha256).digest()
+                    if _hmac.compare_digest(stored_mac, expected_mac):
                         self.data = json.loads(payload.decode())
                     else:
                         log.warning("Cache HMAC mismatch, treating as empty")
@@ -420,7 +423,7 @@ class JsonCache:
     def put(self, key: str, value: object) -> None:
         self.data[key] = value
         payload = json.dumps(self.data).encode()
-        mac = hashlib.hmac_sha256(self._HMAC_KEY, payload).digest()
+        mac = _hmac.new(self._HMAC_KEY, payload, hashlib.sha256).digest()
         self.path.write_bytes(mac + payload)
 
 
