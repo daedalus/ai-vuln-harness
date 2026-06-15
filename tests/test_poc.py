@@ -116,3 +116,61 @@ class TestAutogenSource:
         snippet = {"language": "brainfuck", "name": "bf", "content": "+[->+<]"}
         src = _autogen_source(finding, snippet)
         assert src == "+[->+<]"
+
+
+class TestApplyCorrection:
+    """Tests for _apply_correction (self-correction on build failures)."""
+
+    def test_adds_stdio_h_for_implicit_declaration(self):
+        from ai_vuln_harness.stages.poc import _apply_correction
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "test.c"
+            src.write_text("int main() { printf(\"hello\"); return 0; }")
+            _apply_correction(str(src), "implicit declaration of function printf", 0)
+            content = src.read_text()
+            assert "#include <stdio.h>" in content
+
+    def test_adds_stdlib_h_for_malloc(self):
+        from ai_vuln_harness.stages.poc import _apply_correction
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "test.c"
+            src.write_text("int main() { char *p = malloc(10); return 0; }")
+            _apply_correction(str(src), "implicit declaration of function malloc", 0)
+            content = src.read_text()
+            assert "#include <stdlib.h>" in content
+
+    def test_no_change_when_pattern_not_found(self):
+        from ai_vuln_harness.stages.poc import _apply_correction
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "test.c"
+            original = "int main() { return 0; }"
+            src.write_text(original)
+            _apply_correction(str(src), "some unrelated error", 0)
+            assert src.read_text() == original
+
+    def test_handles_missing_file(self):
+        from ai_vuln_harness.stages.poc import _apply_correction
+        # Should not raise
+        _apply_correction("/nonexistent/file.c", "error", 0)
+
+
+class TestProcessFindingsSignature:
+    """Tests for process_findings signature and parameters."""
+
+    def test_has_self_correction_param(self):
+        from ai_vuln_harness.stages.poc import process_findings
+        import inspect
+        sig = inspect.signature(process_findings)
+        assert "self_correction" in sig.parameters
+        assert "max_retries" in sig.parameters
+        assert sig.parameters["self_correction"].default is True
+        assert sig.parameters["max_retries"].default == 3

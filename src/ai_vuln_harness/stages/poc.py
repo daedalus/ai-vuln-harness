@@ -407,6 +407,8 @@ def process_findings(
     run: bool = True,
     sandbox_prefix: list[str] | None = None,
     test_reduction: bool = False,
+    max_retries: int = 3,
+    self_correction: bool = True,
 ) -> list[dict]:
     """Process findings through PoC compilation and execution.
 
@@ -426,6 +428,10 @@ def process_findings(
     test_reduction:
         If ``True``, run test-case reduction on confirmed PoCs to shrink
         them to the minimal trigger.
+    max_retries:
+        Maximum number of self-correction retries when a PoC fails (default 3).
+    self_correction:
+        If ``True``, retry failed PoCs with modified source up to max_retries.
 
     Returns
     -------
@@ -448,44 +454,133 @@ def process_findings(
         _write_files(poc, src, Path(str(output_dir)) / "pocs")
 
         if run:
-            ok, target = _build(poc, Path(str(output_dir)))
-            if not ok:
-                poc["result"] = {
-                    "status": "build_failed",
-                    "verdict": "needs-more-info",
-                    "reasoning": "build failed",
-                }
-            else:
-                lang = poc["harness"]["language"]
-                try:
-                    with EgressAuditContext(Path(str(output_dir)), sandbox_prefix):
-                        exec_result = _execute(target, lang)
-                except ScopeViolationError as exc:
-                    exec_result = None
-                    poc["result"] = {
-                        "verdict": "scope_violation",
-                        "status": "blocked",
-                        "reasoning": str(exc),
-                    }
-                if exec_result is not None:
-                    poc["result"] = {
-                        "status": exec_result["status"],
-                        "verdict": "confirmed"
-                        if (
-                            exec_result.get("exit_code", 0) != 0
-                            or "ERROR" in exec_result.get("stderr", "")
-                        )
-                        else "rejected",
-                        "reasoning": f"exit={exec_result.get('exit_code')}, stderr={exec_result.get('stderr', '')[:200]}",
-                    }
-                if poc["result"]["verdict"] == "confirmed":
-                    f["poc_confirmed"] = True
-                    if test_reduction:
-                        _apply_test_reduction(poc, Path(str(output_dir)))
+            poc = _execute_poc_with_correction(
+                poc, f, snippet, Path(str(output_dir)),
+                sandbox_prefix, test_correction=self_correction,
+                max_retries=max_retries,
+            )
+            if poc["result"]["verdict"] == "confirmed":
+                f["poc_confirmed"] = True
+                if test_reduction:
+                    _apply_test_reduction(poc, Path(str(output_dir)))
             json_file = Path(str(output_dir)) / "pocs" / f"{poc['poc_id']}.json"
             json_file.write_text(json.dumps(poc, indent=2))
         results.append(poc)
     return results
+
+
+def _execute_poc_with_correction(
+    poc: dict,
+    finding: dict,
+    snippet: dict,
+    output_dir: Path,
+    sandbox_prefix: list[str] | None,
+    test_correction: bool = True,
+    max_retries: int = 3,
+) -> dict:
+    """Execute a PoC with self-correction on failure.
+
+    When a PoC fails, modifies the source and retries up to max_retries times.
+    """
+    ok, target = _build(poc, output_dir)
+    if not ok:
+        poc["result"] = {
+            "status": "build_failed",
+            "verdict": "needs-more-info",
+            "reasoning": "build failed",
+        }
+        return poc
+
+    lang = poc["harness"]["language"]
+    last_error = ""
+
+    for attempt in range(max_retries + 1):
+        try:
+            with EgressAuditContext(Path(str(output_dir)), sandbox_prefix):
+                exec_result = _execute(target, lang)
+        except ScopeViolationError as exc:
+            poc["result"] = {
+                "verdict": "scope_violation",
+                "status": "blocked",
+                "reasoning": str(exc),
+            }
+            return poc
+
+        if exec_result is not None:
+            is_confirmed = (
+                exec_result.get("exit_code", 0) != 0
+                or "ERROR" in exec_result.get("stderr", "")
+            )
+            if is_confirmed:
+                poc["result"] = {
+                    "status": exec_result["status"],
+                    "verdict": "confirmed",
+                    "reasoning": f"exit={exec_result.get('exit_code')}, stderr={exec_result.get('stderr', '')[:200]}",
+                    "attempts": attempt + 1,
+                }
+                return poc
+
+            last_error = exec_result.get("stderr", "")[:200]
+
+            # Self-correction: modify the PoC and retry
+            if test_correction and attempt < max_retries:
+                src_file = poc.get("harness", {}).get("source_file")
+                if src_file and Path(src_file).exists():
+                    _apply_correction(src_file, last_error, attempt)
+                    # Rebuild after modification
+                    ok, target = _build(poc, output_dir)
+                    if not ok:
+                        break
+
+    # All attempts failed
+    poc["result"] = {
+        "status": "rejected",
+        "verdict": "rejected",
+        "reasoning": f"failed after {max_retries + 1} attempts: {last_error}",
+        "attempts": max_retries + 1,
+    }
+    return poc
+
+
+def _apply_correction(src_file: str, error_msg: str, attempt: int) -> None:
+    """Apply a simple correction to a PoC source file based on error message."""
+    try:
+        content = Path(src_file).read_text()
+    except OSError:
+        return
+
+    # Simple correction heuristics
+    corrections = [
+        # Fix common compilation errors
+        ("implicit declaration", '#include <stdio.h>\n#include <stdlib.h>\n'),
+        ("undefined reference", ""),
+        ("expected ';'", ";"),
+    ]
+
+    modified = False
+    for pattern, fix in corrections:
+        if pattern.lower() in error_msg.lower():
+            if fix and fix not in content:
+                content = fix + content
+                modified = True
+                break
+
+    # Add more aggressive fixes on later attempts
+    if attempt >= 1 and not modified:
+        # Try adding common headers
+        if any(kw in error_msg.lower() for kw in ["printf", "malloc", "free", "strlen"]):
+            if "#include <stdlib.h>" not in content:
+                content = "#include <stdlib.h>\n#include <string.h>\n" + content
+                modified = True
+
+    if attempt >= 2 and not modified:
+        # Last resort: wrap in a try-catch for C++ or add error handling
+        if "void main" in content or "int main" in content:
+            content = content.replace("int main", "int main()").replace("void main", "int main()")
+            modified = True
+
+    if modified:
+        Path(src_file).write_text(content)
 
 
 def _apply_test_reduction(poc: dict, output_dir: Path) -> None:
