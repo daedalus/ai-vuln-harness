@@ -300,7 +300,11 @@ class PipelineInvariantTests(unittest.TestCase):
         run_py = (
             Path(__file__).parent.parent / "src" / "ai_vuln_harness" / "run.py"
         ).read_text()
-        self.assertIn("_check_deps()", run_py.split("def main")[1].split("\n")[1])
+        main_body = run_py.split("def main")[1]
+        self.assertIn("_check_deps()", main_body)
+        deps_pos = main_body.index("_check_deps()")
+        parse_pos = main_body.index("parse_args()")
+        self.assertGreater(deps_pos, parse_pos)
 
 
 class QualityGateInvariantTests(unittest.TestCase):

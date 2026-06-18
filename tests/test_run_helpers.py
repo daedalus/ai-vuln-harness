@@ -245,6 +245,22 @@ class TestBuildRunKwargs:
         ns.test_reduction = False
         ns.enforce_severity_gating = False
         ns.enable_embeddings = False
+        ns.similarity_threshold = 0.85
+        ns.enable_findings_db = False
+        ns.persist_findings = False
+        ns.historical_context = False
+        ns.enable_fts_suppressions = False
+        ns.rag_catalog = False
+        ns.no_output_review = False
+        ns.output_review_risk_level = "standard"
+        ns.zero_day = False
+        ns.no_gapfill = False
+        ns.no_chains = False
+        ns.no_exposure = False
+        ns.no_feedback = False
+        ns.no_cve_corpus = False
+        ns.no_rag_kb = False
+        ns.no_evidence = False
         return ns
 
     def test_returns_dict(self, args):
@@ -344,7 +360,7 @@ class TestIngestSnippets:
             pickle.dumps({"s1": {"id": "s1", "file": "a.c"}})
         )
         snippets, snippet_db = _ingest_snippets(
-            Path("/fake-repo"), output, True, {"is_library_target": False}
+            Path("/fake-repo"), output, False, {"is_library_target": False}
         )
         assert len(snippets) == 1
         assert snippets[0]["id"] == "s1"
@@ -356,7 +372,7 @@ class TestIngestSnippets:
             pickle.dumps({"s1": {"id": "s1", "file": "a.c"}})
         )
         snippets, snippet_db = _ingest_snippets(
-            Path("/fake-repo"), output, True, {"is_library_target": False}
+            Path("/fake-repo"), output, False, {"is_library_target": False}
         )
         assert len(snippets) == 1
         assert snippet_db["s1"]["file"] == "a.c"

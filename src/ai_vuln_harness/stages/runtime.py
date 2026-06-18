@@ -262,10 +262,15 @@ def _strip_provider(model_id: str) -> str:
 
 # Host allowlist: only permitted provider hosts (module-level for performance)
 _ALLOWED_HOSTS = {
-    "openrouter.ai", "api.groq.com", "api.cerebras.ai",
-    "generativelanguage.googleapis.com", "opencode.ai",
-    "api.xiaomimimo.com", "api.openai.com",
-    "osv.dev", "api.osv.dev",
+    "openrouter.ai",
+    "api.groq.com",
+    "api.cerebras.ai",
+    "generativelanguage.googleapis.com",
+    "opencode.ai",
+    "api.xiaomimimo.com",
+    "api.openai.com",
+    "osv.dev",
+    "api.osv.dev",
 }
 
 
@@ -404,7 +409,9 @@ class JsonCache:
                 if len(raw_bytes) > 32:
                     stored_mac = raw_bytes[:32]
                     payload = raw_bytes[32:]
-                    expected_mac = _hmac.new(self._HMAC_KEY, payload, hashlib.sha256).digest()
+                    expected_mac = _hmac.new(
+                        self._HMAC_KEY, payload, hashlib.sha256
+                    ).digest()
                     if _hmac.compare_digest(stored_mac, expected_mac):
                         self.data = json.loads(payload.decode())
                     else:
@@ -433,10 +440,7 @@ def save_packs_json(packs: list[dict], path: Path) -> None:
 
 
 def load_packs_json(path: Path) -> list[dict]:
-    try:
-        return json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return []
+    return json.loads(path.read_text())
 
 
 class StateDB:

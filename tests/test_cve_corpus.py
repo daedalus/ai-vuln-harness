@@ -181,11 +181,18 @@ class SuppressKnownCvesTests(unittest.TestCase):
     def test_exact_cve_id_match(self):
         """Layer 1: exact CVE ID mention (fast path)."""
         findings = [
-            {"desc": "Buffer overflow related to CVE-2024-12345 in parser", "class": "buffer-overflow"},
+            {
+                "desc": "Buffer overflow related to CVE-2024-12345 in parser",
+                "class": "buffer-overflow",
+            },
             {"desc": "Novel integer overflow", "class": "integer-overflow"},
         ]
         corpus = [
-            {"cve_id": "CVE-2024-12345", "class": "buffer-overflow", "description": "Buffer overflow in parser"},
+            {
+                "cve_id": "CVE-2024-12345",
+                "class": "buffer-overflow",
+                "description": "Buffer overflow in parser",
+            },
         ]
         novel, known = suppress_known_cves(findings, corpus)
         self.assertEqual(len(novel), 1)
@@ -195,25 +202,115 @@ class SuppressKnownCvesTests(unittest.TestCase):
 
     def test_hard_negative_different_file(self):
         """Layer 5: different file → no suppression."""
+        import unittest.mock as mock
+        import numpy as np
+
         findings = [
-            {"desc": "Buffer overflow", "class": "buffer-overflow", "file": "src/parser.c"},
+            {
+                "desc": "Buffer overflow",
+                "class": "buffer-overflow",
+                "file": "src/parser.c",
+            },
         ]
         corpus = [
-            {"cve_id": "CVE-2024-0001", "class": "buffer-overflow", "description": "Buffer overflow in parser", "file": "src/network.c"},
+            {
+                "cve_id": "CVE-2024-0001",
+                "class": "buffer-overflow",
+                "description": "Buffer overflow in parser",
+                "file": "src/network.c",
+            },
         ]
-        novel, known = suppress_known_cves(findings, corpus, threshold=0.3)
+
+        finding_emb = np.array([[1.0, 0.0, 0.0]], dtype="float32")
+        corpus_emb = np.array([[0.95, 0.05, 0.0]], dtype="float32")
+        all_embs = np.vstack([finding_emb, corpus_emb])
+
+        fake_index = mock.MagicMock()
+        fake_index.available = True
+
+        def fake_encode(findings_list):
+            fake_index._embeddings = all_embs
+
+        fake_index.encode_findings = fake_encode
+
+        fake_faiss = mock.MagicMock()
+        fake_faiss_obj = mock.MagicMock()
+        fake_faiss_obj.search.return_value = (
+            np.array([[0.95]], dtype="float32"),
+            np.array([[0]], dtype="int64"),
+        )
+        fake_faiss.IndexFlatIP.return_value = fake_faiss_obj
+
+        with (
+            mock.patch.dict(
+                "sys.modules",
+                {
+                    "ai_vuln_harness.stages.embeddings": mock.MagicMock(
+                        EmbeddingIndex=lambda **kw: fake_index
+                    ),
+                    "faiss": fake_faiss,
+                    "numpy": np,
+                },
+            ),
+        ):
+            novel, known = suppress_known_cves(findings, corpus, threshold=0.3)
         self.assertEqual(len(novel), 1)
         self.assertEqual(len(known), 0)
 
     def test_same_file_allows_suppression(self):
         """Layer 5: same file allows suppression."""
+        import unittest.mock as mock
+        import numpy as np
+
         findings = [
-            {"desc": "Buffer overflow in parsing", "class": "buffer-overflow", "file": "src/parser.c"},
+            {
+                "desc": "Buffer overflow in parsing",
+                "class": "buffer-overflow",
+                "file": "src/parser.c",
+            },
         ]
         corpus = [
-            {"cve_id": "CVE-2024-0001", "class": "buffer-overflow", "description": "Buffer overflow in parser module", "file": "src/parser.c"},
+            {
+                "cve_id": "CVE-2024-0001",
+                "class": "buffer-overflow",
+                "description": "Buffer overflow in parser module",
+                "file": "src/parser.c",
+            },
         ]
-        novel, known = suppress_known_cves(findings, corpus, threshold=0.3)
+
+        finding_emb = np.array([[1.0, 0.0, 0.0]], dtype="float32")
+        corpus_emb = np.array([[0.95, 0.05, 0.0]], dtype="float32")
+        all_embs = np.vstack([finding_emb, corpus_emb])
+
+        fake_index = mock.MagicMock()
+        fake_index.available = True
+
+        def fake_encode(findings_list):
+            fake_index._embeddings = all_embs
+
+        fake_index.encode_findings = fake_encode
+
+        fake_faiss = mock.MagicMock()
+        fake_faiss_obj = mock.MagicMock()
+        fake_faiss_obj.search.return_value = (
+            np.array([[0.95]], dtype="float32"),
+            np.array([[0]], dtype="int64"),
+        )
+        fake_faiss.IndexFlatIP.return_value = fake_faiss_obj
+
+        with (
+            mock.patch.dict(
+                "sys.modules",
+                {
+                    "ai_vuln_harness.stages.embeddings": mock.MagicMock(
+                        EmbeddingIndex=lambda **kw: fake_index
+                    ),
+                    "faiss": fake_faiss,
+                    "numpy": np,
+                },
+            ),
+        ):
+            novel, known = suppress_known_cves(findings, corpus, threshold=0.3)
         self.assertEqual(len(known), 1)
 
     def test_confidence_score_in_result(self):
@@ -222,7 +319,11 @@ class SuppressKnownCvesTests(unittest.TestCase):
             {"desc": "Matches CVE-2024-33333", "class": "xss"},
         ]
         corpus = [
-            {"cve_id": "CVE-2024-33333", "class": "xss", "description": "XSS in template"},
+            {
+                "cve_id": "CVE-2024-33333",
+                "class": "xss",
+                "description": "XSS in template",
+            },
         ]
         _, known = suppress_known_cves(findings, corpus)
         self.assertIn("suppression_confidence", known[0])
@@ -236,8 +337,16 @@ class SuppressKnownCvesTests(unittest.TestCase):
             {"desc": "Also matches CVE-2024-0002", "class": "sql-injection"},
         ]
         corpus = [
-            {"cve_id": "CVE-2024-0001", "class": "buffer-overflow", "description": "Buffer overflow"},
-            {"cve_id": "CVE-2024-0002", "class": "sql-injection", "description": "SQL injection in login"},
+            {
+                "cve_id": "CVE-2024-0001",
+                "class": "buffer-overflow",
+                "description": "Buffer overflow",
+            },
+            {
+                "cve_id": "CVE-2024-0002",
+                "class": "sql-injection",
+                "description": "SQL injection in login",
+            },
         ]
         novel, known = suppress_known_cves(findings, corpus)
         self.assertEqual(len(novel), 1)
@@ -247,7 +356,14 @@ class SuppressKnownCvesTests(unittest.TestCase):
     def test_rich_text_encoding_includes_cwe(self):
         """Layer 4: CWE should be part of the text encoding."""
         from ai_vuln_harness.stages.cve_corpus import _build_finding_text
-        f = {"class": "buffer-overflow", "cwe": "CWE-120", "desc": "Stack overflow", "file": "src/main.c", "function": "parse"}
+
+        f = {
+            "class": "buffer-overflow",
+            "cwe": "CWE-120",
+            "desc": "Stack overflow",
+            "file": "src/main.c",
+            "function": "parse",
+        }
         text = _build_finding_text(f)
         self.assertIn("CWE-120", text)
         self.assertIn("src/main.c", text)
@@ -259,7 +375,11 @@ class SuppressKnownCvesTests(unittest.TestCase):
             {"desc": "SQL injection in login", "class": "sql-injection"},
         ]
         corpus = [
-            {"cve_id": "CVE-2024-11111", "class": "buffer-overflow", "description": "Buffer overflow in parser"},
+            {
+                "cve_id": "CVE-2024-11111",
+                "class": "buffer-overflow",
+                "description": "Buffer overflow in parser",
+            },
         ]
         novel, known = suppress_known_cves(findings, corpus)
         self.assertEqual(len(novel), 1)

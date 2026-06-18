@@ -2181,6 +2181,7 @@ def run(  # noqa: PLR0913
     # Suppress findings that match known CVEs (negative filter)
     if cve_entries:
         from .stages.cve_corpus import suppress_known_cves
+
         all_findings, cve_suppressed = suppress_known_cves(all_findings, cve_entries)
         if cve_suppressed:
             logger.info(
@@ -2305,7 +2306,10 @@ def run(  # noqa: PLR0913
         graph_path = output_dir / "engagement_graph.db"
         with EngagementGraph(graph_path) as graph:
             evidence_summary = run_evidence_collector(
-                findings, snippets, chains, graph,
+                findings,
+                snippets,
+                chains,
+                graph,
             )
     state.put_meta("evidence_collected", json.dumps(evidence_summary))
 
@@ -2315,14 +2319,25 @@ def run(  # noqa: PLR0913
         _enrich_findings_with_cwe(findings, rag_kb)
 
     exposure_metrics, feedback_tasks = _post_process_findings(
-        findings, repo, snippets, all_tasks, scope_notes, cfg, state,
+        findings,
+        repo,
+        snippets,
+        all_tasks,
+        scope_notes,
+        cfg,
+        state,
     )
 
     # Output content review gate (A3 containment)
     if enable_output_review:
         from ai_vuln_harness.stages.output_review import review_findings
-        review_risk_level = cfg.get("output_review", {}).get("risk_level", output_review_risk_level)
-        findings, review_blocked = review_findings(findings, risk_level=review_risk_level)
+
+        review_risk_level = cfg.get("output_review", {}).get(
+            "risk_level", output_review_risk_level
+        )
+        findings, review_blocked = review_findings(
+            findings, risk_level=review_risk_level
+        )
         if review_blocked:
             logger.warning(
                 "Output review gate blocked %d findings (weaponizable content)",
@@ -2346,12 +2361,16 @@ def run(  # noqa: PLR0913
 
     # Post-processor: aggregate, dashboard, KPIs
     post_result = run_post_processor(
-        findings, chains, report, output_dir,
+        findings,
+        chains,
+        report,
+        output_dir,
     )
     state.put_meta("post_processor_dashboard", json.dumps(post_result["dashboard"]))
 
     # Log refusal summary
     from ai_vuln_harness.stages.runtime import get_refusal_counts
+
     refusal_counts = get_refusal_counts()
     if refusal_counts:
         total_refusals = sum(refusal_counts.values())
@@ -2455,6 +2474,7 @@ def _assemble_report(
 
     # Attach refusal counts from LLM calls
     from ai_vuln_harness.stages.runtime import get_refusal_counts
+
     refusal_counts = get_refusal_counts()
     if refusal_counts:
         report["refusal_counts"] = refusal_counts
@@ -2764,8 +2784,6 @@ def _build_run_kwargs(args: argparse.Namespace, *, target_mode: bool = False) ->
 
 
 def main() -> None:
-    _check_deps()
-
     parser = argparse.ArgumentParser(description="AI vuln harness v1 scaffold")
     parser.add_argument(
         "--mode",
@@ -2979,15 +2997,32 @@ def main() -> None:
         "CVE corpus (as negatives to suppress known CVE matches), shield, "
         "and suppressions enabled.",
     )
-    parser.add_argument("--no-gapfill", action="store_true", help="Skip gapfill loop stage.")
-    parser.add_argument("--no-chains", action="store_true", help="Skip exploit chain synthesis.")
-    parser.add_argument("--no-exposure", action="store_true", help="Skip exposure-window tracking.")
-    parser.add_argument("--no-feedback", action="store_true", help="Skip feedback loop stage.")
-    parser.add_argument("--no-cve-corpus", action="store_true", help="Skip CVE corpus loading.")
-    parser.add_argument("--no-rag-kb", action="store_true", help="Skip RAG KB CWE enrichment.")
-    parser.add_argument("--no-evidence", action="store_true", help="Skip evidence collection (engagement graph).")
+    parser.add_argument(
+        "--no-gapfill", action="store_true", help="Skip gapfill loop stage."
+    )
+    parser.add_argument(
+        "--no-chains", action="store_true", help="Skip exploit chain synthesis."
+    )
+    parser.add_argument(
+        "--no-exposure", action="store_true", help="Skip exposure-window tracking."
+    )
+    parser.add_argument(
+        "--no-feedback", action="store_true", help="Skip feedback loop stage."
+    )
+    parser.add_argument(
+        "--no-cve-corpus", action="store_true", help="Skip CVE corpus loading."
+    )
+    parser.add_argument(
+        "--no-rag-kb", action="store_true", help="Skip RAG KB CWE enrichment."
+    )
+    parser.add_argument(
+        "--no-evidence",
+        action="store_true",
+        help="Skip evidence collection (engagement graph).",
+    )
     args = parser.parse_args()
 
+    _check_deps()
     _setup_proxy(args.proxy)
 
     if args.repo_head is not None:

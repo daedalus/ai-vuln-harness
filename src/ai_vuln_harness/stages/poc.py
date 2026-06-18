@@ -455,8 +455,12 @@ def process_findings(
 
         if run:
             poc = _execute_poc_with_correction(
-                poc, f, snippet, Path(str(output_dir)),
-                sandbox_prefix, test_correction=self_correction,
+                poc,
+                f,
+                snippet,
+                Path(str(output_dir)),
+                sandbox_prefix,
+                test_correction=self_correction,
                 max_retries=max_retries,
             )
             if poc["result"]["verdict"] == "confirmed":
@@ -507,10 +511,9 @@ def _execute_poc_with_correction(
             return poc
 
         if exec_result is not None:
-            is_confirmed = (
-                exec_result.get("exit_code", 0) != 0
-                or "ERROR" in exec_result.get("stderr", "")
-            )
+            is_confirmed = exec_result.get(
+                "exit_code", 0
+            ) != 0 or "ERROR" in exec_result.get("stderr", "")
             if is_confirmed:
                 poc["result"] = {
                     "status": exec_result["status"],
@@ -552,8 +555,11 @@ def _apply_correction(src_file: str, error_msg: str, attempt: int) -> None:
     # Simple correction heuristics
     corrections = [
         # Fix common compilation errors
-        ("implicit declaration", '#include <stdio.h>\n#include <stdlib.h>\n'),
-        ("undefined reference", ""),
+        ("implicit declaration", "#include <stdio.h>\n#include <stdlib.h>\n"),
+        (
+            "undefined reference to `main`",
+            "int main(int argc, char **argv) { return 0; }\n",
+        ),
         ("expected ';'", ";"),
     ]
 
@@ -568,7 +574,9 @@ def _apply_correction(src_file: str, error_msg: str, attempt: int) -> None:
     # Add more aggressive fixes on later attempts
     if attempt >= 1 and not modified:
         # Try adding common headers
-        if any(kw in error_msg.lower() for kw in ["printf", "malloc", "free", "strlen"]):
+        if any(
+            kw in error_msg.lower() for kw in ["printf", "malloc", "free", "strlen"]
+        ):
             if "#include <stdlib.h>" not in content:
                 content = "#include <stdlib.h>\n#include <string.h>\n" + content
                 modified = True
@@ -576,7 +584,9 @@ def _apply_correction(src_file: str, error_msg: str, attempt: int) -> None:
     if attempt >= 2 and not modified:
         # Last resort: wrap in a try-catch for C++ or add error handling
         if "void main" in content or "int main" in content:
-            content = content.replace("int main", "int main()").replace("void main", "int main()")
+            content = content.replace("int main", "int main()").replace(
+                "void main", "int main()"
+            )
             modified = True
 
     if modified:

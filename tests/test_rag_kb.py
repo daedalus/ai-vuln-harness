@@ -79,7 +79,12 @@ class VulnerabilityKBTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "patterns.json"
             patterns = [
-                {"cwe": "CWE-8888", "title": "Test", "description": "Test vuln", "patterns": ["test"]},
+                {
+                    "cwe": "CWE-8888",
+                    "title": "Test",
+                    "description": "Test vuln",
+                    "patterns": ["test"],
+                },
             ]
             path.write_text(json.dumps(patterns))
             loaded = self.kb.load_from_file(path)
@@ -137,21 +142,30 @@ class VulnerabilityKBDatabaseTests(unittest.TestCase):
                 patterns=["persist"],
                 persist=True,
             )
-            rows = kb._conn.execute("SELECT * FROM cwe_patterns WHERE cwe='CWE-7777'").fetchall()
+            rows = kb._conn.execute(
+                "SELECT * FROM cwe_patterns WHERE cwe='CWE-7777'"
+            ).fetchall()
             self.assertEqual(len(rows), 1)
 
     def test_load_from_file_persist(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "patterns.json"
             patterns = [
-                {"cwe": "CWE-8888", "title": "File Pattern", "description": "From file", "patterns": ["file"]},
+                {
+                    "cwe": "CWE-8888",
+                    "title": "File Pattern",
+                    "description": "From file",
+                    "patterns": ["file"],
+                },
             ]
             path.write_text(json.dumps(patterns))
 
             with VulnerabilityKB(self.db_path) as kb:
                 loaded = kb.load_from_file(path, persist=True)
                 self.assertEqual(loaded, 1)
-                rows = kb._conn.execute("SELECT * FROM cwe_patterns WHERE cwe='CWE-8888'").fetchall()
+                rows = kb._conn.execute(
+                    "SELECT * FROM cwe_patterns WHERE cwe='CWE-8888'"
+                ).fetchall()
                 self.assertEqual(len(rows), 1)
 
     def test_db_survives_reopen(self):
@@ -227,9 +241,11 @@ class VulnerabilityKBFAISSTests(unittest.TestCase):
 
         fake_faiss, fake_model, np = self._make_faiss_mocks()
 
-        with mock.patch.object(rag_kb_mod, "_HAS_FAISS", True), \
-             mock.patch.object(rag_kb_mod, "faiss", fake_faiss, create=True), \
-             mock.patch.object(rag_kb_mod, "np", np, create=True):
+        with (
+            mock.patch.object(rag_kb_mod, "_HAS_FAISS", True),
+            mock.patch.object(rag_kb_mod, "faiss", fake_faiss, create=True),
+            mock.patch.object(rag_kb_mod, "np", np, create=True),
+        ):
             kb = rag_kb_mod.VulnerabilityKB(use_faiss=True)
             kb._faiss_model = fake_model
             kb._use_faiss = True
@@ -246,9 +262,11 @@ class VulnerabilityKBFAISSTests(unittest.TestCase):
             db_path = Path(tmp) / "test.db"
             fake_faiss, fake_model, np = self._make_faiss_mocks()
 
-            with mock.patch.object(rag_kb_mod, "_HAS_FAISS", True), \
-                 mock.patch.object(rag_kb_mod, "faiss", fake_faiss, create=True), \
-                 mock.patch.object(rag_kb_mod, "np", np, create=True):
+            with (
+                mock.patch.object(rag_kb_mod, "_HAS_FAISS", True),
+                mock.patch.object(rag_kb_mod, "faiss", fake_faiss, create=True),
+                mock.patch.object(rag_kb_mod, "np", np, create=True),
+            ):
                 kb = rag_kb_mod.VulnerabilityKB(db_path=db_path, use_faiss=True)
                 kb._faiss_model = fake_model
                 kb._use_faiss = True
@@ -264,18 +282,20 @@ class VulnerabilityKBFAISSTests(unittest.TestCase):
         import unittest.mock as mock
         import ai_vuln_harness.stages.rag_kb as rag_kb_mod
 
+        fake_faiss, fake_model, np = self._make_faiss_mocks()
+
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "test.db"
             index_path = db_path.with_suffix(".faiss")
             index_path.write_bytes(b"fake faiss index")
 
-            fake_faiss = mock.MagicMock()
             fake_faiss.read_index.return_value = mock.MagicMock()
-            fake_model = mock.MagicMock()
 
-            with mock.patch.object(rag_kb_mod, "_HAS_FAISS", True), \
-                 mock.patch.object(rag_kb_mod, "faiss", fake_faiss, create=True), \
-                 mock.patch.object(rag_kb_mod, "np", None, create=True):
+            with (
+                mock.patch.object(rag_kb_mod, "_HAS_FAISS", True),
+                mock.patch.object(rag_kb_mod, "faiss", fake_faiss, create=True),
+                mock.patch.object(rag_kb_mod, "np", np, create=True),
+            ):
                 kb = rag_kb_mod.VulnerabilityKB(db_path=db_path, use_faiss=True)
                 kb._faiss_model = fake_model
                 kb._use_faiss = True
@@ -290,18 +310,20 @@ class VulnerabilityKBFAISSTests(unittest.TestCase):
         import unittest.mock as mock
         import ai_vuln_harness.stages.rag_kb as rag_kb_mod
 
+        fake_faiss, fake_model, np = self._make_faiss_mocks()
+
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "test.db"
             index_path = db_path.with_suffix(".faiss")
             index_path.write_bytes(b"fake faiss index")
 
-            fake_faiss = mock.MagicMock()
             fake_faiss.read_index.return_value = mock.MagicMock()
-            fake_model = mock.MagicMock()
 
-            with mock.patch.object(rag_kb_mod, "_HAS_FAISS", True), \
-                 mock.patch.object(rag_kb_mod, "faiss", fake_faiss, create=True), \
-                 mock.patch.object(rag_kb_mod, "np", None, create=True):
+            with (
+                mock.patch.object(rag_kb_mod, "_HAS_FAISS", True),
+                mock.patch.object(rag_kb_mod, "faiss", fake_faiss, create=True),
+                mock.patch.object(rag_kb_mod, "np", np, create=True),
+            ):
                 kb = rag_kb_mod.VulnerabilityKB(db_path=db_path, use_faiss=True)
                 kb._faiss_model = fake_model
                 kb._use_faiss = True
@@ -318,9 +340,11 @@ class VulnerabilityKBFAISSTests(unittest.TestCase):
 
         fake_faiss, fake_model, np = self._make_faiss_mocks()
 
-        with mock.patch.object(rag_kb_mod, "_HAS_FAISS", True), \
-             mock.patch.object(rag_kb_mod, "faiss", fake_faiss, create=True), \
-             mock.patch.object(rag_kb_mod, "np", np, create=True):
+        with (
+            mock.patch.object(rag_kb_mod, "_HAS_FAISS", True),
+            mock.patch.object(rag_kb_mod, "faiss", fake_faiss, create=True),
+            mock.patch.object(rag_kb_mod, "np", np, create=True),
+        ):
             kb = rag_kb_mod.VulnerabilityKB(use_faiss=True)
             kb._faiss_model = fake_model
             kb._use_faiss = True
@@ -354,9 +378,21 @@ class VulnerabilityKBCorpusTests(unittest.TestCase):
         kb = VulnerabilityKB()
         initial = kb.size
         entries = [
-            {"cwe": "CWE-200", "title": "Information Exposure", "description": "Sensitive info exposed"},
-            {"cwe": "CWE-352", "title": "CSRF", "description": "Cross-site request forgery"},
-            {"cwe": "CWE-400", "title": "Resource Exhaustion", "description": "DoS via resource consumption"},
+            {
+                "cwe": "CWE-200",
+                "title": "Information Exposure",
+                "description": "Sensitive info exposed",
+            },
+            {
+                "cwe": "CWE-352",
+                "title": "CSRF",
+                "description": "Cross-site request forgery",
+            },
+            {
+                "cwe": "CWE-400",
+                "title": "Resource Exhaustion",
+                "description": "DoS via resource consumption",
+            },
         ]
         count = kb.add_patterns_from_corpus(entries)
         self.assertEqual(count, 3)
@@ -388,8 +424,16 @@ class VulnerabilityKBCorpusTests(unittest.TestCase):
         """Search should work with expanded catalog."""
         kb = VulnerabilityKB()
         entries = [
-            {"cwe": "CWE-200", "title": "Information Exposure", "description": "Sensitive data exposed to unauthorized actors"},
-            {"cwe": "CWE-352", "title": "Cross-Site Request Forgery", "description": "Forged requests on behalf of authenticated users"},
+            {
+                "cwe": "CWE-200",
+                "title": "Information Exposure",
+                "description": "Sensitive data exposed to unauthorized actors",
+            },
+            {
+                "cwe": "CWE-352",
+                "title": "Cross-Site Request Forgery",
+                "description": "Forged requests on behalf of authenticated users",
+            },
         ]
         kb.add_patterns_from_corpus(entries)
         results = kb.search("information exposure", top_k=3)
@@ -400,7 +444,12 @@ class VulnerabilityKBCorpusTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "cwe_catalog.json"
             entries = [
-                {"cwe": f"CWE-{i}", "title": f"Test CWE {i}", "description": f"Description {i}", "patterns": [f"pattern{i}"]}
+                {
+                    "cwe": f"CWE-{i}",
+                    "title": f"Test CWE {i}",
+                    "description": f"Description {i}",
+                    "patterns": [f"pattern{i}"],
+                }
                 for i in range(1, 301)
             ]
             path.write_text(json.dumps(entries))
@@ -416,6 +465,7 @@ class DomainAssignmentTests(unittest.TestCase):
     def test_assign_domain_by_embedding_no_centroids(self):
         """Returns None when no centroids provided."""
         from ai_vuln_harness.stages.coordinator import assign_domain_by_embedding
+
         snippet = {"name": "gets(buf)", "content": "char buf[10]; gets(buf);"}
         result = assign_domain_by_embedding(snippet, domain_centroids=None)
         self.assertIsNone(result)
@@ -424,6 +474,7 @@ class DomainAssignmentTests(unittest.TestCase):
     def test_build_domain_centroids(self):
         """build_domain_centroids returns dict of domain -> embedding."""
         from ai_vuln_harness.stages.coordinator import build_domain_centroids
+
         centroids = build_domain_centroids()
         self.assertIsNotNone(centroids)
         self.assertIn("mem-safety", centroids)
@@ -433,24 +484,39 @@ class DomainAssignmentTests(unittest.TestCase):
     @unittest.skipUnless(_HAS_FAISS, "FAISS not installed")
     def test_assign_domain_mem_safety(self):
         """Buffer overflow snippet should route to mem-safety."""
-        from ai_vuln_harness.stages.coordinator import assign_domain_by_embedding, build_domain_centroids
+        from ai_vuln_harness.stages.coordinator import (
+            assign_domain_by_embedding,
+            build_domain_centroids,
+        )
+
         centroids = build_domain_centroids()
-        snippet = {"name": "strcpy", "content": "char buf[10]; strcpy(buf, user_input); buffer overflow vulnerability"}
+        snippet = {
+            "name": "strcpy",
+            "content": "char buf[10]; strcpy(buf, user_input); buffer overflow vulnerability",
+        }
         result = assign_domain_by_embedding(snippet, domain_centroids=centroids)
         self.assertEqual(result, "mem-safety")
 
     @unittest.skipUnless(_HAS_FAISS, "FAISS not installed")
     def test_assign_domain_crypto(self):
         """Weak crypto snippet should route to crypto."""
-        from ai_vuln_harness.stages.coordinator import assign_domain_by_embedding, build_domain_centroids
+        from ai_vuln_harness.stages.coordinator import (
+            assign_domain_by_embedding,
+            build_domain_centroids,
+        )
+
         centroids = build_domain_centroids()
-        snippet = {"name": "encrypt", "content": "Uses MD5 hash for password hashing, weak cryptographic algorithm"}
+        snippet = {
+            "name": "encrypt",
+            "content": "Uses MD5 hash for password hashing, weak cryptographic algorithm",
+        }
         result = assign_domain_by_embedding(snippet, domain_centroids=centroids)
         self.assertEqual(result, "crypto")
 
     def test_assign_domain_empty_snippet(self):
         """Empty snippet should return None."""
         from ai_vuln_harness.stages.coordinator import assign_domain_by_embedding
+
         result = assign_domain_by_embedding({}, domain_centroids={"test": None})
         self.assertIsNone(result)
 
