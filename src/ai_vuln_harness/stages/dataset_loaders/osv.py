@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import urllib.request
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from ..rag_kb import VulnerabilityKB
 
+# pylint: disable=wrong-import-position
 from .common import _default_cache_dir
 
 
@@ -28,7 +30,7 @@ def load_osv_from_file(
 
     vulns = data if isinstance(data, list) else data.get("vulns", [])
     for vuln in vulns:
-        if max_patterns > 0 and count >= max_patterns:
+        if 0 < max_patterns <= count:
             break
 
         osv_id = vuln.get("id", "")
@@ -81,7 +83,7 @@ def load_osv_from_url(
         cache_path = _default_cache_dir() / "osv_vulns.json"
 
     if not cache_path.exists():
-        print(f"Downloading OSV.dev vulnerabilities...")
+        print("Downloading OSV.dev vulnerabilities...")
         query_data = json.dumps({}).encode()
         req = urllib.request.Request(
             url,

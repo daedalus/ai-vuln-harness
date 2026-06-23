@@ -34,6 +34,8 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 
+import numpy as np
+
 DOMAIN_ORDER = [
     "mem-safety",
     "auth",
@@ -257,8 +259,6 @@ def assign_domain_by_embedding(
     Best matching domain name, or None when embeddings are unavailable.
     """
     try:
-        import numpy as np
-
         from ai_vuln_harness.stages.embeddings import EmbeddingIndex
     except ImportError:
         return None
@@ -274,11 +274,11 @@ def assign_domain_by_embedding(
         return None
 
     index = EmbeddingIndex()
-    if not index._ensure_model():
+    if not index._ensure_model():  # pylint: disable=protected-access
         return None
 
     # Encode snippet
-    emb = index._model.encode([text], normalize_embeddings=True).astype("float32")[0]
+    emb = index._model.encode([text], normalize_embeddings=True).astype("float32")[0]  # pylint: disable=protected-access
 
     # Find best matching domain
     best_domain = None
@@ -301,18 +301,16 @@ def build_domain_centroids() -> dict[str, np.ndarray] | None:
     Returns None when sentence-transformers is unavailable.
     """
     try:
-        import numpy as np
-
         from ai_vuln_harness.stages.embeddings import EmbeddingIndex
     except ImportError:
         return None
 
     index = EmbeddingIndex()
-    if not index._ensure_model():
+    if not index._ensure_model():  # pylint: disable=protected-access
         return None
 
     domains = list(_DOMAIN_CENTROIDS.keys())
     texts = [_DOMAIN_CENTROIDS[d] for d in domains]
-    embeddings = index._model.encode(texts, normalize_embeddings=True)
+    embeddings = index._model.encode(texts, normalize_embeddings=True)  # pylint: disable=protected-access
 
     return {d: embeddings[i].astype("float32") for i, d in enumerate(domains)}

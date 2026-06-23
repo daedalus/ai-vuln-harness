@@ -9,20 +9,21 @@ from __future__ import annotations
 import json
 import subprocess
 import urllib.request
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from ..rag_kb import VulnerabilityKB
 
-from .common import _default_cache_dir
+from .common import _default_cache_dir  # pylint: disable=wrong-import-position
 
 
 def load_nvd_cve_from_file(
     kb: VulnerabilityKB,
     json_path: Path,
     max_patterns: int = 1000,
-    verbose: bool = False,
+    _verbose: bool = False,
 ) -> int:
     """Load CVE definitions from NVD JSON feed.
 
@@ -34,7 +35,7 @@ def load_nvd_cve_from_file(
 
     cve_items = data.get("CVE_Items", [])
     for item in cve_items:
-        if max_patterns > 0 and count >= max_patterns:
+        if 0 < max_patterns <= count:
             break
 
         cve_data = item.get("cve", {})
@@ -142,7 +143,7 @@ def _clone_nvdcve_repo(cache_dir: Path, verbose: bool = False) -> Path | None:
             print(f"  Using cached repo at {repo_dir}")
         return repo_dir
 
-    print(f"Cloning olbat/nvdcve repository...")
+    print("Cloning olbat/nvdcve repository...")
     try:
         subprocess.run(
             [
@@ -165,7 +166,8 @@ def _clone_nvdcve_repo(cache_dir: Path, verbose: bool = False) -> Path | None:
         return None
 
 
-def load_nvdcve_from_clone(
+# pylint: disable=too-many-branches
+def load_nvdcve_from_clone(  # noqa: MC0001
     kb: VulnerabilityKB,
     clone_dir: Path | None = None,
     max_patterns: int = 500,
@@ -197,7 +199,7 @@ def load_nvdcve_from_clone(
         print(f"  Found {len(json_files)} CVE JSON files")
 
     for json_file in json_files:
-        if max_patterns > 0 and count >= max_patterns:
+        if 0 < max_patterns <= count:
             break
 
         try:
@@ -275,8 +277,8 @@ def load_nvdcve_from_clone(
 
 def load_nvd_cve_from_url(
     kb: VulnerabilityKB,
-    url: str = "",
-    cache_path: Path | None = None,
+    _url: str = "",
+    _cache_path: Path | None = None,
     max_patterns: int = 1000,
     verbose: bool = False,
 ) -> int:
@@ -302,12 +304,12 @@ def load_nvd_cve_from_url(
 
     count = 0
     for year in [2024, 2023]:
-        if max_patterns > 0 and count >= max_patterns:
+        if 0 < max_patterns <= count:
             break
         if verbose:
             print(f"  Loading CVEs from {year}...")
         for i in range(1, min(max_patterns // 2 + 1, 1000)):
-            if max_patterns > 0 and count >= max_patterns:
+            if 0 < max_patterns <= count:
                 break
             cve_id = f"CVE-{year}-{i:04d}"
             if _load_single_cve(kb, cve_id, verbose):

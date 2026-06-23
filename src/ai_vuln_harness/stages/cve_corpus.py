@@ -148,7 +148,8 @@ def format_cve_entries(entries: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def suppress_known_cves(
+# pylint: disable=too-many-branches,too-many-statements
+def suppress_known_cves(  # noqa: MC0001
     findings: list[dict],
     corpus: list[dict],
     threshold: float | None = None,
@@ -228,7 +229,7 @@ def suppress_known_cves(
             # Batch encode
             all_texts = finding_texts + corpus_texts
             index.encode_findings([{"desc": t} for t in all_texts])
-            all_embeddings = index._embeddings
+            all_embeddings = index._embeddings  # pylint: disable=protected-access
 
             if all_embeddings is None or len(all_embeddings) == 0:
                 novel.extend(f for _, f in need_semantic)
@@ -239,7 +240,6 @@ def suppress_known_cves(
             corpus_embs = all_embeddings[n_findings:]
 
             import faiss
-            import numpy as np
 
             # Layer 2: Two-pass — prefilter by class, then semantic
             # Build class → corpus indices mapping
@@ -262,7 +262,7 @@ def suppress_known_cves(
             k = min(len(corpus), 10)
             distances, indices = full_index.search(finding_np, k)
 
-            for i, (orig_idx, f) in enumerate(need_semantic):
+            for i, (_orig_idx, f) in enumerate(need_semantic):
                 f_class = (
                     str(f.get("class") or f.get("vuln_class") or "").lower().strip()
                 )
@@ -278,7 +278,7 @@ def suppress_known_cves(
                         continue
 
                     entry = corpus[cve_idx]
-                    entry_class = str(entry.get("class") or "").lower().strip()
+                    _entry_class = str(entry.get("class") or "").lower().strip()  # noqa: F841
                     is_same_class = cve_idx in same_class_indices
 
                     # Layer 3: adaptive threshold

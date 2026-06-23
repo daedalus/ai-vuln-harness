@@ -475,8 +475,8 @@ def process_findings(
 
 def _execute_poc_with_correction(
     poc: dict,
-    finding: dict,
-    snippet: dict,
+    _finding: dict,
+    _snippet: dict,
     output_dir: Path,
     sandbox_prefix: list[str] | None,
     test_correction: bool = True,

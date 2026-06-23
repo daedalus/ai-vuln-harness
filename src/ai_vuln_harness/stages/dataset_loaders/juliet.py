@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from ..rag_kb import VulnerabilityKB
 
 
@@ -48,9 +49,9 @@ def load_juliet_from_file(
         "CWE787": ("CWE-787", "Out-of-bounds Write", ["write", "buffer", "bounds"]),
     }
 
-    for dirpath, dirnames, filenames in directory.walk():
-        for filename in filenames:
-            if max_patterns > 0 and count >= max_patterns:
+    for dirpath, _dirnames, filenames in directory.walk():
+        for _filename in filenames:
+            if 0 < max_patterns <= count:
                 break
 
             parts = dirpath.name.split("_")
@@ -58,7 +59,7 @@ def load_juliet_from_file(
                 cwe_class = parts[1]
                 if cwe_class in cwe_pattern_map:
                     cwe_id, title, patterns = cwe_pattern_map[cwe_class]
-                    if cwe_id not in [p["cwe"] for p in kb._patterns]:
+                    if cwe_id not in [p["cwe"] for p in kb._patterns]:  # pylint: disable=protected-access
                         kb.add_pattern(
                             cwe=cwe_id,
                             title=title,
@@ -155,7 +156,7 @@ def load_juliet_representatives(kb: VulnerabilityKB) -> int:
 
     count = 0
     for p in juliet_patterns:
-        if p["cwe"] not in [existing["cwe"] for existing in kb._patterns]:
+        if p["cwe"] not in [existing["cwe"] for existing in kb._patterns]:  # pylint: disable=protected-access
             kb.add_pattern(**p)
             count += 1
 

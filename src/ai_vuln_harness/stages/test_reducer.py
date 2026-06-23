@@ -92,8 +92,7 @@ def _interestingness_python(
             )
             stderr = proc.stderr
             return (
-                proc.returncode != 0
-                and proc.returncode != -11  # SIGSEGV
+                proc.returncode not in (0, -11)  # SIGSEGV
                 or "Error" in stderr
                 or "Traceback" in stderr
             )
@@ -132,7 +131,7 @@ def _interestingness_generic(
 
 
 def build_interestingness_test(
-    poc_source: Path,
+    _poc_source: Path,
     lang: str,
     workdir: Path,
 ) -> Callable[[Path], bool] | None:
@@ -213,7 +212,7 @@ exec python3 "{test_py}" "$1"
 
 
 def _generate_interestingness_script(
-    interestingness: Callable[[Path], bool],
+    _interestingness: Callable[[Path], bool],
 ) -> str:
     """Serialize the interestingness test to a standalone Python script."""
     return """\

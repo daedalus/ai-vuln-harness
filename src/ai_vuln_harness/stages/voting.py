@@ -298,7 +298,8 @@ def _build_results(
     return promoted, suppressed
 
 
-def _semantic_merge(
+# pylint: disable=too-many-branches
+def _semantic_merge(  # noqa: MC0001
     outputs: list[list[dict]],
     similarity_threshold: float = 0.85,
 ) -> list[list[dict]]:
@@ -393,7 +394,7 @@ def _semantic_merge(
 
         # Annotate with semantic merge info
         best_f = dict(best_f)
-        origin_runs = sorted(set(ri for ri, _ in members))
+        origin_runs = sorted({ri for ri, _ in members})
         best_f["semantic_merge"] = True
         best_f["semantic_cluster_size"] = len(members)
         best_f["semantic_cluster_runs"] = origin_runs

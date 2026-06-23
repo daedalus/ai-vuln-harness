@@ -273,7 +273,7 @@ class FindingsDB:
         ).fetchall()
 
         results: list[tuple[float, dict]] = []
-        for row_id, fid, run_id, emb_blob in rows:
+        for row_id, _fid, _run_id, emb_blob in rows:
             if emb_blob:
                 stored_emb = np.frombuffer(emb_blob, dtype="float32")
                 sim = _cosine_similarity(query_np, stored_emb)
@@ -344,8 +344,8 @@ class FindingsDB:
             self._conn.close()
             self._conn = None
 
-    def __enter__(self):
+    def __enter__(self) -> FindingsDB:
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, *_args: object) -> None:
         self.close()

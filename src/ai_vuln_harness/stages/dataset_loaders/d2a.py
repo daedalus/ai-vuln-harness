@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from ..rag_kb import VulnerabilityKB
 
 
@@ -25,7 +26,7 @@ def load_d2a_from_file(
 
     items = data if isinstance(data, list) else data.get("data", [])
     for item in items:
-        if max_patterns > 0 and count >= max_patterns:
+        if 0 < max_patterns <= count:
             break
 
         commit_msg = item.get("commit_message", "") or item.get("message", "")
@@ -132,7 +133,7 @@ def _create_d2a_representatives(kb: VulnerabilityKB) -> int:
 
     count = 0
     for p in d2a_patterns:
-        if p["cwe"] not in [existing["cwe"] for existing in kb._patterns]:
+        if p["cwe"] not in [existing["cwe"] for existing in kb._patterns]:  # pylint: disable=protected-access
             kb.add_pattern(**p)
             count += 1
 
@@ -141,8 +142,8 @@ def _create_d2a_representatives(kb: VulnerabilityKB) -> int:
 
 def load_d2a_from_url(
     kb: VulnerabilityKB,
-    url: str = "",
-    cache_path: Path | None = None,
+    _url: str = "",
+    _cache_path: Path | None = None,
     max_patterns: int = 500,
 ) -> int:
     """Load D2A dataset from Hugging Face.
@@ -159,7 +160,7 @@ def load_d2a_from_url(
 
         count = 0
         for item in dataset:
-            if max_patterns > 0 and count >= max_patterns:
+            if 0 < max_patterns <= count:
                 break
 
             bug_url = item.get("bug_url", "")

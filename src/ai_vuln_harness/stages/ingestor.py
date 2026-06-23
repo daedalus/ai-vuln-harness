@@ -579,7 +579,7 @@ def _make_snippet_id(file: str, name: str, line: int) -> str:
 
 def _make_parser(config: dict) -> object | None:
     try:
-        from tree_sitter import Language, Parser
+        from tree_sitter import Language, Parser  # pylint: disable=import-error
     except ImportError:
         return None
     try:

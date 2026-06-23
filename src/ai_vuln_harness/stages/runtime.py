@@ -398,6 +398,7 @@ class JsonCache:
     _HMAC_KEY = b"ai-vuln-harness-cache-v1"
 
     def __init__(self, path: Path) -> None:
+        log = logging.getLogger("vuln-harness")
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self.path.exists():

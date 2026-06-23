@@ -92,6 +92,7 @@ strict = true
 ignore_missing_imports = true
 warn_return_any = true
 warn_unused_ignores = true
+explicit_package_bases = true
 disable_error_code = ["type-arg", "no-untyped-def", "no-untyped-call", "union-attr", "attr-defined", "index", "assignment", "arg-type", "no-any-return", "dict-item", "call-arg", "no-redef"]
 
 [tool.prospector]
@@ -101,11 +102,14 @@ test-warnings = false
 
 [tool.prospector.tools]
 ruff = true
-mypy = true
 pylint = true
 pyflakes = false
 pycodestyle = false
 mccabe = true
+
+[tool.prospector.tools.mypy]
+use-dmypy = false
+explicit-package-bases = true
 
 [tool.pylint.main]
 max-args = 25

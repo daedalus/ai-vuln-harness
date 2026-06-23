@@ -38,7 +38,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from .sandbox import SandboxManager
 from .stages.chains import synthesize_exploit_chains
@@ -1994,11 +1994,11 @@ def _post_process_findings(
     snippets: list[dict],
     all_tasks: list[dict],
     scope_notes: str | None,
-    cfg: dict,
+    _cfg: dict,
     state: StateDB,
-) -> dict:
+) -> tuple[dict, list[dict]]:
     """Run post-processing: exposure windows, feedback, report assembly."""
-    findings, exposure_metrics = annotate_exposure_windows(findings, repo)
+    findings, _exposure_metrics = annotate_exposure_windows(findings, repo)
 
     traced = [f for f in findings if f.get("trace_status") == "confirmed"]
     covered = {f for t in all_tasks for f in t.get("target_files", [])}
@@ -2014,7 +2014,7 @@ def _post_process_findings(
     return annotate_exposure_windows(findings, repo)[1], feedback_tasks
 
 
-def run(  # noqa: PLR0913
+def run(  # noqa: PLR0913  # pylint: disable=too-many-statements,too-many-arguments
     mode: str,
     repo: Path,
     *,
@@ -2056,16 +2056,22 @@ def run(  # noqa: PLR0913
     no_cache: bool = False,
     target_mode: bool = False,
     enforce_severity_gating: bool = False,
+    _similarity_threshold: float = 0.0,
     enable_output_review: bool = True,
     output_review_risk_level: str = "standard",
     zero_day: bool = False,
     no_gapfill: bool = False,
     no_chains: bool = False,
-    no_exposure: bool = False,
-    no_feedback: bool = False,
-    no_cve_corpus: bool = False,
+    _no_exposure: bool = False,
+    _no_feedback: bool = False,
+    _no_cve_corpus: bool = False,
     no_rag_kb: bool = False,
     no_evidence: bool = False,
+    _enable_findings_db: bool = False,
+    _persist_findings: bool = False,
+    _historical_context: bool = False,
+    _enable_fts_suppressions: bool = False,
+    _rag_catalog: str | None = None,
 ) -> dict:
     pkg_dir = Path(__file__).parent
     work_dir = Path.cwd()
@@ -2073,8 +2079,6 @@ def run(  # noqa: PLR0913
     # --zero-day expands into non-helpful features disabled
     # Gapfill, chains, and CVE corpus (as negatives) are KEPT
     if zero_day:
-        no_exposure = True
-        no_feedback = True
         no_rag_kb = True
         no_evidence = True
         no_fetch_cves = True
@@ -2224,7 +2228,7 @@ def run(  # noqa: PLR0913
     )
 
     if no_gapfill:
-        gapfill_tasks = []
+        gapfill_tasks: list[dict] = []
         all_tasks = recon_tasks
     else:
         validated, all_gaps, gapfill_tasks = _run_gapfill_loop(
@@ -2318,7 +2322,7 @@ def run(  # noqa: PLR0913
         rag_kb = VulnerabilityKB()
         _enrich_findings_with_cwe(findings, rag_kb)
 
-    exposure_metrics, feedback_tasks = _post_process_findings(
+    exposure_metrics, _feedback_tasks = _post_process_findings(
         findings,
         repo,
         snippets,
@@ -2571,6 +2575,23 @@ def run_all(  # noqa: PLR0913
     no_scan_git_cves: bool = False,
     no_cache: bool = False,
     target_mode: bool = False,
+    enforce_severity_gating: bool = False,
+    _similarity_threshold: float = 0.0,
+    enable_output_review: bool = True,
+    output_review_risk_level: str = "standard",
+    zero_day: bool = False,
+    no_gapfill: bool = False,
+    no_chains: bool = False,
+    _no_exposure: bool = False,
+    _no_feedback: bool = False,
+    _no_cve_corpus: bool = False,
+    no_rag_kb: bool = False,
+    no_evidence: bool = False,
+    _enable_findings_db: bool = False,
+    _persist_findings: bool = False,
+    _historical_context: bool = False,
+    _enable_fts_suppressions: bool = False,
+    _rag_catalog: str | None = None,
 ) -> dict:
     reports: list[dict] = []
     for mode in _SINGLE_MODES:
@@ -2617,6 +2638,23 @@ def run_all(  # noqa: PLR0913
             no_scan_git_cves=no_scan_git_cves,
             no_cache=no_cache,
             target_mode=target_mode,
+            enforce_severity_gating=enforce_severity_gating,
+            _similarity_threshold=_similarity_threshold,
+            enable_output_review=enable_output_review,
+            output_review_risk_level=output_review_risk_level,
+            zero_day=zero_day,
+            no_gapfill=no_gapfill,
+            no_chains=no_chains,
+            _no_exposure=_no_exposure,
+            _no_feedback=_no_feedback,
+            _no_cve_corpus=_no_cve_corpus,
+            no_rag_kb=no_rag_kb,
+            no_evidence=no_evidence,
+            _enable_findings_db=_enable_findings_db,
+            _persist_findings=_persist_findings,
+            _historical_context=_historical_context,
+            _enable_fts_suppressions=_enable_fts_suppressions,
+            _rag_catalog=_rag_catalog,
         )
         report["mode_run"] = mode
         reports.append(report)
@@ -2638,7 +2676,7 @@ def _check_deps() -> None:
             missing.append(pkg)
 
     try:
-        from tree_sitter_c import language as c_lang
+        from tree_sitter_c import language as c_lang  # pylint: disable=import-error
 
         c_lang()
     except Exception:
@@ -2650,7 +2688,7 @@ def _check_deps() -> None:
             f"Run: pip install tree-sitter tree-sitter-c tiktoken",
         )
 
-    import tree_sitter
+    import tree_sitter  # pylint: disable=import-error
 
     ts_ver = getattr(tree_sitter, "__version__", None)
     if ts_ver is None:
@@ -2763,27 +2801,26 @@ def _build_run_kwargs(args: argparse.Namespace, *, target_mode: bool = False) ->
         "sandbox_compile": args.sandbox_compile,
         "target_mode": target_mode,
         "enforce_severity_gating": args.enforce_severity_gating,
-        "enable_embeddings": args.enable_embeddings,
-        "similarity_threshold": args.similarity_threshold,
-        "enable_findings_db": args.enable_findings_db,
-        "persist_findings": args.persist_findings,
-        "historical_context": args.historical_context,
-        "enable_fts_suppressions": args.enable_fts_suppressions,
-        "rag_catalog": args.rag_catalog,
+        "_similarity_threshold": args.similarity_threshold,
+        "_enable_findings_db": args.enable_findings_db,
+        "_persist_findings": args.persist_findings,
+        "_historical_context": args.historical_context,
+        "_enable_fts_suppressions": args.enable_fts_suppressions,
+        "_rag_catalog": args.rag_catalog,
         "enable_output_review": not args.no_output_review,
         "output_review_risk_level": args.output_review_risk_level,
         "zero_day": args.zero_day,
         "no_gapfill": args.no_gapfill,
         "no_chains": args.no_chains,
-        "no_exposure": args.no_exposure,
-        "no_feedback": args.no_feedback,
-        "no_cve_corpus": args.no_cve_corpus,
+        "_no_exposure": args.no_exposure,
+        "_no_feedback": args.no_feedback,
+        "_no_cve_corpus": args.no_cve_corpus,
         "no_rag_kb": args.no_rag_kb,
         "no_evidence": args.no_evidence,
     }
 
 
-def main() -> None:
+def main() -> None:  # pylint: disable=too-many-statements
     parser = argparse.ArgumentParser(description="AI vuln harness v1 scaffold")
     parser.add_argument(
         "--mode",

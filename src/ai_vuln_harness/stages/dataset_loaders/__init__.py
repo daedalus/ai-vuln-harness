@@ -1,3 +1,4 @@
+# pylint: disable=wrong-import-position
 """Vulnerability Dataset Loaders for CWE/CVE Knowledge Base.
 
 Provides loaders for:
@@ -23,8 +24,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pathlib import Path
 
-from .common import _default_cache_dir, _default_db_dir
 from ..rag_kb import VulnerabilityKB
+from .common import _default_cache_dir, _default_db_dir
 from .cve_fixes import load_cvefixes_from_file
 from .d2a import load_d2a_from_file, load_d2a_from_url
 from .exploitdb import load_exploitdb_from_file, load_exploitdb_from_url
@@ -67,7 +68,8 @@ __all__ = [
 ]
 
 
-def load_all_public_datasets(
+# pylint: disable=too-many-branches,too-many-statements
+def load_all_public_datasets(  # noqa: MC0001
     kb: VulnerabilityKB,
     cache_dir: Path | None = None,
     max_per_dataset: int = 500,
@@ -95,8 +97,6 @@ def load_all_public_datasets(
     -------
     Dict with counts per dataset.
     """
-    from pathlib import Path as _Path
-
     if cache_dir is None:
         cache_dir = _default_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)

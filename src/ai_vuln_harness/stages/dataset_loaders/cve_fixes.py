@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from ..rag_kb import VulnerabilityKB
 
 
@@ -25,7 +26,7 @@ def load_cvefixes_from_file(
 
     items = data if isinstance(data, list) else data.get("data", [])
     for item in items:
-        if max_patterns > 0 and count >= max_patterns:
+        if 0 < max_patterns <= count:
             break
 
         cve_id = item.get("cve_id", "")

@@ -355,8 +355,8 @@ class SuppressionRegistry:
     def __contains__(self, finding: dict) -> bool:
         return self.is_suppressed(finding)
 
-    def __enter__(self):
+    def __enter__(self) -> SuppressionRegistry:
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, *_args: object) -> None:
         self.close()

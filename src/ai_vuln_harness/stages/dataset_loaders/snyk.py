@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import os
 import urllib.request
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from ..rag_kb import VulnerabilityKB
 
+# pylint: disable=wrong-import-position
 from .common import _default_cache_dir
 
 
@@ -29,7 +31,7 @@ def load_snyk_from_file(
 
     vulns = data if isinstance(data, list) else data.get("vulns", [])
     for vuln in vulns:
-        if max_patterns > 0 and count >= max_patterns:
+        if 0 < max_patterns <= count:
             break
 
         vuln_id = vuln.get("id", "")

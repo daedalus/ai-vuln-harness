@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import urllib.request
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from ..rag_kb import VulnerabilityKB
 
+# pylint: disable=wrong-import-position
 from .common import _default_cache_dir
 
 
@@ -25,7 +27,7 @@ def load_github_advisory_from_file(
     count = 0
     with open(json_path) as f:
         for line in f:
-            if max_patterns > 0 and count >= max_patterns:
+            if 0 < max_patterns <= count:
                 break
 
             line = line.strip()

@@ -11,9 +11,13 @@ Usage:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy as np
+
 try:
     import faiss
-    import numpy as np
     from sentence_transformers import SentenceTransformer
 
     _HAS_EMBEDDINGS = True

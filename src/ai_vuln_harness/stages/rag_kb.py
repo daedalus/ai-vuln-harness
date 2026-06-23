@@ -14,7 +14,6 @@ import json
 import logging
 import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +40,11 @@ _DEFAULT_CWE_PATTERNS: list[dict] = [
     {
         "cwe": "CWE-78",
         "title": "OS Command Injection",
-        "description": "The software constructs all or part of an OS command using externally-influenced input, but it does not neutralize or incorrectly neutralizes special elements.",
+        "description": (
+            "The software constructs all or part of an OS command using "
+            "externally-influenced input, but it does not neutralize or "
+            "incorrectly neutralizes special elements."
+        ),
         "patterns": [
             "os.system",
             "subprocess.call",
@@ -55,7 +58,11 @@ _DEFAULT_CWE_PATTERNS: list[dict] = [
     {
         "cwe": "CWE-89",
         "title": "SQL Injection",
-        "description": "The software constructs all or part of an SQL command using externally-influenced input, but it does not neutralize or incorrectly neutralizes special elements.",
+        "description": (
+            "The software constructs all or part of an SQL command using "
+            "externally-influenced input, but it does not neutralize or "
+            "incorrectly neutralizes special elements."
+        ),
         "patterns": [
             "execute(",
             "cursor.execute",
@@ -85,14 +92,23 @@ _DEFAULT_CWE_PATTERNS: list[dict] = [
     {
         "cwe": "CWE-22",
         "title": "Path Traversal",
-        "description": "The software uses external input to construct a pathname, but it does not properly neutralize special elements that could resolve to a location outside the restricted directory.",
+        "description": (
+            "The software uses external input to construct a pathname, but "
+            "it does not properly neutralize special elements that could "
+            "resolve to a location outside the restricted directory."
+        ),
         "patterns": ["open(", "os.path.join", "../", "..\\\\", "pathlib", "Path("],
         "language": "generic",
     },
     {
         "cwe": "CWE-918",
         "title": "Server-Side Request Forgery (SSRF)",
-        "description": "The web server receives a URL or similar request from an upstream component and retrieves the contents of this URL, but it does not sufficiently ensure that the request is being sent to the expected destination.",
+        "description": (
+            "The web server receives a URL or similar request from an "
+            "upstream component and retrieves the contents of this URL, "
+            "but it does not sufficiently ensure that the request is being "
+            "sent to the expected destination."
+        ),
         "patterns": [
             "requests.get",
             "requests.post",
@@ -156,14 +172,22 @@ _DEFAULT_CWE_PATTERNS: list[dict] = [
     {
         "cwe": "CWE-611",
         "title": "XML External Entity (XXE) Injection",
-        "description": "The software processes an XML document that can contain XML entities with URIs that resolve to documents outside of the intended sphere of control.",
+        "description": (
+            "The software processes an XML document that can contain XML "
+            "entities with URIs that resolve to documents outside of the "
+            "intended sphere of control."
+        ),
         "patterns": ["xml.etree", "lxml", "defusedxml", "ENTITY", "SYSTEM", "DTD"],
         "language": "python",
     },
     {
         "cwe": "CWE-434",
         "title": "Unrestricted Upload of File with Dangerous Type",
-        "description": "The software allows the attacker to upload or transfer files of dangerous types that can be automatically processed within the product's environment.",
+        "description": (
+            "The software allows the attacker to upload or transfer files "
+            "of dangerous types that can be automatically processed within "
+            "the product's environment."
+        ),
         "patterns": ["upload", "file", "multipart", "filename", "content_type"],
         "language": "generic",
     },
@@ -177,7 +201,11 @@ _DEFAULT_CWE_PATTERNS: list[dict] = [
     {
         "cwe": "CWE-190",
         "title": "Integer Overflow or Wraparound",
-        "description": "The software performs a calculation that can produce an integer overflow or wraparound, when the logic assumes that the resulting value will always be larger than the original value.",
+        "description": (
+            "The software performs a calculation that can produce an integer "
+            "overflow or wraparound, when the logic assumes that the "
+            "resulting value will always be larger than the original value."
+        ),
         "patterns": ["int(", "overflow", "wraparound", "MAX_INT", "limit"],
         "language": "generic",
     },
@@ -627,8 +655,8 @@ class VulnerabilityKB:
             self._conn.close()
             self._conn = None
 
-    def __enter__(self):
+    def __enter__(self) -> VulnerabilityKB:
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, *_args: object) -> None:
         self.close()

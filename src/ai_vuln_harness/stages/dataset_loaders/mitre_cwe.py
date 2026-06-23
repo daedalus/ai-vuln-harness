@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import urllib.request
-import xml.etree.ElementTree as ET
-from pathlib import Path
+import xml.etree.ElementTree as ET  # noqa: N817
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from ..rag_kb import VulnerabilityKB
 
-from .common import _default_cache_dir
+from .common import _default_cache_dir  # pylint: disable=wrong-import-position
 
 
-def load_mitre_cwe_from_file(
+# pylint: disable=too-many-branches
+def load_mitre_cwe_from_file(  # noqa: MC0001
     kb: VulnerabilityKB,
     xml_path: Path,
     max_patterns: int = 500,
@@ -35,7 +37,7 @@ def load_mitre_cwe_from_file(
 
     count = 0
     for weakness in weaknesses:
-        if max_patterns > 0 and count >= max_patterns:
+        if 0 < max_patterns <= count:
             break
 
         cwe_id = weakness.get("ID", "")

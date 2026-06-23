@@ -23,7 +23,11 @@ from pathlib import Path
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from ai_vuln_harness.stages.dataset_loaders import load_all_public_datasets, _default_db_dir
+# pylint: disable=wrong-import-position
+from ai_vuln_harness.stages.dataset_loaders import (
+    _default_db_dir,
+    load_all_public_datasets,
+)
 from ai_vuln_harness.stages.rag_kb import VulnerabilityKB
 
 
@@ -47,7 +51,16 @@ def main() -> None:
         "--datasets",
         nargs="+",
         default=None,
-        choices=["mitre_cwe", "nvd_cve", "exploitdb", "github", "osv", "snyk", "d2a", "juliet"],
+        choices=[
+            "mitre_cwe",
+            "nvd_cve",
+            "exploitdb",
+            "github",
+            "osv",
+            "snyk",
+            "d2a",
+            "juliet",
+        ],
         help="Specific datasets to load (default: all)",
     )
     parser.add_argument(
@@ -56,7 +69,8 @@ def main() -> None:
         help="Build and persist a FAISS index (requires faiss-cpu + sentence-transformers)",
     )
     parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         help="Enable verbose output",
     )
@@ -83,29 +97,30 @@ def main() -> None:
             kb,
             max_per_dataset=args.max_per_dataset,
             datasets=args.datasets,
-            verbose=args.verbose,
         )
 
-        print(f"\n{'='*50}")
+        print(f"\n{'=' * 50}")
         print("Summary:")
         for ds, count in summary.items():
             if ds != "total":
                 print(f"  {ds}: {count}")
         print(f"  {'total':<15}: {summary['total']}")
         print(f"  {'KB size':<15}: {kb.size}")
-        print(f"{'='*50}")
+        print(f"{'=' * 50}")
 
         # Force-build search index and persist FAISS if enabled
         if args.faiss:
             print("\nBuilding FAISS index...")
-            kb._build_faiss_index()
-            if kb._built_faiss:
+            kb._build_faiss_index()  # pylint: disable=protected-access
+            if kb._built_faiss:  # pylint: disable=protected-access
                 faiss_path = args.output.with_suffix(".faiss")
                 print(f"FAISS index saved to {faiss_path}")
             else:
-                print("WARNING: FAISS index build failed (check faiss-cpu + sentence-transformers)")
+                print(
+                    "WARNING: FAISS index build failed (check faiss-cpu + sentence-transformers)"
+                )
         else:
-            kb._build_tfidf_index()
+            kb._build_tfidf_index()  # pylint: disable=protected-access
 
         # Quick test search
         print("\nTest search: 'SQL injection'")
