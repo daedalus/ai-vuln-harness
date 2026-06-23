@@ -63,7 +63,8 @@ def load_github_advisory_from_file(
                 title=title,
                 description=description[:500] if description else summary[:500],
                 patterns=patterns[:5],
-                language="generic", persist=True,
+                language="generic",
+                persist=True,
             )
             count += 1
 
@@ -85,10 +86,13 @@ def load_github_advisory_from_url(
 
     if not cache_path.exists():
         print(f"Downloading GitHub Advisory Database from {url}...")
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "ai-vuln-harness/1.0 (https://github.com/daedalus/ai-vuln-harness)",
-            "Accept": "application/vnd.github+json",
-        })
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "ai-vuln-harness/1.0 (https://github.com/daedalus/ai-vuln-harness)",
+                "Accept": "application/vnd.github+json",
+            },
+        )
         try:
             with urllib.request.urlopen(req, timeout=120) as response:
                 data = response.read()

@@ -62,7 +62,8 @@ def load_snyk_from_file(
             title=title[:100],
             description=description[:500],
             patterns=patterns[:5],
-            language="generic", persist=True,
+            language="generic",
+            persist=True,
         )
         count += 1
 
@@ -92,10 +93,13 @@ def load_snyk_from_url(
             return 0
 
         print(f"Downloading Snyk vulnerabilities from {url}...")
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "ai-vuln-harness/1.0",
-            "Authorization": f"token {key}",
-        })
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "ai-vuln-harness/1.0",
+                "Authorization": f"token {key}",
+            },
+        )
         try:
             with urllib.request.urlopen(req, timeout=120) as response:
                 data = response.read()

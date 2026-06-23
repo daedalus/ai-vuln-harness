@@ -26,7 +26,7 @@ except ImportError:
     _HAS_NUMPY = False
 
 
-def _cosine_similarity(a: "np.ndarray", b: "np.ndarray") -> float:
+def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     """Compute cosine similarity between two vectors."""
     norm_a = float(np.linalg.norm(a))
     norm_b = float(np.linalg.norm(b))
@@ -119,7 +119,11 @@ class SuppressionRegistry:
         if self._conn:
             cur = self._conn.execute(
                 "INSERT OR REPLACE INTO suppressions (snippet_id, class, reason) VALUES (?, ?, ?)",
-                (finding.get("snippet_id", ""), finding.get("class", ""), reason or finding.get("validate_reason", "")),
+                (
+                    finding.get("snippet_id", ""),
+                    finding.get("class", ""),
+                    reason or finding.get("validate_reason", ""),
+                ),
             )
             rowid = cur.lastrowid
             self._conn.execute(
@@ -140,7 +144,11 @@ class SuppressionRegistry:
         for _key, entry in self._store.items():
             cur = self._conn.execute(
                 "INSERT INTO suppressions (snippet_id, class, reason) VALUES (?, ?, ?)",
-                (entry.get("snippet_id", ""), entry.get("class", ""), entry.get("reason", "")),
+                (
+                    entry.get("snippet_id", ""),
+                    entry.get("class", ""),
+                    entry.get("reason", ""),
+                ),
             )
             rowid = cur.lastrowid
             self._conn.execute(
@@ -159,7 +167,7 @@ class SuppressionRegistry:
         finding: dict,
         reason: str = "",
         description: str = "",
-        embedding: "np.ndarray | None" = None,
+        embedding: np.ndarray | None = None,
     ) -> None:
         """Add suppression with optional fuzzy matching data.
 
@@ -338,7 +346,9 @@ class SuppressionRegistry:
 
     def __len__(self) -> int:
         if self._conn:
-            count = self._conn.execute("SELECT COUNT(*) FROM suppressions").fetchone()[0]
+            count = self._conn.execute("SELECT COUNT(*) FROM suppressions").fetchone()[
+                0
+            ]
             return count
         return len(self._store)
 

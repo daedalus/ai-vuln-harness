@@ -59,7 +59,8 @@ def load_osv_from_file(
             title=title,
             description=details[:500] if details else summary[:500],
             patterns=patterns[:5],
-            language="generic", persist=True,
+            language="generic",
+            persist=True,
         )
         count += 1
 

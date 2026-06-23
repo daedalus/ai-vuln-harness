@@ -36,10 +36,14 @@ def _default_db_dir() -> Path:
 
 # --- MITRE CWE Loader ---
 
+
 def _cwe_severity_from_description(desc: str) -> str:
     """Extract severity hint from CWE description."""
     desc_lower = desc.lower()
-    if any(w in desc_lower for w in ["injection", "overflow", "bypass", "escalation", "execution"]):
+    if any(
+        w in desc_lower
+        for w in ["injection", "overflow", "bypass", "escalation", "execution"]
+    ):
         return "high"
     if any(w in desc_lower for w in ["weak", "missing", "improper", "incorrect"]):
         return "medium"
@@ -108,7 +112,11 @@ def load_mitre_cwe_from_file(
                     det_local = det.tag.split("}")[-1] if "}" in det.tag else det.tag
                     if det_local == "Detection_Method":
                         for method_elem in det:
-                            method_local = method_elem.tag.split("}")[-1] if "}" in method_elem.tag else method_elem.tag
+                            method_local = (
+                                method_elem.tag.split("}")[-1]
+                                if "}" in method_elem.tag
+                                else method_elem.tag
+                            )
                             if method_local == "Method" and method_elem.text:
                                 patterns.append(method_elem.text.strip())
 
@@ -163,6 +171,7 @@ def load_mitre_cwe_from_url(
 
 
 # --- NVD CVE Loader ---
+
 
 def load_nvd_cve_from_file(
     kb: VulnerabilityKB,
@@ -248,9 +257,12 @@ def load_nvd_cve_from_url(
 
     if not cache_path.exists():
         print(f"Downloading NVD CVE data from {url}...")
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "ai-vuln-harness/1.0 (https://github.com/daedalus/ai-vuln-harness)",
-        })
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "ai-vuln-harness/1.0 (https://github.com/daedalus/ai-vuln-harness)",
+            },
+        )
         try:
             with urllib.request.urlopen(req, timeout=120) as response:
                 data = response.read()
@@ -264,13 +276,16 @@ def load_nvd_cve_from_url(
             print(f"NVD CVE data cached to {cache_path}")
         except Exception as e:
             print(f"  Failed to download NVD CVE: {e}")
-            print(f"  Note: NVD may block automated requests. Try again later or use cached data.")
+            print(
+                "  Note: NVD may block automated requests. Try again later or use cached data."
+            )
             return 0
 
     return load_nvd_cve_from_file(kb, cache_path, max_patterns)
 
 
 # --- CVEFixes Loader ---
+
 
 def load_cvefixes_from_file(
     kb: VulnerabilityKB,
@@ -345,6 +360,7 @@ def load_cvefixes_from_file(
 
 
 # --- Exploit-DB Loader ---
+
 
 def load_exploitdb_from_file(
     kb: VulnerabilityKB,
@@ -434,9 +450,12 @@ def load_exploitdb_from_url(
 
     if not cache_path.exists():
         print(f"Downloading Exploit-DB CSV from {url}...")
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "ai-vuln-harness/1.0 (https://github.com/daedalus/ai-vuln-harness)",
-        })
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "ai-vuln-harness/1.0 (https://github.com/daedalus/ai-vuln-harness)",
+            },
+        )
         try:
             with urllib.request.urlopen(req, timeout=120) as response:
                 data = response.read()
@@ -451,6 +470,7 @@ def load_exploitdb_from_url(
 
 
 # --- GitHub Advisory Database Loader ---
+
 
 def load_github_advisory_from_file(
     kb: VulnerabilityKB,
@@ -529,10 +549,13 @@ def load_github_advisory_from_url(
 
     if not cache_path.exists():
         print(f"Downloading GitHub Advisory Database from {url}...")
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "ai-vuln-harness/1.0 (https://github.com/daedalus/ai-vuln-harness)",
-            "Accept": "application/vnd.github+json",
-        })
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "ai-vuln-harness/1.0 (https://github.com/daedalus/ai-vuln-harness)",
+                "Accept": "application/vnd.github+json",
+            },
+        )
         try:
             with urllib.request.urlopen(req, timeout=120) as response:
                 data = response.read()
@@ -550,6 +573,7 @@ def load_github_advisory_from_url(
 
 
 # --- VulDeePecker Loader ---
+
 
 def load_vuldeepecker_from_file(
     kb: VulnerabilityKB,
@@ -649,13 +673,48 @@ def load_vuldeepecker_from_url(
 def _create_vuldeepecker_representatives(kb: VulnerabilityKB) -> int:
     """Create representative VulDeePecker patterns without downloading."""
     vuldeepecker_patterns = [
-        {"cwe": "CWE-119", "title": "Buffer Overflow (General)", "description": "Restrictions on the length of a memory buffer are not enforced.", "patterns": ["buffer", "overflow", "length", "size"]},
-        {"cwe": "CWE-120", "title": "Buffer Overflow (Classic)", "description": "The product copies an input buffer to an output buffer without verifying that the size of the input buffer is less than the size of the output buffer.", "patterns": ["memcpy", "strcpy", "strcat", "sprintf", "gets"]},
-        {"cwe": "CWE-125", "title": "Out-of-bounds Read", "description": "The software reads data past the end, or before the beginning, of the intended buffer.", "patterns": ["buffer", "read", "index", "length"]},
-        {"cwe": "CWE-190", "title": "Integer Overflow", "description": "The software performs a calculation that can produce an integer overflow or wraparound.", "patterns": ["int", "overflow", "wraparound", "limit"]},
-        {"cwe": "CWE-416", "title": "Use After Free", "description": "The software references memory after it has been freed.", "patterns": ["free", "pointer", "dangling", "use"]},
-        {"cwe": "CWE-476", "title": "NULL Pointer Dereference", "description": "The software dereferences a pointer that it expects to be valid, but is NULL.", "patterns": ["null", "pointer", "nil", "dereference"]},
-        {"cwe": "CWE-787", "title": "Out-of-bounds Write", "description": "The software writes data past the end, or before the beginning, of the intended buffer.", "patterns": ["write", "buffer", "overflow", "bounds"]},
+        {
+            "cwe": "CWE-119",
+            "title": "Buffer Overflow (General)",
+            "description": "Restrictions on the length of a memory buffer are not enforced.",
+            "patterns": ["buffer", "overflow", "length", "size"],
+        },
+        {
+            "cwe": "CWE-120",
+            "title": "Buffer Overflow (Classic)",
+            "description": "The product copies an input buffer to an output buffer without verifying that the size of the input buffer is less than the size of the output buffer.",
+            "patterns": ["memcpy", "strcpy", "strcat", "sprintf", "gets"],
+        },
+        {
+            "cwe": "CWE-125",
+            "title": "Out-of-bounds Read",
+            "description": "The software reads data past the end, or before the beginning, of the intended buffer.",
+            "patterns": ["buffer", "read", "index", "length"],
+        },
+        {
+            "cwe": "CWE-190",
+            "title": "Integer Overflow",
+            "description": "The software performs a calculation that can produce an integer overflow or wraparound.",
+            "patterns": ["int", "overflow", "wraparound", "limit"],
+        },
+        {
+            "cwe": "CWE-416",
+            "title": "Use After Free",
+            "description": "The software references memory after it has been freed.",
+            "patterns": ["free", "pointer", "dangling", "use"],
+        },
+        {
+            "cwe": "CWE-476",
+            "title": "NULL Pointer Dereference",
+            "description": "The software dereferences a pointer that it expects to be valid, but is NULL.",
+            "patterns": ["null", "pointer", "nil", "dereference"],
+        },
+        {
+            "cwe": "CWE-787",
+            "title": "Out-of-bounds Write",
+            "description": "The software writes data past the end, or before the beginning, of the intended buffer.",
+            "patterns": ["write", "buffer", "overflow", "bounds"],
+        },
     ]
 
     count = 0
@@ -668,6 +727,7 @@ def _create_vuldeepecker_representatives(kb: VulnerabilityKB) -> int:
 
 
 # --- OSV.dev Loader ---
+
 
 def load_osv_from_file(
     kb: VulnerabilityKB,
@@ -744,7 +804,7 @@ def load_osv_from_url(
         cache_path = _default_cache_dir() / "osv_vulns.json"
 
     if not cache_path.exists():
-        print(f"Downloading OSV.dev vulnerabilities...")
+        print("Downloading OSV.dev vulnerabilities...")
         # Use OSV API endpoint for querying vulnerabilities
         api_url = "https://api.osv.dev/v1/query"
         query_data = json.dumps({}).encode()
@@ -770,6 +830,7 @@ def load_osv_from_url(
 
 
 # --- Snyk Vulnerability Database Loader ---
+
 
 def load_snyk_from_file(
     kb: VulnerabilityKB,
@@ -859,10 +920,13 @@ def load_snyk_from_url(
             return 0
 
         print(f"Downloading Snyk vulnerabilities from {url}...")
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "ai-vuln-harness/1.0",
-            "Authorization": f"token {key}",
-        })
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "ai-vuln-harness/1.0",
+                "Authorization": f"token {key}",
+            },
+        )
         try:
             with urllib.request.urlopen(req, timeout=120) as response:
                 data = response.read()
@@ -877,6 +941,7 @@ def load_snyk_from_url(
 
 
 # --- D2A (DeepDive) Loader ---
+
 
 def load_d2a_from_file(
     kb: VulnerabilityKB,
@@ -964,9 +1029,12 @@ def load_d2a_from_url(
 
     if not cache_path.exists():
         print(f"Downloading D2A dataset from {url}...")
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "ai-vuln-harness/1.0 (https://github.com/daedalus/ai-vuln-harness)",
-        })
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "ai-vuln-harness/1.0 (https://github.com/daedalus/ai-vuln-harness)",
+            },
+        )
         try:
             with urllib.request.urlopen(req, timeout=120) as response:
                 data = response.read()
@@ -981,6 +1049,7 @@ def load_d2a_from_url(
 
 
 # --- Juliet Test Suite Loader ---
+
 
 def load_juliet_from_file(
     kb: VulnerabilityKB,
@@ -1001,135 +1070,499 @@ def load_juliet_from_file(
     # Juliet test cases are organized by CWE number
     cwe_pattern_map = {
         "CWE114": ("CWE-114", "Process Control", ["process", "control", "injection"]),
-        "CWE117": ("CWE-117", "Improper Output Neutralization for Logs", ["log", "injection"]),
+        "CWE117": (
+            "CWE-117",
+            "Improper Output Neutralization for Logs",
+            ["log", "injection"],
+        ),
         "CWE119": ("CWE-119", "Buffer Overflow", ["buffer", "overflow", "length"]),
-        "CWE120": ("CWE-120", "Buffer Overflow (Classic)", ["memcpy", "strcpy", "strcat"]),
-        "CWE121": ("CWE-121", "Stack-based Buffer Overflow", ["stack", "buffer", "overflow"]),
-        "CWE122": ("CWE-122", "Heap-based Buffer Overflow", ["heap", "buffer", "overflow"]),
+        "CWE120": (
+            "CWE-120",
+            "Buffer Overflow (Classic)",
+            ["memcpy", "strcpy", "strcat"],
+        ),
+        "CWE121": (
+            "CWE-121",
+            "Stack-based Buffer Overflow",
+            ["stack", "buffer", "overflow"],
+        ),
+        "CWE122": (
+            "CWE-122",
+            "Heap-based Buffer Overflow",
+            ["heap", "buffer", "overflow"],
+        ),
         "CWE124": ("CWE-124", "Buffer Underwrite", ["underwrite", "buffer"]),
         "CWE125": ("CWE-125", "Out-of-bounds Read", ["read", "buffer", "bounds"]),
         "CWE126": ("CWE-126", "Buffer Over-read", ["over-read", "buffer"]),
         "CWE127": ("CWE-127", "Out-of-bounds Write", ["write", "buffer", "bounds"]),
-        "CWE131": ("CWE-131", "Incorrect Calculation of Buffer Size", ["buffer", "size", "calculation"]),
-        "CWE134": ("CWE-134", "Format String Vulnerability", ["format", "string", "printf"]),
-        "CWE176": ("CWE-176", "Improper Handling of Unicode Encoding", ["unicode", "encoding"]),
-        "CWE190": ("CWE-190", "Integer Overflow", ["integer", "overflow", "wraparound"]),
+        "CWE131": (
+            "CWE-131",
+            "Incorrect Calculation of Buffer Size",
+            ["buffer", "size", "calculation"],
+        ),
+        "CWE134": (
+            "CWE-134",
+            "Format String Vulnerability",
+            ["format", "string", "printf"],
+        ),
+        "CWE176": (
+            "CWE-176",
+            "Improper Handling of Unicode Encoding",
+            ["unicode", "encoding"],
+        ),
+        "CWE190": (
+            "CWE-190",
+            "Integer Overflow",
+            ["integer", "overflow", "wraparound"],
+        ),
         "CWE191": ("CWE-191", "Integer Underflow", ["integer", "underflow"]),
         "CWE194": ("CWE-194", "Unexpected Sign Extension", ["sign", "extension"]),
-        "CWE195": ("CWE-195", "Signed to Unsigned Conversion Error", ["signed", "unsigned", "conversion"]),
-        "CWE196": ("CWE-196", "Unsigned to Signed Conversion Error", ["unsigned", "signed", "conversion"]),
+        "CWE195": (
+            "CWE-195",
+            "Signed to Unsigned Conversion Error",
+            ["signed", "unsigned", "conversion"],
+        ),
+        "CWE196": (
+            "CWE-196",
+            "Unsigned to Signed Conversion Error",
+            ["unsigned", "signed", "conversion"],
+        ),
         "CWE197": ("CWE-197", "Numeric Truncation Error", ["truncation", "numeric"]),
-        "CWE319": ("CWE-319", "Plaintext Transmission of Sensitive Information", ["plaintext", "transmission"]),
+        "CWE319": (
+            "CWE-319",
+            "Plaintext Transmission of Sensitive Information",
+            ["plaintext", "transmission"],
+        ),
         "CWE327": ("CWE-327", "Use of Broken Crypto", ["broken", "crypto", "weak"]),
         "CWE369": ("CWE-369", "Divide By Zero", ["divide", "zero", "division"]),
-        "CWE377": ("CWE-377", "Insecure Temporary File", ["tempfile", "temporary", "insecure"]),
-        "CWE390": ("CWE-390", "Uncontrolled Resource Consumption", ["resource", "consumption", "dos"]),
-        "CWE396": ("CWE-396", "Catch Generic Exception", ["exception", "catch", "generic"]),
-        "CWE400": ("CWE-400", "Uncontrolled Resource Consumption", ["resource", "consumption"]),
+        "CWE377": (
+            "CWE-377",
+            "Insecure Temporary File",
+            ["tempfile", "temporary", "insecure"],
+        ),
+        "CWE390": (
+            "CWE-390",
+            "Uncontrolled Resource Consumption",
+            ["resource", "consumption", "dos"],
+        ),
+        "CWE396": (
+            "CWE-396",
+            "Catch Generic Exception",
+            ["exception", "catch", "generic"],
+        ),
+        "CWE400": (
+            "CWE-400",
+            "Uncontrolled Resource Consumption",
+            ["resource", "consumption"],
+        ),
         "CWE401": ("CWE-401", "Memory Leak", ["memory", "leak"]),
-        "CWE404": ("CWE-404", "Improper Resource Shutdown", ["resource", "shutdown", "close"]),
+        "CWE404": (
+            "CWE-404",
+            "Improper Resource Shutdown",
+            ["resource", "shutdown", "close"],
+        ),
         "CWE415": ("CWE-415", "Double Free", ["double", "free"]),
         "CWE416": ("CWE-416", "Use After Free", ["use", "after", "free", "dangling"]),
         "CWE426": ("CWE-426", "Untrusted Search Path", ["search", "path", "untrusted"]),
-        "CWE427": ("CWE-427", "Uncontrolled Search Path Element", ["search", "path", "uncontrolled"]),
-        "CWE434": ("CWE-434", "Unrestricted File Upload", ["file", "upload", "unrestricted"]),
-        "CWE457": ("CWE-457", "Use of Uninitialized Variable", ["uninitialized", "variable"]),
-        "CWE460": ("CWE-460", "Improper Cleanup on Thrown Exception", ["cleanup", "exception"]),
-        "CWE462": ("CWE-462", "Duplicate Key in Associative List", ["duplicate", "key"]),
-        "CWE464": ("CWE-464", "Addition of Data Structure Sentinel", ["sentinel", "data"]),
-        "CWE467": ("CWE-467", "Use of sizeof() on a Pointer Type", ["sizeof", "pointer"]),
+        "CWE427": (
+            "CWE-427",
+            "Uncontrolled Search Path Element",
+            ["search", "path", "uncontrolled"],
+        ),
+        "CWE434": (
+            "CWE-434",
+            "Unrestricted File Upload",
+            ["file", "upload", "unrestricted"],
+        ),
+        "CWE457": (
+            "CWE-457",
+            "Use of Uninitialized Variable",
+            ["uninitialized", "variable"],
+        ),
+        "CWE460": (
+            "CWE-460",
+            "Improper Cleanup on Thrown Exception",
+            ["cleanup", "exception"],
+        ),
+        "CWE462": (
+            "CWE-462",
+            "Duplicate Key in Associative List",
+            ["duplicate", "key"],
+        ),
+        "CWE464": (
+            "CWE-464",
+            "Addition of Data Structure Sentinel",
+            ["sentinel", "data"],
+        ),
+        "CWE467": (
+            "CWE-467",
+            "Use of sizeof() on a Pointer Type",
+            ["sizeof", "pointer"],
+        ),
         "CWE468": ("CWE-468", "Divide by Zero", ["divide", "zero"]),
         "CWE469": ("CWE-469", "Use of Dead Code", ["dead", "code"]),
-        "CWE470": ("CWE-470", "Use of Externally-Controlled Input to Select Classes or Code", ["externally", "controlled", "input"]),
-        "CWE471": ("CWE-471", "Modification of Assumed-Immutable Data", ["immutable", "data", "modification"]),
-        "CWE472": ("CWE-472", "Passing User-Controlled URL to Internet-Bound Call", ["url", "internet", "user"]),
-        "CWE475": ("CWE-475", "Initialization with an Externally-Controlled Input", ["initialization", "externally"]),
-        "CWE476": ("CWE-476", "NULL Pointer Dereference", ["null", "pointer", "dereference"]),
-        "CWE478": ("CWE-478", "Missing Default Case in Switch Statement", ["switch", "default", "case"]),
-        "CWE479": ("CWE-479", "Unsafe Function Pointer Call", ["function", "pointer", "unsafe"]),
+        "CWE470": (
+            "CWE-470",
+            "Use of Externally-Controlled Input to Select Classes or Code",
+            ["externally", "controlled", "input"],
+        ),
+        "CWE471": (
+            "CWE-471",
+            "Modification of Assumed-Immutable Data",
+            ["immutable", "data", "modification"],
+        ),
+        "CWE472": (
+            "CWE-472",
+            "Passing User-Controlled URL to Internet-Bound Call",
+            ["url", "internet", "user"],
+        ),
+        "CWE475": (
+            "CWE-475",
+            "Initialization with an Externally-Controlled Input",
+            ["initialization", "externally"],
+        ),
+        "CWE476": (
+            "CWE-476",
+            "NULL Pointer Dereference",
+            ["null", "pointer", "dereference"],
+        ),
+        "CWE478": (
+            "CWE-478",
+            "Missing Default Case in Switch Statement",
+            ["switch", "default", "case"],
+        ),
+        "CWE479": (
+            "CWE-479",
+            "Unsafe Function Pointer Call",
+            ["function", "pointer", "unsafe"],
+        ),
         "CWE480": ("CWE-480", "Use of Incorrect Operator", ["operator", "incorrect"]),
         "CWE481": ("CWE-481", "Assigning instead of Comparing", ["assign", "compare"]),
         "CWE482": ("CWE-482", "Comparing instead of Assigning", ["compare", "assign"]),
-        "CWE483": ("CWE-483", "Incorrect Block Delimitation", ["block", "delimitation"]),
+        "CWE483": (
+            "CWE-483",
+            "Incorrect Block Delimitation",
+            ["block", "delimitation"],
+        ),
         "CWE484": ("CWE-484", "Missing Break", ["break", "missing"]),
         "CWE561": ("CWE-561", "Dead Code", ["dead", "code"]),
-        "CWE562": ("CWE-562", "Insertion of Sensitive Information into Externally-Accessible File", ["sensitive", "information", "file"]),
+        "CWE562": (
+            "CWE-562",
+            "Insertion of Sensitive Information into Externally-Accessible File",
+            ["sensitive", "information", "file"],
+        ),
         "CWE570": ("CWE-570", "Expression is Always False", ["expression", "false"]),
         "CWE571": ("CWE-571", "Expression is Always True", ["expression", "true"]),
-        "CWE587": ("CWE-587", "Assignment of a Fixed Address to a Pointer", ["assignment", "pointer", "fixed"]),
-        "CWE588": ("CWE-588", "Access of Memory Location After End of Buffer", ["memory", "buffer", "end"]),
+        "CWE587": (
+            "CWE-587",
+            "Assignment of a Fixed Address to a Pointer",
+            ["assignment", "pointer", "fixed"],
+        ),
+        "CWE588": (
+            "CWE-588",
+            "Access of Memory Location After End of Buffer",
+            ["memory", "buffer", "end"],
+        ),
         "CWE590": ("CWE-590", "Free of Memory not on the Heap", ["free", "heap"]),
         "CWE591": ("CWE-591", "Stack Buffer Overread", ["stack", "overread"]),
-        "CWE592": ("CWE-592", "Buffer Copy without Checking Size of Input", ["buffer", "copy", "size"]),
+        "CWE592": (
+            "CWE-592",
+            "Buffer Copy without Checking Size of Input",
+            ["buffer", "copy", "size"],
+        ),
         "CWE593": ("CWE-593", "Authentication Bypass", ["authentication", "bypass"]),
-        "CWE595": ("CWE-595", "Comparison using Wrong Variables", ["comparison", "wrong"]),
+        "CWE595": (
+            "CWE-595",
+            "Comparison using Wrong Variables",
+            ["comparison", "wrong"],
+        ),
         "CWE596": ("CWE-596", "Incorrect Comparison", ["incorrect", "comparison"]),
-        "CWE597": ("CWE-597", "Use of Wrong Operator in String Comparison", ["operator", "string", "comparison"]),
-        "CWE598": ("CWE-598", "Use of GET Request Method With Sensitive Query Strings", ["get", "request", "query"]),
-        "CWE600": ("CWE-600", "Unhandled Exception in Servlet", ["exception", "servlet"]),
+        "CWE597": (
+            "CWE-597",
+            "Use of Wrong Operator in String Comparison",
+            ["operator", "string", "comparison"],
+        ),
+        "CWE598": (
+            "CWE-598",
+            "Use of GET Request Method With Sensitive Query Strings",
+            ["get", "request", "query"],
+        ),
+        "CWE600": (
+            "CWE-600",
+            "Unhandled Exception in Servlet",
+            ["exception", "servlet"],
+        ),
         "CWE601": ("CWE-601", "Open Redirect", ["open", "redirect"]),
-        "CWE605": ("CWE-605", "Multiple Binds to the Same Network Port", ["bind", "port", "multiple"]),
-        "CWE606": ("CWE-606", "Missing Input Validation", ["missing", "input", "validation"]),
-        "CWE607": ("CWE-607", "Public Static Field Not Final", ["static", "field", "final"]),
+        "CWE605": (
+            "CWE-605",
+            "Multiple Binds to the Same Network Port",
+            ["bind", "port", "multiple"],
+        ),
+        "CWE606": (
+            "CWE-606",
+            "Missing Input Validation",
+            ["missing", "input", "validation"],
+        ),
+        "CWE607": (
+            "CWE-607",
+            "Public Static Field Not Final",
+            ["static", "field", "final"],
+        ),
         "CWE609": ("CWE-609", "Use of Hard-Coded Password", ["password", "hardcoded"]),
-        "CWE610": ("CWE-610", "Reliance on a Single Variable in a Concurrent Environment", ["concurrent", "variable"]),
-        "CWE611": ("CWE-611", "Improper Restriction of XML External Entity Reference", ["xml", "external", "entity"]),
-        "CWE615": ("CWE-615", "Inclusion of Sensitive Information in Source Code Comments", ["sensitive", "comments"]),
+        "CWE610": (
+            "CWE-610",
+            "Reliance on a Single Variable in a Concurrent Environment",
+            ["concurrent", "variable"],
+        ),
+        "CWE611": (
+            "CWE-611",
+            "Improper Restriction of XML External Entity Reference",
+            ["xml", "external", "entity"],
+        ),
+        "CWE615": (
+            "CWE-615",
+            "Inclusion of Sensitive Information in Source Code Comments",
+            ["sensitive", "comments"],
+        ),
         "CWE617": ("CWE-617", "Reachable Assertion", ["assertion", "reachable"]),
-        "CWE620": ("CWE-620", "Unverified Password Change", ["password", "change", "unverified"]),
-        "CWE621": ("CWE-621", "Variable Length Array for Sensitive Information", ["array", "variable", "length"]),
-        "CWE628": ("CWE-628", "Function Call with Incorrectly Specified Arguments", ["function", "call", "arguments"]),
-        "CWE665": ("CWE-665", "Improper Initialization", ["initialization", "improper"]),
-        "CWE666": ("CWE-666", "Operation on a Resource after Expiration or Release", ["resource", "expiration"]),
+        "CWE620": (
+            "CWE-620",
+            "Unverified Password Change",
+            ["password", "change", "unverified"],
+        ),
+        "CWE621": (
+            "CWE-621",
+            "Variable Length Array for Sensitive Information",
+            ["array", "variable", "length"],
+        ),
+        "CWE628": (
+            "CWE-628",
+            "Function Call with Incorrectly Specified Arguments",
+            ["function", "call", "arguments"],
+        ),
+        "CWE665": (
+            "CWE-665",
+            "Improper Initialization",
+            ["initialization", "improper"],
+        ),
+        "CWE666": (
+            "CWE-666",
+            "Operation on a Resource after Expiration or Release",
+            ["resource", "expiration"],
+        ),
         "CWE667": ("CWE-667", "Improper Locking", ["locking", "improper"]),
         "CWE670": ("CWE-670", "Always-Included Control Flow Code", ["control", "flow"]),
-        "CWE672": ("CWE-672", "Operation on Resource after Expiration", ["resource", "expiration"]),
+        "CWE672": (
+            "CWE-672",
+            "Operation on Resource after Expiration",
+            ["resource", "expiration"],
+        ),
         "CWE674": ("CWE-674", "Uncontrolled Recursion", ["recursion", "uncontrolled"]),
-        "CWE675": ("CWE-675", "Missing Release of Resource after Effective Lifetime", ["resource", "release"]),
-        "CWE676": ("CWE-676", "Use of Potentially Dangerous Function", ["dangerous", "function"]),
-        "CWE680": ("CWE-680", "Integer Overflow when Computing Memory Allocation Size", ["integer", "overflow", "memory"]),
-        "CWE681": ("CWE-681", "Incorrect Conversion between Numeric Types", ["numeric", "conversion"]),
+        "CWE675": (
+            "CWE-675",
+            "Missing Release of Resource after Effective Lifetime",
+            ["resource", "release"],
+        ),
+        "CWE676": (
+            "CWE-676",
+            "Use of Potentially Dangerous Function",
+            ["dangerous", "function"],
+        ),
+        "CWE680": (
+            "CWE-680",
+            "Integer Overflow when Computing Memory Allocation Size",
+            ["integer", "overflow", "memory"],
+        ),
+        "CWE681": (
+            "CWE-681",
+            "Incorrect Conversion between Numeric Types",
+            ["numeric", "conversion"],
+        ),
         "CWE682": ("CWE-682", "Incorrect Calculation", ["calculation", "incorrect"]),
-        "CWE685": ("CWE-685", "Function Call With Incorrect Number of Arguments", ["function", "call", "arguments"]),
-        "CWE686": ("CWE-686", "Function Call With Incorrect Argument Type", ["function", "call", "type"]),
-        "CWE687": ("CWE-687", "Function Call With Incorrectly Specified Arguments", ["function", "call", "specified"]),
-        "CWE688": ("CWE-688", "Function Call With Incorrect Variable or Reference as Argument", ["function", "call", "variable"]),
-        "CWE704": ("CWE-704", "Incorrect Type Conversion or Cast", ["type", "conversion", "cast"]),
-        "CWE758": ("CWE-758", "Reliance on Undefined Behavior", ["undefined", "behavior"]),
-        "CWE761": ("CWE-761", "Free of Pointer not at Start of Buffer", ["free", "pointer", "buffer"]),
-        "CWE762": ("CWE-762", "Mismatched Memory Management Routines", ["memory", "management", "mismatch"]),
-        "CWE763": ("CWE-763", "Release of Invalid Pointer or Reference", ["pointer", "release", "invalid"]),
-        "CWE768": ("CWE-768", "Short-Circuit Evaluation with Side Effects", ["short-circuit", "side", "effects"]),
-        "CWE772": ("CWE-772", "Missing Release of Resource after Effective Lifetime", ["resource", "release"]),
-        "CWE773": ("CWE-773", "Missing Reference to Active File Descriptor or Handle", ["file", "descriptor"]),
-        "CWE775": ("CWE-775", "Missing Release of File Descriptor or Handle after Effective Lifetime", ["file", "descriptor", "release"]),
-        "CWE776": ("CWE-776", "Improper Restriction of Recursive Entity References in DTDs", ["xml", "dtd", "recursive"]),
-        "CWE783": ("CWE-783", "Operator Precedence Logic Error", ["operator", "precedence"]),
-        "CWE784": ("CWE-784", "Reliance on Cookies without Validation and Integrity Checking", ["cookie", "validation"]),
-        "CWE785": ("CWE-785", "Use of Path Manipulation Function without a Neutralized Special Elements", ["path", "manipulation"]),
-        "CWE786": ("CWE-786", "Access of Memory Location at the End of the Buffer", ["memory", "buffer", "end"]),
+        "CWE685": (
+            "CWE-685",
+            "Function Call With Incorrect Number of Arguments",
+            ["function", "call", "arguments"],
+        ),
+        "CWE686": (
+            "CWE-686",
+            "Function Call With Incorrect Argument Type",
+            ["function", "call", "type"],
+        ),
+        "CWE687": (
+            "CWE-687",
+            "Function Call With Incorrectly Specified Arguments",
+            ["function", "call", "specified"],
+        ),
+        "CWE688": (
+            "CWE-688",
+            "Function Call With Incorrect Variable or Reference as Argument",
+            ["function", "call", "variable"],
+        ),
+        "CWE704": (
+            "CWE-704",
+            "Incorrect Type Conversion or Cast",
+            ["type", "conversion", "cast"],
+        ),
+        "CWE758": (
+            "CWE-758",
+            "Reliance on Undefined Behavior",
+            ["undefined", "behavior"],
+        ),
+        "CWE761": (
+            "CWE-761",
+            "Free of Pointer not at Start of Buffer",
+            ["free", "pointer", "buffer"],
+        ),
+        "CWE762": (
+            "CWE-762",
+            "Mismatched Memory Management Routines",
+            ["memory", "management", "mismatch"],
+        ),
+        "CWE763": (
+            "CWE-763",
+            "Release of Invalid Pointer or Reference",
+            ["pointer", "release", "invalid"],
+        ),
+        "CWE768": (
+            "CWE-768",
+            "Short-Circuit Evaluation with Side Effects",
+            ["short-circuit", "side", "effects"],
+        ),
+        "CWE772": (
+            "CWE-772",
+            "Missing Release of Resource after Effective Lifetime",
+            ["resource", "release"],
+        ),
+        "CWE773": (
+            "CWE-773",
+            "Missing Reference to Active File Descriptor or Handle",
+            ["file", "descriptor"],
+        ),
+        "CWE775": (
+            "CWE-775",
+            "Missing Release of File Descriptor or Handle after Effective Lifetime",
+            ["file", "descriptor", "release"],
+        ),
+        "CWE776": (
+            "CWE-776",
+            "Improper Restriction of Recursive Entity References in DTDs",
+            ["xml", "dtd", "recursive"],
+        ),
+        "CWE783": (
+            "CWE-783",
+            "Operator Precedence Logic Error",
+            ["operator", "precedence"],
+        ),
+        "CWE784": (
+            "CWE-784",
+            "Reliance on Cookies without Validation and Integrity Checking",
+            ["cookie", "validation"],
+        ),
+        "CWE785": (
+            "CWE-785",
+            "Use of Path Manipulation Function without a Neutralized Special Elements",
+            ["path", "manipulation"],
+        ),
+        "CWE786": (
+            "CWE-786",
+            "Access of Memory Location at the End of the Buffer",
+            ["memory", "buffer", "end"],
+        ),
         "CWE787": ("CWE-787", "Out-of-bounds Write", ["out-of-bounds", "write"]),
-        "CWE788": ("CWE-788", "Access of Memory Location After End of Buffer", ["memory", "buffer", "end"]),
-        "CWE789": ("CWE-789", "Memory Allocation with Excessive Size Value", ["memory", "allocation", "excessive"]),
-        "CWE798": ("CWE-798", "Use of Hard-coded Credentials", ["hardcoded", "credentials", "password"]),
-        "CWE805": ("CWE-805", "Buffer Access with Incorrect Length Value", ["buffer", "access", "length"]),
-        "CWE806": ("CWE-806", "Buffer Access Using Index after End or Before Beginning of Buffer", ["buffer", "index", "bounds"]),
-        "CWE807": ("CWE-807", "Reliance on Untrusted Input in a Security Decision", ["untrusted", "input", "security"]),
-        "CWE820": ("CWE-820", "Missing Synchronization", ["missing", "synchronization"]),
-        "CWE821": ("CWE-821", "Incorrect Synchronization", ["incorrect", "synchronization"]),
-        "CWE822": ("CWE-822", "Untrusted Pointer Dereference", ["pointer", "untrusted"]),
-        "CWE823": ("CWE-823", "Use of out-of-range Pointer Offset", ["pointer", "offset", "range"]),
-        "CWE824": ("CWE-824", "Access of Uninitialized Pointer", ["pointer", "uninitialized"]),
+        "CWE788": (
+            "CWE-788",
+            "Access of Memory Location After End of Buffer",
+            ["memory", "buffer", "end"],
+        ),
+        "CWE789": (
+            "CWE-789",
+            "Memory Allocation with Excessive Size Value",
+            ["memory", "allocation", "excessive"],
+        ),
+        "CWE798": (
+            "CWE-798",
+            "Use of Hard-coded Credentials",
+            ["hardcoded", "credentials", "password"],
+        ),
+        "CWE805": (
+            "CWE-805",
+            "Buffer Access with Incorrect Length Value",
+            ["buffer", "access", "length"],
+        ),
+        "CWE806": (
+            "CWE-806",
+            "Buffer Access Using Index after End or Before Beginning of Buffer",
+            ["buffer", "index", "bounds"],
+        ),
+        "CWE807": (
+            "CWE-807",
+            "Reliance on Untrusted Input in a Security Decision",
+            ["untrusted", "input", "security"],
+        ),
+        "CWE820": (
+            "CWE-820",
+            "Missing Synchronization",
+            ["missing", "synchronization"],
+        ),
+        "CWE821": (
+            "CWE-821",
+            "Incorrect Synchronization",
+            ["incorrect", "synchronization"],
+        ),
+        "CWE822": (
+            "CWE-822",
+            "Untrusted Pointer Dereference",
+            ["pointer", "untrusted"],
+        ),
+        "CWE823": (
+            "CWE-823",
+            "Use of out-of-range Pointer Offset",
+            ["pointer", "offset", "range"],
+        ),
+        "CWE824": (
+            "CWE-824",
+            "Access of Uninitialized Pointer",
+            ["pointer", "uninitialized"],
+        ),
         "CWE825": ("CWE-825", "Expired Pointer Dereference", ["pointer", "expired"]),
-        "CWE839": ("CWE-839", "Improper Input Validation During Array Indexing", ["array", "index", "validation"]),
-        "CWE841": ("CWE-841", "Improper Enforcement of Behavioral Workflow", ["workflow", "enforcement"]),
+        "CWE839": (
+            "CWE-839",
+            "Improper Input Validation During Array Indexing",
+            ["array", "index", "validation"],
+        ),
+        "CWE841": (
+            "CWE-841",
+            "Improper Enforcement of Behavioral Workflow",
+            ["workflow", "enforcement"],
+        ),
         "CWE843": ("CWE-843", "Type Confusion", ["type", "confusion"]),
         "CWE862": ("CWE-862", "Missing Authorization", ["missing", "authorization"]),
-        "CWE863": ("CWE-863", "Incorrect Authorization", ["incorrect", "authorization"]),
-        "CWE908": ("CWE-908", "Use of Uninitialized Resource", ["uninitialized", "resource"]),
-        "CWE909": ("CWE-909", "Missing Initialization of Resource", ["missing", "initialization"]),
-        "CWE911": ("CWE-911", "Improper Update of Reference Count", ["reference", "count", "update"]),
-        "CWE915": ("CWE-915", "Improperly Controlled Modification of Dynamically-Determined Object Attributes", ["dynamic", "object", "attributes"]),
+        "CWE863": (
+            "CWE-863",
+            "Incorrect Authorization",
+            ["incorrect", "authorization"],
+        ),
+        "CWE908": (
+            "CWE-908",
+            "Use of Uninitialized Resource",
+            ["uninitialized", "resource"],
+        ),
+        "CWE909": (
+            "CWE-909",
+            "Missing Initialization of Resource",
+            ["missing", "initialization"],
+        ),
+        "CWE911": (
+            "CWE-911",
+            "Improper Update of Reference Count",
+            ["reference", "count", "update"],
+        ),
+        "CWE915": (
+            "CWE-915",
+            "Improperly Controlled Modification of Dynamically-Determined Object Attributes",
+            ["dynamic", "object", "attributes"],
+        ),
     }
 
     for dirpath, dirnames, filenames in directory.walk():
@@ -1163,18 +1596,78 @@ def load_juliet_representatives(kb: VulnerabilityKB) -> int:
     Returns the number of patterns loaded.
     """
     juliet_patterns = [
-        {"cwe": "CWE-119", "title": "Buffer Overflow (Juliet)", "description": "Buffer overflow test cases from Juliet Test Suite.", "patterns": ["buffer", "overflow", "memcpy", "strcpy"]},
-        {"cwe": "CWE-120", "title": "Buffer Overflow Classic (Juliet)", "description": "Classic buffer overflow test cases.", "patterns": ["buffer", "overflow", "stack"]},
-        {"cwe": "CWE-121", "title": "Stack Buffer Overflow (Juliet)", "description": "Stack-based buffer overflow test cases.", "patterns": ["stack", "buffer", "overflow"]},
-        {"cwe": "CWE-122", "title": "Heap Buffer Overflow (Juliet)", "description": "Heap-based buffer overflow test cases.", "patterns": ["heap", "buffer", "overflow"]},
-        {"cwe": "CWE-125", "title": "Out-of-bounds Read (Juliet)", "description": "Out-of-bounds read test cases.", "patterns": ["read", "buffer", "bounds"]},
-        {"cwe": "CWE-134", "title": "Format String (Juliet)", "description": "Format string vulnerability test cases.", "patterns": ["format", "string", "printf"]},
-        {"cwe": "CWE-190", "title": "Integer Overflow (Juliet)", "description": "Integer overflow test cases.", "patterns": ["integer", "overflow"]},
-        {"cwe": "CWE-191", "title": "Integer Underflow (Juliet)", "description": "Integer underflow test cases.", "patterns": ["integer", "underflow"]},
-        {"cwe": "CWE-415", "title": "Double Free (Juliet)", "description": "Double free test cases.", "patterns": ["double", "free"]},
-        {"cwe": "CWE-416", "title": "Use After Free (Juliet)", "description": "Use after free test cases.", "patterns": ["use", "after", "free"]},
-        {"cwe": "CWE-476", "title": "NULL Pointer Dereference (Juliet)", "description": "NULL pointer dereference test cases.", "patterns": ["null", "pointer"]},
-        {"cwe": "CWE-787", "title": "Out-of-bounds Write (Juliet)", "description": "Out-of-bounds write test cases.", "patterns": ["write", "buffer", "bounds"]},
+        {
+            "cwe": "CWE-119",
+            "title": "Buffer Overflow (Juliet)",
+            "description": "Buffer overflow test cases from Juliet Test Suite.",
+            "patterns": ["buffer", "overflow", "memcpy", "strcpy"],
+        },
+        {
+            "cwe": "CWE-120",
+            "title": "Buffer Overflow Classic (Juliet)",
+            "description": "Classic buffer overflow test cases.",
+            "patterns": ["buffer", "overflow", "stack"],
+        },
+        {
+            "cwe": "CWE-121",
+            "title": "Stack Buffer Overflow (Juliet)",
+            "description": "Stack-based buffer overflow test cases.",
+            "patterns": ["stack", "buffer", "overflow"],
+        },
+        {
+            "cwe": "CWE-122",
+            "title": "Heap Buffer Overflow (Juliet)",
+            "description": "Heap-based buffer overflow test cases.",
+            "patterns": ["heap", "buffer", "overflow"],
+        },
+        {
+            "cwe": "CWE-125",
+            "title": "Out-of-bounds Read (Juliet)",
+            "description": "Out-of-bounds read test cases.",
+            "patterns": ["read", "buffer", "bounds"],
+        },
+        {
+            "cwe": "CWE-134",
+            "title": "Format String (Juliet)",
+            "description": "Format string vulnerability test cases.",
+            "patterns": ["format", "string", "printf"],
+        },
+        {
+            "cwe": "CWE-190",
+            "title": "Integer Overflow (Juliet)",
+            "description": "Integer overflow test cases.",
+            "patterns": ["integer", "overflow"],
+        },
+        {
+            "cwe": "CWE-191",
+            "title": "Integer Underflow (Juliet)",
+            "description": "Integer underflow test cases.",
+            "patterns": ["integer", "underflow"],
+        },
+        {
+            "cwe": "CWE-415",
+            "title": "Double Free (Juliet)",
+            "description": "Double free test cases.",
+            "patterns": ["double", "free"],
+        },
+        {
+            "cwe": "CWE-416",
+            "title": "Use After Free (Juliet)",
+            "description": "Use after free test cases.",
+            "patterns": ["use", "after", "free"],
+        },
+        {
+            "cwe": "CWE-476",
+            "title": "NULL Pointer Dereference (Juliet)",
+            "description": "NULL pointer dereference test cases.",
+            "patterns": ["null", "pointer"],
+        },
+        {
+            "cwe": "CWE-787",
+            "title": "Out-of-bounds Write (Juliet)",
+            "description": "Out-of-bounds write test cases.",
+            "patterns": ["write", "buffer", "bounds"],
+        },
     ]
 
     count = 0
@@ -1187,6 +1680,7 @@ def load_juliet_representatives(kb: VulnerabilityKB) -> int:
 
 
 # --- Convenience Loader (Extended) ---
+
 
 def load_all_public_datasets(
     kb: VulnerabilityKB,
@@ -1217,7 +1711,17 @@ def load_all_public_datasets(
         cache_dir = _default_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    all_datasets = ["mitre_cwe", "nvd_cve", "exploitdb", "github", "osv", "snyk", "d2a", "vuldeepecker", "juliet"]
+    all_datasets = [
+        "mitre_cwe",
+        "nvd_cve",
+        "exploitdb",
+        "github",
+        "osv",
+        "snyk",
+        "d2a",
+        "vuldeepecker",
+        "juliet",
+    ]
     datasets_to_load = datasets or all_datasets
 
     summary = dict.fromkeys(all_datasets, 0)
@@ -1231,7 +1735,9 @@ def load_all_public_datasets(
             if cwe_path.exists():
                 count = load_mitre_cwe_from_file(kb, cwe_path, max_per_dataset)
             else:
-                count = load_mitre_cwe_from_url(kb, cache_path=cwe_path, max_patterns=max_per_dataset)
+                count = load_mitre_cwe_from_url(
+                    kb, cache_path=cwe_path, max_patterns=max_per_dataset
+                )
             summary["mitre_cwe"] = count
             print(f"  ✓ Loaded {count} CWE patterns")
         except Exception as e:
@@ -1245,7 +1751,9 @@ def load_all_public_datasets(
             if nvd_path.exists():
                 count = load_nvd_cve_from_file(kb, nvd_path, max_per_dataset)
             else:
-                count = load_nvd_cve_from_url(kb, cache_path=nvd_path, max_patterns=max_per_dataset)
+                count = load_nvd_cve_from_url(
+                    kb, cache_path=nvd_path, max_patterns=max_per_dataset
+                )
             summary["nvd_cve"] = count
             print(f"  ✓ Loaded {count} CVE patterns")
         except Exception as e:
@@ -1259,7 +1767,9 @@ def load_all_public_datasets(
             if edb_path.exists():
                 count = load_exploitdb_from_file(kb, edb_path, max_per_dataset)
             else:
-                count = load_exploitdb_from_url(kb, cache_path=edb_path, max_patterns=max_per_dataset)
+                count = load_exploitdb_from_url(
+                    kb, cache_path=edb_path, max_patterns=max_per_dataset
+                )
             summary["exploitdb"] = count
             print(f"  ✓ Loaded {count} Exploit-DB patterns")
         except Exception as e:
@@ -1273,7 +1783,9 @@ def load_all_public_datasets(
             if gh_path.exists():
                 count = load_github_advisory_from_file(kb, gh_path, max_per_dataset)
             else:
-                count = load_github_advisory_from_url(kb, cache_path=gh_path, max_patterns=max_per_dataset)
+                count = load_github_advisory_from_url(
+                    kb, cache_path=gh_path, max_patterns=max_per_dataset
+                )
             summary["github"] = count
             print(f"  ✓ Loaded {count} GitHub Advisory patterns")
         except Exception as e:
@@ -1287,7 +1799,9 @@ def load_all_public_datasets(
             if osv_path.exists():
                 count = load_osv_from_file(kb, osv_path, max_per_dataset)
             else:
-                count = load_osv_from_url(kb, cache_path=osv_path, max_patterns=max_per_dataset)
+                count = load_osv_from_url(
+                    kb, cache_path=osv_path, max_patterns=max_per_dataset
+                )
             summary["osv"] = count
             print(f"  ✓ Loaded {count} OSV.dev patterns")
         except Exception as e:
@@ -1301,7 +1815,9 @@ def load_all_public_datasets(
             if snyk_path.exists():
                 count = load_snyk_from_file(kb, snyk_path, max_per_dataset)
             else:
-                count = load_snyk_from_url(kb, cache_path=snyk_path, max_patterns=max_per_dataset)
+                count = load_snyk_from_url(
+                    kb, cache_path=snyk_path, max_patterns=max_per_dataset
+                )
             summary["snyk"] = count
             print(f"  ✓ Loaded {count} Snyk patterns")
         except Exception as e:
@@ -1315,7 +1831,9 @@ def load_all_public_datasets(
             if d2a_path.exists():
                 count = load_d2a_from_file(kb, d2a_path, max_per_dataset)
             else:
-                count = load_d2a_from_url(kb, cache_path=d2a_path, max_patterns=max_per_dataset)
+                count = load_d2a_from_url(
+                    kb, cache_path=d2a_path, max_patterns=max_per_dataset
+                )
             summary["d2a"] = count
             print(f"  ✓ Loaded {count} D2A patterns")
         except Exception as e:

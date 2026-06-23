@@ -69,7 +69,8 @@ def load_d2a_from_file(
             title=title,
             description=commit_msg[:500],
             patterns=patterns[:5],
-            language="generic", persist=True,
+            language="generic",
+            persist=True,
         )
         count += 1
 
@@ -79,14 +80,54 @@ def load_d2a_from_file(
 def _create_d2a_representatives(kb: VulnerabilityKB) -> int:
     """Create representative D2A patterns based on known bug classes."""
     d2a_patterns = [
-        {"cwe": "D2A-SQLI", "title": "SQL Injection (D2A)", "description": "SQL injection vulnerabilities from real-world bug fixes.", "patterns": ["sql", "injection", "query", "execute"]},
-        {"cwe": "D2A-XSS", "title": "Cross-site Scripting (D2A)", "description": "XSS vulnerabilities from real-world bug fixes.", "patterns": ["xss", "script", "innerHTML", "escape"]},
-        {"cwe": "D2A-CMDI", "title": "Command Injection (D2A)", "description": "Command injection vulnerabilities from real-world bug fixes.", "patterns": ["command", "injection", "system", "exec"]},
-        {"cwe": "D2A-PATH", "title": "Path Traversal (D2A)", "description": "Path traversal vulnerabilities from real-world bug fixes.", "patterns": ["path", "traversal", "directory", "file"]},
-        {"cwe": "D2A-DESER", "title": "Deserialization (D2A)", "description": "Insecure deserialization vulnerabilities from real-world bug fixes.", "patterns": ["deserialization", "pickle", "yaml", "marshal"]},
-        {"cwe": "D2A-SSRF", "title": "Server-Side Request Forgery (D2A)", "description": "SSRF vulnerabilities from real-world bug fixes.", "patterns": ["ssrf", "request", "url", "fetch"]},
-        {"cwe": "D2A-BOUND", "title": "Buffer Overflow (D2A)", "description": "Buffer overflow vulnerabilities from real-world bug fixes.", "patterns": ["buffer", "overflow", "bounds", "length"]},
-        {"cwe": "D2A-UAF", "title": "Use After Free (D2A)", "description": "Use-after-free vulnerabilities from real-world bug fixes.", "patterns": ["use", "after", "free", "dangling"]},
+        {
+            "cwe": "D2A-SQLI",
+            "title": "SQL Injection (D2A)",
+            "description": "SQL injection vulnerabilities from real-world bug fixes.",
+            "patterns": ["sql", "injection", "query", "execute"],
+        },
+        {
+            "cwe": "D2A-XSS",
+            "title": "Cross-site Scripting (D2A)",
+            "description": "XSS vulnerabilities from real-world bug fixes.",
+            "patterns": ["xss", "script", "innerHTML", "escape"],
+        },
+        {
+            "cwe": "D2A-CMDI",
+            "title": "Command Injection (D2A)",
+            "description": "Command injection vulnerabilities from real-world bug fixes.",
+            "patterns": ["command", "injection", "system", "exec"],
+        },
+        {
+            "cwe": "D2A-PATH",
+            "title": "Path Traversal (D2A)",
+            "description": "Path traversal vulnerabilities from real-world bug fixes.",
+            "patterns": ["path", "traversal", "directory", "file"],
+        },
+        {
+            "cwe": "D2A-DESER",
+            "title": "Deserialization (D2A)",
+            "description": "Insecure deserialization vulnerabilities from real-world bug fixes.",
+            "patterns": ["deserialization", "pickle", "yaml", "marshal"],
+        },
+        {
+            "cwe": "D2A-SSRF",
+            "title": "Server-Side Request Forgery (D2A)",
+            "description": "SSRF vulnerabilities from real-world bug fixes.",
+            "patterns": ["ssrf", "request", "url", "fetch"],
+        },
+        {
+            "cwe": "D2A-BOUND",
+            "title": "Buffer Overflow (D2A)",
+            "description": "Buffer overflow vulnerabilities from real-world bug fixes.",
+            "patterns": ["buffer", "overflow", "bounds", "length"],
+        },
+        {
+            "cwe": "D2A-UAF",
+            "title": "Use After Free (D2A)",
+            "description": "Use-after-free vulnerabilities from real-world bug fixes.",
+            "patterns": ["use", "after", "free", "dangling"],
+        },
     ]
 
     count = 0
@@ -156,7 +197,8 @@ def load_d2a_from_url(
                 title=title[:100],
                 description=bug_function[:500],
                 patterns=patterns[:5],
-                language="c", persist=True,
+                language="c",
+                persist=True,
             )
             count += 1
 

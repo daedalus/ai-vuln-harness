@@ -67,7 +67,8 @@ def load_cvefixes_from_file(
             title=title,
             description=description[:500],
             patterns=patterns[:5],
-            language="generic", persist=True,
+            language="generic",
+            persist=True,
         )
         count += 1
 

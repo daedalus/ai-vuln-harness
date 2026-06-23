@@ -57,13 +57,19 @@ def generate_dashboard(findings: list[dict], chains: list[dict]) -> dict:
     """
     agg = aggregate_findings(findings)
 
-    critical_findings = [f for f in findings if str(f.get("severity", "")).upper() == "CRITICAL"]
-    high_findings = [f for f in findings if str(f.get("severity", "")).upper() == "HIGH"]
+    critical_findings = [
+        f for f in findings if str(f.get("severity", "")).upper() == "CRITICAL"
+    ]
+    high_findings = [
+        f for f in findings if str(f.get("severity", "")).upper() == "HIGH"
+    ]
 
     confirmed = [f for f in findings if f.get("poc_confirmed")]
     unconfirmed = [f for f in findings if not f.get("poc_confirmed")]
 
-    chains_critical = [c for c in chains if c.get("severity", "").upper() in ("CRITICAL", "HIGH")]
+    chains_critical = [
+        c for c in chains if c.get("severity", "").upper() in ("CRITICAL", "HIGH")
+    ]
 
     return {
         "timestamp": datetime.now(UTC).isoformat(),
@@ -76,7 +82,9 @@ def generate_dashboard(findings: list[dict], chains: list[dict]) -> dict:
         "unconfirmed_count": len(unconfirmed),
         "chains_total": len(chains),
         "chains_critical": len(chains_critical),
-        "top_files": sorted(agg["by_file"].items(), key=lambda x: x[1], reverse=True)[:10],
+        "top_files": sorted(agg["by_file"].items(), key=lambda x: x[1], reverse=True)[
+            :10
+        ],
     }
 
 

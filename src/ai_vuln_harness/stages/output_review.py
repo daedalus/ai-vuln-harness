@@ -57,55 +57,77 @@ class ReviewResult:
 _BLOCK_PATTERNS: list[tuple[str, str]] = [
     # Shellcode patterns
     (r"\\x[0-9a-fA-F]{2}(?:\\x[0-9a-fA-F]{2}){7,}", "raw shellcode bytes"),
-    (r"(?:int\s+main|void\s+start)\s*\(\s*(?:void\s*\*\s*)?\)\s*\{[^}]*"
-     r"(?:execve|/bin/sh|/bin/bash)", "shellcode main function"),
+    (
+        r"(?:int\s+main|void\s+start)\s*\(\s*(?:void\s*\*\s*)?\)\s*\{[^}]*"
+        r"(?:execve|/bin/sh|/bin/bash)",
+        "shellcode main function",
+    ),
     (r"char\s+shellcode\s*\[\s*\]\s*=\s*\{[^}]*0x[0-9a-fA-F]{2}", "shellcode array"),
     # Reverse shell patterns
-    (r"(?:bash\s+-i\s+>&\s*/dev/tcp|nc\s+-e\s+/bin/(?:ba)?sh|"
-     r"python.*socket.*connect.*subprocess)", "reverse shell"),
-    (r"Socket\(\s*AF_INET\s*,\s*SOCK_STREAM\s*\).*connect\s*\(", "raw socket reverse shell"),
+    (
+        r"(?:bash\s+-i\s+>&\s*/dev/tcp|nc\s+-e\s+/bin/(?:ba)?sh|"
+        r"python.*socket.*connect.*subprocess)",
+        "reverse shell",
+    ),
+    (
+        r"Socket\(\s*AF_INET\s*,\s*SOCK_STREAM\s*\).*connect\s*\(",
+        "raw socket reverse shell",
+    ),
     # ROP chain construction
-    (r"(?:pop\s+rdi|pop\s+rsi|ret\s*;?\s*(?:#|//)?\s*pop|gadget.*address)",
-     "ROP gadget construction"),
-    (r"(?:struct\s+rop_chain|rop\s*=\s*\[|chain\.append\(.*ret)",
-     "ROP chain builder"),
+    (
+        r"(?:pop\s+rdi|pop\s+rsi|ret\s*;?\s*(?:#|//)?\s*pop|gadget.*address)",
+        "ROP gadget construction",
+    ),
+    (r"(?:struct\s+rop_chain|rop\s*=\s*\[|chain\.append\(.*ret)", "ROP chain builder"),
     # Privilege escalation payloads
-    (r"(?:chmod\s+[0-7]*777\s+/etc/passwd|cp\s+/bin/(?:ba)?sh\s+/tmp.*"
-     r"&&\s*chmod)", "privilege escalation payload"),
-    (r"(?:setuid\s*\(\s*0\s*\)|setgid\s*\(\s*0\s*\).*execve)",
-     "setuid shell spawn"),
+    (
+        r"(?:chmod\s+[0-7]*777\s+/etc/passwd|cp\s+/bin/(?:ba)?sh\s+/tmp.*"
+        r"&&\s*chmod)",
+        "privilege escalation payload",
+    ),
+    (r"(?:setuid\s*\(\s*0\s*\)|setgid\s*\(\s*0\s*\).*execve)", "setuid shell spawn"),
 ]
 
 _REDACT_PATTERNS: list[tuple[str, str]] = [
     # Memory layout details that aid exploitation
-    (r"(?:libc|heap|stack|vtable|code)\s*(?:_base|_addr|_ptr|_address)?"
-     r"\s*[:=]\s*0x[0-9a-fA-F]{8,16}", "memory address disclosure"),
-    (r"(?:leak|dump|read)\s*\(.*(?:proc/self/mem|/proc/\d+/mem)",
-     "process memory read"),
+    (
+        r"(?:libc|heap|stack|vtable|code)\s*(?:_base|_addr|_ptr|_address)?"
+        r"\s*[:=]\s*0x[0-9a-fA-F]{8,16}",
+        "memory address disclosure",
+    ),
+    (
+        r"(?:leak|dump|read)\s*\(.*(?:proc/self/mem|/proc/\d+/mem)",
+        "process memory read",
+    ),
     (r"/proc/self/mem", "proc mem access"),
     # Credential material in PoC output
-    (r"(?:password|secret|api_key|token)\s*[:=]\s*['\"][^'\"]{8,}['\"]",
-     "hardcoded credential in output"),
+    (
+        r"(?:password|secret|api_key|token)\s*[:=]\s*['\"][^'\"]{8,}['\"]",
+        "hardcoded credential in output",
+    ),
     # Full ASan/dump output that contains exploitation aids
-    (r"ASAN.*(?:WRITE|READ)\s+(?:of\s+size\s+\d+\s+at\s+0x[0-9a-fA-F]+)",
-     "ASAN address disclosure"),
+    (
+        r"ASAN.*(?:WRITE|READ)\s+(?:of\s+size\s+\d+\s+at\s+0x[0-9a-fA-F]+)",
+        "ASAN address disclosure",
+    ),
     # Raw hex addresses in exploitation context
     (r"0x[0-9a-fA-F]{12,16}", "raw memory address"),
 ]
 
 _WARN_PATTERNS: list[tuple[str, str]] = [
     # Suspicious but potentially legitimate analysis
-    (r"(?:exploit|payload|attack|weaponize|weaponise)",
-     "exploit-related terminology"),
-    (r"(?:overflow|underflow|corrupt|smash|hijack)",
-     "memory corruption terminology"),
-    (r"(?:privilege\s+escalation|privesc|priv\s+esc)",
-     "privilege escalation reference"),
-    (r"(?:sandbox\s+escape|jailbreak|breakout)",
-     "sandbox escape reference"),
+    (r"(?:exploit|payload|attack|weaponize|weaponise)", "exploit-related terminology"),
+    (r"(?:overflow|underflow|corrupt|smash|hijack)", "memory corruption terminology"),
+    (
+        r"(?:privilege\s+escalation|privesc|priv\s+esc)",
+        "privilege escalation reference",
+    ),
+    (r"(?:sandbox\s+escape|jailbreak|breakout)", "sandbox escape reference"),
     # Network access in PoC
-    (r"(?:curl|wget|requests\.(?:get|post)|urllib)\s*\(",
-     "network request in PoC code"),
+    (
+        r"(?:curl|wget|requests\.(?:get|post)|urllib)\s*\(",
+        "network request in PoC code",
+    ),
 ]
 
 

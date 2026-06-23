@@ -71,7 +71,11 @@ def load_mitre_cwe_from_file(
                     det_local = det.tag.split("}")[-1] if "}" in det.tag else det.tag
                     if det_local == "Detection_Method":
                         for method_elem in det:
-                            method_local = method_elem.tag.split("}")[-1] if "}" in method_elem.tag else method_elem.tag
+                            method_local = (
+                                method_elem.tag.split("}")[-1]
+                                if "}" in method_elem.tag
+                                else method_elem.tag
+                            )
                             if method_local == "Method" and method_elem.text:
                                 patterns.append(method_elem.text.strip())
 
@@ -83,7 +87,8 @@ def load_mitre_cwe_from_file(
             title=name,
             description=description[:500],
             patterns=patterns[:10],
-            language="generic", persist=True,
+            language="generic",
+            persist=True,
         )
         count += 1
 

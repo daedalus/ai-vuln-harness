@@ -57,8 +57,8 @@ The harness builds a corpus of known CVEs to serve as negative examples. Finding
 ### Sources
 
 1. **Manual corpus** — JSON file passed via `--cve-corpus path/to/cves.json`
-2. **OSV.dev auto-fetch** — scans manifest files for known vulnerabilities
-3. **Git history scan** — scans commits for CVE references
+1. **OSV.dev auto-fetch** — scans manifest files for known vulnerabilities
+1. **Git history scan** — scans commits for CVE references
 
 ### Semantic suppression (6-layer)
 

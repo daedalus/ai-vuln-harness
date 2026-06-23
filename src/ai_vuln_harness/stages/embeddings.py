@@ -11,8 +11,6 @@ Usage:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 try:
     import faiss
     import numpy as np
@@ -21,9 +19,6 @@ try:
     _HAS_EMBEDDINGS = True
 except ImportError:
     _HAS_EMBEDDINGS = False
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 _DEFAULT_MODEL = "all-MiniLM-L6-v2"

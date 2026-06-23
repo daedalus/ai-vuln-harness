@@ -26,8 +26,16 @@ def load_juliet_from_file(
     count = 0
 
     cwe_pattern_map = {
-        "CWE119": ("CWE-119", "Buffer Overflow", ["buffer", "overflow", "memcpy", "strcpy"]),
-        "CWE120": ("CWE-120", "Buffer Overflow (Classic)", ["buffer", "overflow", "stack"]),
+        "CWE119": (
+            "CWE-119",
+            "Buffer Overflow",
+            ["buffer", "overflow", "memcpy", "strcpy"],
+        ),
+        "CWE120": (
+            "CWE-120",
+            "Buffer Overflow (Classic)",
+            ["buffer", "overflow", "stack"],
+        ),
         "CWE121": ("CWE-121", "Stack Buffer Overflow", ["stack", "buffer", "overflow"]),
         "CWE122": ("CWE-122", "Heap Buffer Overflow", ["heap", "buffer", "overflow"]),
         "CWE125": ("CWE-125", "Out-of-bounds Read", ["read", "buffer", "bounds"]),
@@ -56,7 +64,8 @@ def load_juliet_from_file(
                             title=title,
                             description=f"Juliet Test Suite pattern for {title}",
                             patterns=patterns,
-                            language="c", persist=True,
+                            language="c",
+                            persist=True,
                         )
                         count += 1
             break
@@ -70,18 +79,78 @@ def load_juliet_representatives(kb: VulnerabilityKB) -> int:
     Returns the number of patterns loaded.
     """
     juliet_patterns = [
-        {"cwe": "CWE-119", "title": "Buffer Overflow (Juliet)", "description": "Buffer overflow test cases from Juliet Test Suite.", "patterns": ["buffer", "overflow", "memcpy", "strcpy"]},
-        {"cwe": "CWE-120", "title": "Buffer Overflow Classic (Juliet)", "description": "Classic buffer overflow test cases.", "patterns": ["buffer", "overflow", "stack"]},
-        {"cwe": "CWE-121", "title": "Stack Buffer Overflow (Juliet)", "description": "Stack-based buffer overflow test cases.", "patterns": ["stack", "buffer", "overflow"]},
-        {"cwe": "CWE-122", "title": "Heap Buffer Overflow (Juliet)", "description": "Heap-based buffer overflow test cases.", "patterns": ["heap", "buffer", "overflow"]},
-        {"cwe": "CWE-125", "title": "Out-of-bounds Read (Juliet)", "description": "Out-of-bounds read test cases.", "patterns": ["read", "buffer", "bounds"]},
-        {"cwe": "CWE-134", "title": "Format String (Juliet)", "description": "Format string vulnerability test cases.", "patterns": ["format", "string", "printf"]},
-        {"cwe": "CWE-190", "title": "Integer Overflow (Juliet)", "description": "Integer overflow test cases.", "patterns": ["integer", "overflow"]},
-        {"cwe": "CWE-191", "title": "Integer Underflow (Juliet)", "description": "Integer underflow test cases.", "patterns": ["integer", "underflow"]},
-        {"cwe": "CWE-415", "title": "Double Free (Juliet)", "description": "Double free test cases.", "patterns": ["double", "free"]},
-        {"cwe": "CWE-416", "title": "Use After Free (Juliet)", "description": "Use after free test cases.", "patterns": ["use", "after", "free"]},
-        {"cwe": "CWE-476", "title": "NULL Pointer Dereference (Juliet)", "description": "NULL pointer dereference test cases.", "patterns": ["null", "pointer"]},
-        {"cwe": "CWE-787", "title": "Out-of-bounds Write (Juliet)", "description": "Out-of-bounds write test cases.", "patterns": ["write", "buffer", "bounds"]},
+        {
+            "cwe": "CWE-119",
+            "title": "Buffer Overflow (Juliet)",
+            "description": "Buffer overflow test cases from Juliet Test Suite.",
+            "patterns": ["buffer", "overflow", "memcpy", "strcpy"],
+        },
+        {
+            "cwe": "CWE-120",
+            "title": "Buffer Overflow Classic (Juliet)",
+            "description": "Classic buffer overflow test cases.",
+            "patterns": ["buffer", "overflow", "stack"],
+        },
+        {
+            "cwe": "CWE-121",
+            "title": "Stack Buffer Overflow (Juliet)",
+            "description": "Stack-based buffer overflow test cases.",
+            "patterns": ["stack", "buffer", "overflow"],
+        },
+        {
+            "cwe": "CWE-122",
+            "title": "Heap Buffer Overflow (Juliet)",
+            "description": "Heap-based buffer overflow test cases.",
+            "patterns": ["heap", "buffer", "overflow"],
+        },
+        {
+            "cwe": "CWE-125",
+            "title": "Out-of-bounds Read (Juliet)",
+            "description": "Out-of-bounds read test cases.",
+            "patterns": ["read", "buffer", "bounds"],
+        },
+        {
+            "cwe": "CWE-134",
+            "title": "Format String (Juliet)",
+            "description": "Format string vulnerability test cases.",
+            "patterns": ["format", "string", "printf"],
+        },
+        {
+            "cwe": "CWE-190",
+            "title": "Integer Overflow (Juliet)",
+            "description": "Integer overflow test cases.",
+            "patterns": ["integer", "overflow"],
+        },
+        {
+            "cwe": "CWE-191",
+            "title": "Integer Underflow (Juliet)",
+            "description": "Integer underflow test cases.",
+            "patterns": ["integer", "underflow"],
+        },
+        {
+            "cwe": "CWE-415",
+            "title": "Double Free (Juliet)",
+            "description": "Double free test cases.",
+            "patterns": ["double", "free"],
+        },
+        {
+            "cwe": "CWE-416",
+            "title": "Use After Free (Juliet)",
+            "description": "Use after free test cases.",
+            "patterns": ["use", "after", "free"],
+        },
+        {
+            "cwe": "CWE-476",
+            "title": "NULL Pointer Dereference (Juliet)",
+            "description": "NULL pointer dereference test cases.",
+            "patterns": ["null", "pointer"],
+        },
+        {
+            "cwe": "CWE-787",
+            "title": "Out-of-bounds Write (Juliet)",
+            "description": "Out-of-bounds write test cases.",
+            "patterns": ["write", "buffer", "bounds"],
+        },
     ]
 
     count = 0

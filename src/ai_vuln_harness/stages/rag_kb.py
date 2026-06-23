@@ -42,21 +42,44 @@ _DEFAULT_CWE_PATTERNS: list[dict] = [
         "cwe": "CWE-78",
         "title": "OS Command Injection",
         "description": "The software constructs all or part of an OS command using externally-influenced input, but it does not neutralize or incorrectly neutralizes special elements.",
-        "patterns": ["os.system", "subprocess.call", "subprocess.Popen", "exec(", "eval(", "shell=True"],
+        "patterns": [
+            "os.system",
+            "subprocess.call",
+            "subprocess.Popen",
+            "exec(",
+            "eval(",
+            "shell=True",
+        ],
         "language": "python",
     },
     {
         "cwe": "CWE-89",
         "title": "SQL Injection",
         "description": "The software constructs all or part of an SQL command using externally-influenced input, but it does not neutralize or incorrectly neutralizes special elements.",
-        "patterns": ["execute(", "cursor.execute", "query(", "sql", "SELECT", "INSERT", "UPDATE", "DELETE"],
+        "patterns": [
+            "execute(",
+            "cursor.execute",
+            "query(",
+            "sql",
+            "SELECT",
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+        ],
         "language": "generic",
     },
     {
         "cwe": "CWE-79",
         "title": "Cross-site Scripting (XSS)",
         "description": "The software does not neutralize or incorrectly neutralizes user-controllable input before it is placed in output used as a web page.",
-        "patterns": ["innerHTML", "document.write", "render_template_string", "Markup(", "safe(", "mark_safe"],
+        "patterns": [
+            "innerHTML",
+            "document.write",
+            "render_template_string",
+            "Markup(",
+            "safe(",
+            "mark_safe",
+        ],
         "language": "generic",
     },
     {
@@ -70,21 +93,43 @@ _DEFAULT_CWE_PATTERNS: list[dict] = [
         "cwe": "CWE-918",
         "title": "Server-Side Request Forgery (SSRF)",
         "description": "The web server receives a URL or similar request from an upstream component and retrieves the contents of this URL, but it does not sufficiently ensure that the request is being sent to the expected destination.",
-        "patterns": ["requests.get", "requests.post", "urlopen", "urllib", "httpx", "aiohttp", "fetch("],
+        "patterns": [
+            "requests.get",
+            "requests.post",
+            "urlopen",
+            "urllib",
+            "httpx",
+            "aiohttp",
+            "fetch(",
+        ],
         "language": "python",
     },
     {
         "cwe": "CWE-502",
         "title": "Deserialization of Untrusted Data",
         "description": "The software deserializes untrusted data without sufficiently verifying that the resulting data will be valid.",
-        "patterns": ["pickle.load", "pickle.loads", "yaml.load", "yaml.unsafe_load", "marshal.loads", "jsonpickle"],
+        "patterns": [
+            "pickle.load",
+            "pickle.loads",
+            "yaml.load",
+            "yaml.unsafe_load",
+            "marshal.loads",
+            "jsonpickle",
+        ],
         "language": "python",
     },
     {
         "cwe": "CWE-798",
         "title": "Use of Hard-coded Credentials",
         "description": "The software contains hard-coded credentials such as a password or cryptographic key.",
-        "patterns": ["password", "secret", "api_key", "token", "credential", "auth_token"],
+        "patterns": [
+            "password",
+            "secret",
+            "api_key",
+            "token",
+            "credential",
+            "auth_token",
+        ],
         "language": "generic",
     },
     {
@@ -225,7 +270,13 @@ class VulnerabilityKB:
                 self._conn.execute(
                     """INSERT OR REPLACE INTO cwe_patterns(cwe, title, description, patterns, language)
                        VALUES(?, ?, ?, ?, ?)""",
-                    (p["cwe"], p["title"], p["description"], json.dumps(p.get("patterns", [])), p.get("language", "generic")),
+                    (
+                        p["cwe"],
+                        p["title"],
+                        p["description"],
+                        json.dumps(p.get("patterns", [])),
+                        p.get("language", "generic"),
+                    ),
                 )
             self._conn.commit()
 
@@ -233,17 +284,21 @@ class VulnerabilityKB:
         """Load patterns from database into memory."""
         if not self._conn:
             return
-        rows = self._conn.execute("SELECT cwe, title, description, patterns, language FROM cwe_patterns").fetchall()
+        rows = self._conn.execute(
+            "SELECT cwe, title, description, patterns, language FROM cwe_patterns"
+        ).fetchall()
         # Replace defaults with DB content
         self._patterns = []
         for cwe, title, desc, patterns_json, lang in rows:
-            self._patterns.append({
-                "cwe": cwe,
-                "title": title,
-                "description": desc,
-                "patterns": json.loads(patterns_json),
-                "language": lang,
-            })
+            self._patterns.append(
+                {
+                    "cwe": cwe,
+                    "title": title,
+                    "description": desc,
+                    "patterns": json.loads(patterns_json),
+                    "language": lang,
+                }
+            )
         self._built = False
 
     def _save_to_db(self) -> None:
@@ -254,7 +309,13 @@ class VulnerabilityKB:
             self._conn.execute(
                 """INSERT OR REPLACE INTO cwe_patterns(cwe, title, description, patterns, language)
                    VALUES(?, ?, ?, ?, ?)""",
-                (p["cwe"], p["title"], p["description"], json.dumps(p.get("patterns", [])), p.get("language", "generic")),
+                (
+                    p["cwe"],
+                    p["title"],
+                    p["description"],
+                    json.dumps(p.get("patterns", [])),
+                    p.get("language", "generic"),
+                ),
             )
         self._conn.commit()
 
@@ -304,7 +365,9 @@ class VulnerabilityKB:
             self._save_to_db()
         return count
 
-    def add_patterns_from_corpus(self, entries: list[dict], persist: bool = False) -> int:
+    def add_patterns_from_corpus(
+        self, entries: list[dict], persist: bool = False
+    ) -> int:
         """Bulk load patterns from a CVE corpus or CWE catalog.
 
         Each entry should have at minimum ``cwe`` and ``title``.  Optional
@@ -359,7 +422,11 @@ class VulnerabilityKB:
         )
         self._tfidf_matrix = self._vectorizer.fit_transform(docs)
         self._built_tfidf = True
-        log.info("TF-IDF index built: %d features, %d documents", self._tfidf_matrix.shape[1], len(self._patterns))
+        log.info(
+            "TF-IDF index built: %d features, %d documents",
+            self._tfidf_matrix.shape[1],
+            len(self._patterns),
+        )
 
     def _build_faiss_index(self) -> None:
         """Build FAISS index from patterns."""
@@ -392,11 +459,15 @@ class VulnerabilityKB:
         batch_size = 1000
         all_embeddings = []
         for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
+            batch = texts[i : i + batch_size]
             embeddings = self._faiss_model.encode(batch, show_progress_bar=False)
             all_embeddings.append(embeddings)
             if (i // batch_size) % 10 == 0:
-                log.debug("Encoded %d/%d patterns...", min(i + batch_size, len(texts)), len(texts))
+                log.debug(
+                    "Encoded %d/%d patterns...",
+                    min(i + batch_size, len(texts)),
+                    len(texts),
+                )
 
         self._faiss_embeddings = np.vstack(all_embeddings)
         embeddings_np = self._faiss_embeddings.astype("float32")
@@ -438,11 +509,19 @@ class VulnerabilityKB:
         self._build_index()
 
         # Try FAISS first
-        if self._use_faiss and self._faiss_index is not None and self._faiss_model is not None:
+        if (
+            self._use_faiss
+            and self._faiss_index is not None
+            and self._faiss_model is not None
+        ):
             return self._faiss_search(query, top_k, threshold)
 
         # Fall back to TF-IDF
-        if _HAS_SKLEARN and self._vectorizer is not None and self._tfidf_matrix is not None:
+        if (
+            _HAS_SKLEARN
+            and self._vectorizer is not None
+            and self._tfidf_matrix is not None
+        ):
             return self._tfidf_search(query, top_k, threshold)
 
         # Final fallback: keyword matching
@@ -454,7 +533,9 @@ class VulnerabilityKB:
         query_np = np.array(query_embedding).astype("float32")
         faiss.normalize_L2(query_np)
 
-        distances, indices = self._faiss_index.search(query_np, min(top_k, len(self._patterns)))
+        distances, indices = self._faiss_index.search(
+            query_np, min(top_k, len(self._patterns))
+        )
 
         results = []
         for dist, idx in zip(distances[0], indices[0]):
@@ -462,14 +543,16 @@ class VulnerabilityKB:
                 continue
             score = float(dist)  # Inner product = cosine after normalization
             if score >= threshold:
-                results.append({
-                    "cwe": self._patterns[idx]["cwe"],
-                    "title": self._patterns[idx]["title"],
-                    "score": round(score, 4),
-                    "patterns": self._patterns[idx].get("patterns", []),
-                    "language": self._patterns[idx].get("language", "generic"),
-                    "backend": "faiss",
-                })
+                results.append(
+                    {
+                        "cwe": self._patterns[idx]["cwe"],
+                        "title": self._patterns[idx]["title"],
+                        "score": round(score, 4),
+                        "patterns": self._patterns[idx].get("patterns", []),
+                        "language": self._patterns[idx].get("language", "generic"),
+                        "backend": "faiss",
+                    }
+                )
 
         return results
 
@@ -481,14 +564,16 @@ class VulnerabilityKB:
         results = []
         for idx in scores.argsort()[::-1][:top_k]:
             if scores[idx] >= threshold:
-                results.append({
-                    "cwe": self._patterns[idx]["cwe"],
-                    "title": self._patterns[idx]["title"],
-                    "score": round(float(scores[idx]), 4),
-                    "patterns": self._patterns[idx].get("patterns", []),
-                    "language": self._patterns[idx].get("language", "generic"),
-                    "backend": "tfidf",
-                })
+                results.append(
+                    {
+                        "cwe": self._patterns[idx]["cwe"],
+                        "title": self._patterns[idx]["title"],
+                        "score": round(float(scores[idx]), 4),
+                        "patterns": self._patterns[idx].get("patterns", []),
+                        "language": self._patterns[idx].get("language", "generic"),
+                        "backend": "tfidf",
+                    }
+                )
 
         return results
 
@@ -507,14 +592,16 @@ class VulnerabilityKB:
                 if pat.lower() in query_lower:
                     score += 0.3
             if score > 0:
-                results.append({
-                    "cwe": p["cwe"],
-                    "title": p["title"],
-                    "score": min(score, 1.0),
-                    "patterns": p.get("patterns", []),
-                    "language": p.get("language", "generic"),
-                    "backend": "keyword",
-                })
+                results.append(
+                    {
+                        "cwe": p["cwe"],
+                        "title": p["title"],
+                        "score": min(score, 1.0),
+                        "patterns": p.get("patterns", []),
+                        "language": p.get("language", "generic"),
+                        "backend": "keyword",
+                    }
+                )
 
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_k]

@@ -6,11 +6,133 @@
     "repo": {"type": "string"},
     "scan_date": {"type": "string"},
     "bucket_definitions": {"type": "object"},
-    "summary": {"type": "object"},
-    "findings": {"type": "array"},
+    "summary": {
+      "type": "object",
+      "properties": {
+        "total_findings": {"type": "integer"},
+        "by_severity": {
+          "type": "object",
+          "properties": {
+            "CRITICAL": {"type": "integer"},
+            "HIGH": {"type": "integer"},
+            "MEDIUM": {"type": "integer"},
+            "LOW": {"type": "integer"},
+            "INFORMATIONAL": {"type": "integer"}
+          }
+        },
+        "by_confidence": {
+          "type": "object",
+          "properties": {
+            "high": {"type": "integer"},
+            "medium": {"type": "integer"},
+            "low": {"type": "integer"}
+          }
+        }
+      }
+    },
+    "threat_summary": {
+      "type": "object",
+      "description": "Repository-level threat assessment.",
+      "properties": {
+        "narrative": {"type": "string"},
+        "assets": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "trust_barriers": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "attacker_profiles": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "security_goals": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "audit_scope": {
+      "type": "object",
+      "description": "Scan boundaries with included/excluded paths and coverage notes.",
+      "properties": {
+        "included_paths": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "excluded_paths": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "narrative": {"type": "string"},
+        "limitations": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "analysis_mode": {"type": "string"}
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["finding_id", "severity", "class", "title", "narrative"],
+        "properties": {
+          "finding_id": {"type": "string"},
+          "severity": {"type": "string"},
+          "confidence": {"type": "string"},
+          "class": {"type": "string"},
+          "title": {"type": "string"},
+          "narrative": {"type": "string"},
+          "code_positions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "role": {"type": "string"},
+                "file_path": {"type": "string"},
+                "line_range": {"type": "string"},
+                "function": {"type": "string"}
+              }
+            }
+          },
+          "suggested_fix": {"type": "string"}
+        }
+      }
+    },
     "chains": {"type": "array"},
     "gaps": {"type": "array"},
     "fuzz_artifacts": {"type": "array"},
+    "coverage_ledger": {
+      "type": "object",
+      "description": "Coverage summary documenting reviewed surfaces and their dispositions.",
+      "properties": {
+        "surfaces": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "surface": {"type": "string"},
+              "risk_area": {"type": "string"},
+              "disposition": {
+                "type": "string",
+                "enum": ["reported", "clean", "rejected", "out_of_scope", "pending"]
+              },
+              "notes": {"type": "string"}
+            }
+          }
+        },
+        "open_questions": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
     "exposure_window_kpis": {"type": "object"}
   }
 }

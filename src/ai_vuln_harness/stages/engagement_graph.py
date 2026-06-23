@@ -105,7 +105,9 @@ class EngagementGraph:
 
     # --- Surface ---
 
-    def add_surface(self, kind: str, path: str, detail: str = "", source: str = "") -> str:
+    def add_surface(
+        self, kind: str, path: str, detail: str = "", source: str = ""
+    ) -> str:
         """Add an attack surface entry."""
         sid = self._gen_id("surf", f"{kind}:{path}:{detail}")
         self.conn.execute(
@@ -121,7 +123,9 @@ class EngagementGraph:
 
     def list_surface(self, kind: str | None = None) -> list[dict]:
         if kind:
-            rows = self.conn.execute("SELECT * FROM surface WHERE kind=? ORDER BY ts", (kind,)).fetchall()
+            rows = self.conn.execute(
+                "SELECT * FROM surface WHERE kind=? ORDER BY ts", (kind,)
+            ).fetchall()
         else:
             rows = self.conn.execute("SELECT * FROM surface ORDER BY ts").fetchall()
         return [dict(r) for r in rows]
@@ -148,7 +152,14 @@ class EngagementGraph:
 
     # --- Hypotheses ---
 
-    def add_hypothesis(self, target: str, vuln_class: str, claim: str, poc_sketch: str = "", source: str = "") -> str:
+    def add_hypothesis(
+        self,
+        target: str,
+        vuln_class: str,
+        claim: str,
+        poc_sketch: str = "",
+        source: str = "",
+    ) -> str:
         """Add a vulnerability hypothesis."""
         hid = self._gen_id("hyp", f"{target}:{vuln_class}:{claim}")
         self.conn.execute(
@@ -164,12 +175,16 @@ class EngagementGraph:
         self.conn.commit()
 
     def get_hypothesis(self, hid: str) -> dict | None:
-        row = self.conn.execute("SELECT * FROM hypotheses WHERE id=?", (hid,)).fetchone()
+        row = self.conn.execute(
+            "SELECT * FROM hypotheses WHERE id=?", (hid,)
+        ).fetchone()
         return dict(row) if row else None
 
     def list_hypotheses(self, status: str | None = None) -> list[dict]:
         if status:
-            rows = self.conn.execute("SELECT * FROM hypotheses WHERE status=? ORDER BY ts", (status,)).fetchall()
+            rows = self.conn.execute(
+                "SELECT * FROM hypotheses WHERE status=? ORDER BY ts", (status,)
+            ).fetchall()
         else:
             rows = self.conn.execute("SELECT * FROM hypotheses ORDER BY ts").fetchall()
         return [dict(r) for r in rows]
@@ -195,8 +210,19 @@ class EngagementGraph:
                 id, hyp_id, severity, cwe, title, file, poc_path,
                 evidence, corroborators, cve_anchor, ts
             ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-            (fid, hyp_id, severity, cwe, title, file, poc_path,
-             evidence, corroborators, cve_anchor, self._now()),
+            (
+                fid,
+                hyp_id,
+                severity,
+                cwe,
+                title,
+                file,
+                poc_path,
+                evidence,
+                corroborators,
+                cve_anchor,
+                self._now(),
+            ),
         )
         self.conn.commit()
         return fid
@@ -207,7 +233,9 @@ class EngagementGraph:
 
     def list_findings(self, severity: str | None = None) -> list[dict]:
         if severity:
-            rows = self.conn.execute("SELECT * FROM findings WHERE severity=? ORDER BY ts", (severity,)).fetchall()
+            rows = self.conn.execute(
+                "SELECT * FROM findings WHERE severity=? ORDER BY ts", (severity,)
+            ).fetchall()
         else:
             rows = self.conn.execute("SELECT * FROM findings ORDER BY ts").fetchall()
         return [dict(r) for r in rows]
@@ -230,14 +258,27 @@ class EngagementGraph:
 
     # --- Chains ---
 
-    def add_chain(self, name: str, links: list[str], composite_poc_path: str = "", is_critical: bool = False) -> str:
+    def add_chain(
+        self,
+        name: str,
+        links: list[str],
+        composite_poc_path: str = "",
+        is_critical: bool = False,
+    ) -> str:
         """Add an exploit chain."""
         cid = self._gen_id("chain", f"{name}:{json.dumps(links)}")
         self.conn.execute(
             """INSERT OR IGNORE INTO chains(
                 id, name, links, composite_poc_path, is_critical, ts
             ) VALUES(?,?,?,?,?,?)""",
-            (cid, name, json.dumps(links), composite_poc_path, int(is_critical), self._now()),
+            (
+                cid,
+                name,
+                json.dumps(links),
+                composite_poc_path,
+                int(is_critical),
+                self._now(),
+            ),
         )
         self.conn.commit()
         return cid
@@ -252,7 +293,9 @@ class EngagementGraph:
 
     def list_chains(self, critical_only: bool = False) -> list[dict]:
         if critical_only:
-            rows = self.conn.execute("SELECT * FROM chains WHERE is_critical=1 ORDER BY ts").fetchall()
+            rows = self.conn.execute(
+                "SELECT * FROM chains WHERE is_critical=1 ORDER BY ts"
+            ).fetchall()
         else:
             rows = self.conn.execute("SELECT * FROM chains ORDER BY ts").fetchall()
         result = []
@@ -267,15 +310,33 @@ class EngagementGraph:
     def summary(self) -> dict:
         """Return a summary of all graph contents."""
         return {
-            "surface_count": self.conn.execute("SELECT COUNT(*) FROM surface").fetchone()[0],
-            "facts_count": self.conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0],
-            "hypotheses_count": self.conn.execute("SELECT COUNT(*) FROM hypotheses").fetchone()[0],
-            "hypotheses_open": self.conn.execute("SELECT COUNT(*) FROM hypotheses WHERE status='open'").fetchone()[0],
-            "hypotheses_confirmed": self.conn.execute("SELECT COUNT(*) FROM hypotheses WHERE status='confirmed'").fetchone()[0],
-            "findings_count": self.conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0],
-            "dead_ends_count": self.conn.execute("SELECT COUNT(*) FROM dead_ends").fetchone()[0],
-            "chains_count": self.conn.execute("SELECT COUNT(*) FROM chains").fetchone()[0],
-            "chains_critical": self.conn.execute("SELECT COUNT(*) FROM chains WHERE is_critical=1").fetchone()[0],
+            "surface_count": self.conn.execute(
+                "SELECT COUNT(*) FROM surface"
+            ).fetchone()[0],
+            "facts_count": self.conn.execute("SELECT COUNT(*) FROM facts").fetchone()[
+                0
+            ],
+            "hypotheses_count": self.conn.execute(
+                "SELECT COUNT(*) FROM hypotheses"
+            ).fetchone()[0],
+            "hypotheses_open": self.conn.execute(
+                "SELECT COUNT(*) FROM hypotheses WHERE status='open'"
+            ).fetchone()[0],
+            "hypotheses_confirmed": self.conn.execute(
+                "SELECT COUNT(*) FROM hypotheses WHERE status='confirmed'"
+            ).fetchone()[0],
+            "findings_count": self.conn.execute(
+                "SELECT COUNT(*) FROM findings"
+            ).fetchone()[0],
+            "dead_ends_count": self.conn.execute(
+                "SELECT COUNT(*) FROM dead_ends"
+            ).fetchone()[0],
+            "chains_count": self.conn.execute("SELECT COUNT(*) FROM chains").fetchone()[
+                0
+            ],
+            "chains_critical": self.conn.execute(
+                "SELECT COUNT(*) FROM chains WHERE is_critical=1"
+            ).fetchone()[0],
         }
 
     def export_json(self) -> dict:

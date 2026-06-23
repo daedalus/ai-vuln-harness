@@ -231,7 +231,12 @@ def _count_votes(
                 vote_counts[key] += 1
                 seen_in_run.add(key)
             _aggregate_finding_data(
-                key, f, confidence_sums, confidence_counts, evidence_acc, hunter_acc,
+                key,
+                f,
+                confidence_sums,
+                confidence_counts,
+                evidence_acc,
+                hunter_acc,
             )
             existing = best_variant.get(key)
             if existing is None or _severity_rank(
@@ -240,7 +245,11 @@ def _count_votes(
                 best_variant[key] = f
 
     _annotate_best_variants(
-        best_variant, confidence_sums, confidence_counts, evidence_acc, hunter_acc,
+        best_variant,
+        confidence_sums,
+        confidence_counts,
+        evidence_acc,
+        hunter_acc,
     )
     return vote_counts, best_variant
 

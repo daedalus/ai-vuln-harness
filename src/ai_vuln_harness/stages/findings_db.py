@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -29,7 +29,7 @@ except ImportError:
     _HAS_NUMPY = False
 
 
-def _cosine_similarity(a: "np.ndarray", b: "np.ndarray") -> float:
+def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     norm_a = float(np.linalg.norm(a))
     norm_b = float(np.linalg.norm(b))
     if norm_a == 0 or norm_b == 0:
@@ -98,7 +98,7 @@ class FindingsDB:
         if not findings:
             return 0
 
-        ts = datetime.now(timezone.utc).isoformat()
+        ts = datetime.now(UTC).isoformat()
         count = 0
 
         for f in findings:

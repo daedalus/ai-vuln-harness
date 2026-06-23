@@ -240,7 +240,7 @@ _DOMAIN_CENTROIDS: dict[str, str] = {
 
 def assign_domain_by_embedding(
     snippet: dict,
-    domain_centroids: dict[str, "np.ndarray"] | None = None,
+    domain_centroids: dict[str, np.ndarray] | None = None,
 ) -> str | None:
     """Assign a snippet to the most similar domain using embeddings.
 
@@ -258,6 +258,7 @@ def assign_domain_by_embedding(
     """
     try:
         import numpy as np
+
         from ai_vuln_harness.stages.embeddings import EmbeddingIndex
     except ImportError:
         return None
@@ -267,8 +268,7 @@ def assign_domain_by_embedding(
 
     # Build text representation of snippet
     text = " ".join(
-        str(snippet.get(k) or "")
-        for k in ("name", "content", "file", "language")
+        str(snippet.get(k) or "") for k in ("name", "content", "file", "language")
     ).strip()
     if not text:
         return None
@@ -284,7 +284,10 @@ def assign_domain_by_embedding(
     best_domain = None
     best_sim = -1.0
     for domain, centroid in domain_centroids.items():
-        sim = float(np.dot(emb, centroid) / (np.linalg.norm(emb) * np.linalg.norm(centroid) + 1e-8))
+        sim = float(
+            np.dot(emb, centroid)
+            / (np.linalg.norm(emb) * np.linalg.norm(centroid) + 1e-8)
+        )
         if sim > best_sim:
             best_sim = sim
             best_domain = domain
@@ -292,13 +295,14 @@ def assign_domain_by_embedding(
     return best_domain
 
 
-def build_domain_centroids() -> dict[str, "np.ndarray"] | None:
+def build_domain_centroids() -> dict[str, np.ndarray] | None:
     """Pre-compute domain centroid embeddings from domain descriptions.
 
     Returns None when sentence-transformers is unavailable.
     """
     try:
         import numpy as np
+
         from ai_vuln_harness.stages.embeddings import EmbeddingIndex
     except ImportError:
         return None

@@ -69,7 +69,8 @@ def load_nvd_cve_from_file(
             title=title,
             description=description[:500],
             patterns=patterns[:5],
-            language="generic", persist=True,
+            language="generic",
+            persist=True,
         )
         count += 1
 
@@ -82,14 +83,19 @@ def _load_single_cve(kb: VulnerabilityKB, cve_id: str, verbose: bool = False) ->
     Returns True if successfully loaded, False otherwise.
     """
     url = f"https://olbat.github.io/nvdcve/{cve_id}.json"
-    req = urllib.request.Request(url, headers={
-        "User-Agent": "ai-vuln-harness/1.0 (https://github.com/daedalus/ai-vuln-harness)",
-    })
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "ai-vuln-harness/1.0 (https://github.com/daedalus/ai-vuln-harness)",
+        },
+    )
     try:
         with urllib.request.urlopen(req, timeout=30) as response:
             data = json.loads(response.read())
 
-        descriptions = data.get("cve", {}).get("description", {}).get("description_data", [])
+        descriptions = (
+            data.get("cve", {}).get("description", {}).get("description_data", [])
+        )
         description = ""
         for desc in descriptions:
             if desc.get("lang") == "en":
@@ -115,7 +121,8 @@ def _load_single_cve(kb: VulnerabilityKB, cve_id: str, verbose: bool = False) ->
             title=f"{cve_id}: {description[:100]}",
             description=description[:500],
             patterns=patterns[:5],
-            language="generic", persist=True,
+            language="generic",
+            persist=True,
         )
         if verbose:
             print(f"    Loaded {cve_id}: {description[:60]}...")
@@ -138,7 +145,14 @@ def _clone_nvdcve_repo(cache_dir: Path, verbose: bool = False) -> Path | None:
     print(f"Cloning olbat/nvdcve repository...")
     try:
         subprocess.run(
-            ["git", "clone", "--depth", "1", "https://github.com/olbat/nvdcve.git", str(repo_dir)],
+            [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "https://github.com/olbat/nvdcve.git",
+                str(repo_dir),
+            ],
             check=True,
             capture_output=True,
             timeout=300,
@@ -202,7 +216,11 @@ def load_nvdcve_from_clone(
 
             # Fallback to old format
             if not description:
-                descriptions = data.get("cve", {}).get("description", {}).get("description_data", [])
+                descriptions = (
+                    data.get("cve", {})
+                    .get("description", {})
+                    .get("description_data", [])
+                )
                 for desc in descriptions:
                     if desc.get("lang") == "en":
                         description = desc.get("value", "")
@@ -224,7 +242,9 @@ def load_nvdcve_from_clone(
 
             # Fallback to old format
             if not cwe_ids:
-                weaknesses = data.get("cve", {}).get("weakness", {}).get("description_data", [])
+                weaknesses = (
+                    data.get("cve", {}).get("weakness", {}).get("description_data", [])
+                )
                 for w in weaknesses:
                     val = w.get("value", "")
                     if val.startswith("CWE-"):
@@ -239,7 +259,8 @@ def load_nvdcve_from_clone(
                 title=f"{cve_id}: {description[:100]}",
                 description=description[:500],
                 patterns=patterns[:5],
-                language="generic", persist=True,
+                language="generic",
+                persist=True,
             )
             count += 1
 

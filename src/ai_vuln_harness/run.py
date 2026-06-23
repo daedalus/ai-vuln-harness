@@ -32,19 +32,21 @@ import os
 import pickle
 import sys
 import time
-
-import yaml
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 
+import yaml
+
 from .sandbox import SandboxManager
 from .stages.chains import synthesize_exploit_chains
 from .stages.contracts import has_valid_suspicious_points, standardize_finding
 from .stages.coordinator import build_context_packs
 from .stages.diff import get_changed_snippets
+from .stages.engagement_graph import EngagementGraph
+from .stages.evidence_collector import run_evidence_collector
 from .stages.exploit_synthesis import (
     check_poc_synthesis_readiness,
     run_exploit_synthesis,
@@ -59,6 +61,8 @@ from .stages.parser import parse_findings
 from .stages.patch import build_patch_candidates
 from .stages.pbt import run_pbt_on_findings
 from .stages.poc import process_findings as run_poc
+from .stages.post_processor import run_post_processor
+from .stages.rag_kb import VulnerabilityKB
 from .stages.recon import build_recon_tasks
 from .stages.report import build_report, deduplicate
 from .stages.runtime import (
@@ -93,10 +97,6 @@ from .stages.shield import (
 from .stages.suppressions import SuppressionRegistry
 from .stages.validate import build_validate_prompt, is_api_by_design, parse_validate_xml
 from .stages.voting import merge_hunter_outputs
-from .stages.engagement_graph import EngagementGraph
-from .stages.evidence_collector import run_evidence_collector
-from .stages.post_processor import run_post_processor
-from .stages.rag_kb import VulnerabilityKB
 from .stages.z3_verifier import verify_validate_feasibility
 
 logger = logging.getLogger("vuln-harness")
@@ -651,7 +651,7 @@ def _load_yaml_config(work_dir: Path) -> dict:
     if not path.exists():
         return {}
     try:
-        with open(path, "r") as f:
+        with open(path) as f:
             data = yaml.safe_load(f)
         return data if isinstance(data, dict) else {}
     except (yaml.YAMLError, OSError):

@@ -263,7 +263,9 @@ def suppress_known_cves(
             distances, indices = full_index.search(finding_np, k)
 
             for i, (orig_idx, f) in enumerate(need_semantic):
-                f_class = str(f.get("class") or f.get("vuln_class") or "").lower().strip()
+                f_class = (
+                    str(f.get("class") or f.get("vuln_class") or "").lower().strip()
+                )
                 matched = False
 
                 # Layer 3: Class-match boost — determine threshold
@@ -280,8 +282,14 @@ def suppress_known_cves(
                     is_same_class = cve_idx in same_class_indices
 
                     # Layer 3: adaptive threshold
-                    effective_threshold = threshold if threshold is not None else (
-                        _THRESHOLD_SAME_CLASS if is_same_class else _THRESHOLD_DIFF_CLASS
+                    effective_threshold = (
+                        threshold
+                        if threshold is not None
+                        else (
+                            _THRESHOLD_SAME_CLASS
+                            if is_same_class
+                            else _THRESHOLD_DIFF_CLASS
+                        )
                     )
 
                     if sim < effective_threshold:

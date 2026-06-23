@@ -90,6 +90,149 @@
     "pbt_adjusted_confidence": {
       "type": "boolean",
       "description": "localization_confidence was adjusted by PBT"
+    },
+    "verification_confidence": {
+      "type": "object",
+      "description": "Structured confidence derived from validation evidence quality.",
+      "properties": {
+        "grade": {
+          "type": "string",
+          "enum": ["high", "medium", "low"]
+        },
+        "numeric_score": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "basis": {"type": "string"}
+      },
+      "required": ["grade", "numeric_score", "basis"]
+    },
+    "code_positions": {
+      "type": "array",
+      "description": "Labeled affected code locations with designated roles.",
+      "items": {
+        "type": "object",
+        "required": ["role", "file_path", "line_range"],
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": ["entrypoint", "wrapper", "guard", "sink", "implementation"]
+          },
+          "file_path": {"type": "string"},
+          "line_range": {"type": "string"},
+          "notes": {"type": "string"}
+        }
+      }
+    },
+    "source_snippets": {
+      "type": "array",
+      "description": "Verbatim source excerpts proving the finding, with stable UIDs for cross-referencing.",
+      "items": {
+        "type": "object",
+        "required": ["uid", "designation", "file_path", "line_start", "snippet", "rationale"],
+        "properties": {
+          "uid": {"type": "string"},
+          "designation": {"type": "string"},
+          "file_path": {"type": "string"},
+          "line_start": {"type": "integer", "minimum": 1},
+          "line_end": {"type": "integer", "minimum": 1},
+          "lang": {"type": "string"},
+          "snippet": {"type": "string"},
+          "rationale": {"type": "string"}
+        }
+      }
+    },
+    "violation_summary": {
+      "type": "object",
+      "description": "The violated security invariant and how the implementation breaks it.",
+      "properties": {
+        "description": {"type": "string"},
+        "linked_snippets": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      },
+      "required": ["description"]
+    },
+    "exploitation_story": {
+      "type": "object",
+      "description": "Structured attacker narrative with input flow, access vector, and consequence.",
+      "properties": {
+        "narrative": {"type": "string"},
+        "input_flow": {
+          "type": "object",
+          "properties": {
+            "narrative": {"type": "string"},
+            "origin": {"type": "string"},
+            "destination": {"type": "string"},
+            "consequence": {"type": "string"}
+          }
+        },
+        "access_vector": {
+          "type": "object",
+          "properties": {
+            "narrative": {"type": "string"},
+            "actor": {"type": "string"},
+            "entrypoint": {"type": "string"},
+            "consequence": {"type": "string"}
+          }
+        },
+        "impact": {
+          "type": "object",
+          "properties": {
+            "level": {"type": "string"},
+            "rationale": {"type": "string"}
+          }
+        },
+        "linked_snippets": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "classification": {
+      "type": "object",
+      "description": "Vulnerability family classification with weakness identifiers.",
+      "properties": {
+        "family": {"type": "string"},
+        "weakness_ids": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "suggested_fix": {"type": "string"},
+    "fix_verification": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "defense_layers": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "validation_details": {
+      "type": "object",
+      "description": "Validation outcome from adversarial review.",
+      "properties": {
+        "technique": {"type": "string"},
+        "outcome": {"type": "string"},
+        "linked_snippets": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "checklist": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "item": {"type": "string"},
+              "passed": {"type": "boolean"},
+              "evidence": {"type": "string"}
+            }
+          }
+        }
+      }
     }
   }
 }

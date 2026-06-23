@@ -28,10 +28,17 @@ from ..rag_kb import VulnerabilityKB
 from .cve_fixes import load_cvefixes_from_file
 from .d2a import load_d2a_from_file, load_d2a_from_url
 from .exploitdb import load_exploitdb_from_file, load_exploitdb_from_url
-from .github_advisory import load_github_advisory_from_file, load_github_advisory_from_url
+from .github_advisory import (
+    load_github_advisory_from_file,
+    load_github_advisory_from_url,
+)
 from .juliet import load_juliet_from_file, load_juliet_representatives
 from .mitre_cwe import load_mitre_cwe_from_file, load_mitre_cwe_from_url
-from .nvd_cve import load_nvd_cve_from_file, load_nvd_cve_from_url, load_nvdcve_from_clone
+from .nvd_cve import (
+    load_nvd_cve_from_file,
+    load_nvd_cve_from_url,
+    load_nvdcve_from_clone,
+)
 from .osv import load_osv_from_file, load_osv_from_url
 from .snyk import load_snyk_from_file, load_snyk_from_url
 
@@ -94,7 +101,16 @@ def load_all_public_datasets(
         cache_dir = _default_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    all_datasets = ["mitre_cwe", "nvd_cve", "exploitdb", "github", "osv", "snyk", "d2a", "juliet"]
+    all_datasets = [
+        "mitre_cwe",
+        "nvd_cve",
+        "exploitdb",
+        "github",
+        "osv",
+        "snyk",
+        "d2a",
+        "juliet",
+    ]
     datasets_to_load = datasets or all_datasets
 
     summary = dict.fromkeys(all_datasets, 0)
@@ -108,7 +124,9 @@ def load_all_public_datasets(
             if cwe_path.exists():
                 count = load_mitre_cwe_from_file(kb, cwe_path, max_per_dataset)
             else:
-                count = load_mitre_cwe_from_url(kb, cache_path=cwe_path, max_patterns=max_per_dataset)
+                count = load_mitre_cwe_from_url(
+                    kb, cache_path=cwe_path, max_patterns=max_per_dataset
+                )
             summary["mitre_cwe"] = count
             if verbose:
                 print(f"  ✓ Loaded {count} CWE patterns")
@@ -121,7 +139,9 @@ def load_all_public_datasets(
     if "nvd_cve" in datasets_to_load:
         try:
             print("Loading NVD CVE dataset...")
-            count = load_nvd_cve_from_url(kb, max_patterns=max_per_dataset, verbose=verbose)
+            count = load_nvd_cve_from_url(
+                kb, max_patterns=max_per_dataset, verbose=verbose
+            )
             summary["nvd_cve"] = count
             print(f"  ✓ Loaded {count} CVE patterns")
         except Exception as e:
@@ -135,7 +155,9 @@ def load_all_public_datasets(
             if edb_path.exists():
                 count = load_exploitdb_from_file(kb, edb_path, max_per_dataset)
             else:
-                count = load_exploitdb_from_url(kb, cache_path=edb_path, max_patterns=max_per_dataset)
+                count = load_exploitdb_from_url(
+                    kb, cache_path=edb_path, max_patterns=max_per_dataset
+                )
             summary["exploitdb"] = count
             print(f"  ✓ Loaded {count} Exploit-DB patterns")
         except Exception as e:
@@ -149,7 +171,9 @@ def load_all_public_datasets(
             if gh_path.exists():
                 count = load_github_advisory_from_file(kb, gh_path, max_per_dataset)
             else:
-                count = load_github_advisory_from_url(kb, cache_path=gh_path, max_patterns=max_per_dataset)
+                count = load_github_advisory_from_url(
+                    kb, cache_path=gh_path, max_patterns=max_per_dataset
+                )
             summary["github"] = count
             print(f"  ✓ Loaded {count} GitHub Advisory patterns")
         except Exception as e:
@@ -163,7 +187,9 @@ def load_all_public_datasets(
             if osv_path.exists():
                 count = load_osv_from_file(kb, osv_path, max_per_dataset)
             else:
-                count = load_osv_from_url(kb, cache_path=osv_path, max_patterns=max_per_dataset)
+                count = load_osv_from_url(
+                    kb, cache_path=osv_path, max_patterns=max_per_dataset
+                )
             summary["osv"] = count
             print(f"  ✓ Loaded {count} OSV.dev patterns")
         except Exception as e:
@@ -177,7 +203,9 @@ def load_all_public_datasets(
             if snyk_path.exists():
                 count = load_snyk_from_file(kb, snyk_path, max_per_dataset)
             else:
-                count = load_snyk_from_url(kb, cache_path=snyk_path, max_patterns=max_per_dataset)
+                count = load_snyk_from_url(
+                    kb, cache_path=snyk_path, max_patterns=max_per_dataset
+                )
             summary["snyk"] = count
             print(f"  ✓ Loaded {count} Snyk patterns")
         except Exception as e:

@@ -216,7 +216,7 @@ def _generate_interestingness_script(
     interestingness: Callable[[Path], bool],
 ) -> str:
     """Serialize the interestingness test to a standalone Python script."""
-    return f"""\
+    return """\
 import sys
 import tempfile
 import subprocess
@@ -226,7 +226,7 @@ CANDIDATE = sys.argv[1]
 
 # The interestingness function is inlined by the harness.
 # This script is called by Shrink Ray.
-result = os.system(f"gcc -fsanitize=address -g -O0 '{{candidate}}' -o /tmp/reduced_test_$$ 2>/dev/null")
+result = os.system(f"gcc -fsanitize=address -g -O0 '{candidate}' -o /tmp/reduced_test_$$ 2>/dev/null")
 if result != 0:
     sys.exit(1)
 result = os.system(f"timeout 5 /tmp/reduced_test_$$ 2>&1 | grep -q 'ERROR\\|SUMMARY\\|AddressSanitizer'")
