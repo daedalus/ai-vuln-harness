@@ -15,15 +15,10 @@ import json
 import sqlite3
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 if TYPE_CHECKING:
     from pathlib import Path
-
-try:
-    import numpy as np
-
-    _HAS_NUMPY = True
-except ImportError:
-    _HAS_NUMPY = False
 
 
 def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -193,7 +188,7 @@ class SuppressionRegistry:
         cls = finding.get("class", "")
 
         embedding_blob = None
-        if embedding is not None and _HAS_NUMPY:
+        if embedding is not None:
             embedding_blob = embedding.astype("float32").tobytes()
 
         self._conn.execute(
@@ -265,7 +260,7 @@ class SuppressionRegistry:
             return True
 
         # Embedding similarity match
-        if _HAS_NUMPY and finding.get("_embedding") is not None:
+        if finding.get("_embedding") is not None:
             query_emb = finding["_embedding"].astype("float32")
             all_rows = self._conn.execute(
                 "SELECT id, embedding FROM suppressions WHERE embedding IS NOT NULL",

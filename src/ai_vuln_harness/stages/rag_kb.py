@@ -15,6 +15,8 @@ import logging
 import sqlite3
 from pathlib import Path
 
+import numpy as np
+
 log = logging.getLogger(__name__)
 
 try:
@@ -27,7 +29,6 @@ except ImportError:
 
 try:
     import faiss
-    import numpy as np
     from sentence_transformers import SentenceTransformer
 
     _HAS_FAISS = True

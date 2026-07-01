@@ -11,10 +11,7 @@ Usage:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    import numpy as np
+import numpy as np  # noqa: TC002 — needed at runtime (sentence_transformers returns np.ndarray)
 
 try:
     import faiss

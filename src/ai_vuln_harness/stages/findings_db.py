@@ -18,15 +18,10 @@ import sqlite3
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 if TYPE_CHECKING:
     from pathlib import Path
-
-try:
-    import numpy as np
-
-    _HAS_NUMPY = True
-except ImportError:
-    _HAS_NUMPY = False
 
 
 def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -116,7 +111,7 @@ class FindingsDB:
 
             embedding_blob = None
             emb = f.get("_embedding")
-            if emb is not None and _HAS_NUMPY:
+            if emb is not None:
                 embedding_blob = np.asarray(emb, dtype="float32").tobytes()
 
             serializable = {k: v for k, v in f.items() if k != "_embedding"}
@@ -256,9 +251,6 @@ class FindingsDB:
         -------
         List of similar finding dicts, ordered by similarity descending.
         """
-        if not _HAS_NUMPY:
-            return []
-
         query_emb = finding.get("_embedding")
         if query_emb is None:
             return []
