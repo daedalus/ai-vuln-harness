@@ -208,6 +208,12 @@ _FUNC_PATTERNS = {
         r"|^\s*(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*\{",
         re.MULTILINE,
     ),
+    ".java": re.compile(
+        r"^\s*(?:(?:public|private|protected|static|final|abstract|synchronized|native)\s+)*"
+        r"(?:[A-Za-z_][A-Za-z0-9_.<>\[\],\s]*?\s+)?"
+        r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(",
+        re.MULTILINE,
+    ),
 }
 _BINARY_NON_TEXT_THRESHOLD = 0.30
 _ASCII_HORIZONTAL_TAB = 9
