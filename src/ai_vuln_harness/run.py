@@ -95,6 +95,7 @@ from .stages.shield import (
     filter_unreachable,
 )
 from .stages.suppressions import SuppressionRegistry
+from .stages.target_templates import TEMPLATES
 from .stages.validate import build_validate_prompt, is_api_by_design, parse_validate_xml
 from .stages.voting import merge_hunter_outputs
 from .stages.z3_verifier import verify_validate_feasibility
@@ -2072,6 +2073,9 @@ def run(  # noqa: PLR0913  # pylint: disable=too-many-statements,too-many-argume
     _historical_context: bool = False,
     _enable_fts_suppressions: bool = False,
     _rag_catalog: str | None = None,
+    enable_independent_verify: bool = False,
+    prior_findings_paths: list[str] | None = None,
+    target_template: str | None = None,
 ) -> dict:
     pkg_dir = Path(__file__).parent
     work_dir = Path.cwd()
@@ -2097,6 +2101,8 @@ def run(  # noqa: PLR0913  # pylint: disable=too-many-statements,too-many-argume
         enable_z3_validate=enable_z3_validate,
         z3_timeout_ms=z3_timeout_ms,
     )
+    if target_template:
+        cfg["target_template"] = target_template
     yaml_cfg = _load_yaml_config(work_dir)
     cfg = _merge_yaml_config(cfg, yaml_cfg)
     stages_cfg = cfg.get("stages_config") or _load_stages_config(pkg_dir)
@@ -2157,6 +2163,28 @@ def run(  # noqa: PLR0913  # pylint: disable=too-many-statements,too-many-argume
     cve_entries = _inject_cve_entries(
         packs, repo, snippets, cache, cve_corpus, no_fetch_cves, no_scan_git_cves
     )
+
+    # P1: Prior-Run Awareness — load existing findings.json to skip known bugs
+    if prior_findings_paths:
+        _inject_prior_findings(packs, prior_findings_paths)
+
+    # P4: Per-target context templates — inject target-specific guidance
+    from ai_vuln_harness.stages.target_templates import (
+        detect_target_type,
+        get_template,
+        inject_template_guidance,
+    )
+
+    target_template_key = cfg.get("target_template")
+    if not target_template_key:
+        target_template_key = detect_target_type(recon_tasks, snippets)
+    if target_template_key:
+        template = get_template(target_template_key)
+        if template:
+            packs = [inject_template_guidance(p, template) for p in packs]
+            state.put_meta("target_template", target_template_key)
+            logger.info("injected target template: %s", target_template_key)
+
     state.put_meta("pack_count", str(len(packs)))
     domain_map = _build_domain_map(packs)
     save_packs_json(packs, output_dir / "context_packs.pkl")
@@ -2168,6 +2196,10 @@ def run(  # noqa: PLR0913  # pylint: disable=too-many-statements,too-many-argume
         validate_model_chain_override,
         state,
     )
+
+    # P5: Scan checkpoint + findings bus (available for pipeline integration)
+    from ai_vuln_harness.stages.findings_bus import FindingsBus  # noqa: F401
+    from ai_vuln_harness.stages.scan_checkpoint import ScanCheckpoint  # noqa: F401
 
     all_findings, all_gaps = _run_hunt_stage(
         mode,
@@ -2269,6 +2301,25 @@ def run(  # noqa: PLR0913  # pylint: disable=too-many-statements,too-many-argume
     findings, registry_suppressed = registry.filter(promoted)
     state.put_meta("registry_suppressed", str(len(registry_suppressed)))
 
+    # Independent Verification Phase (P0): fresh agents verify factual claims
+    if enable_independent_verify and findings and auth:
+        from ai_vuln_harness.stages.independent_verify import run_independent_verify
+
+        iv_model = (
+            validate_models[0]
+            if validate_models
+            else (model_chain[0] if model_chain else "")
+        )
+        findings = run_independent_verify(
+            findings,
+            snippet_db,
+            iv_model,
+            auth=auth,
+            cache=cache,
+            max_workers=cfg.get("independent_verify", {}).get("max_workers", 4),
+        )
+        _persist_jsonl(output_dir / "independent_verified.jsonl", findings)
+
     chains = [] if no_chains else synthesize_exploit_chains(findings, snippets)
     fuzz_artifacts = _run_fuzz_orchestrator_stage(
         findings,
@@ -2286,6 +2337,14 @@ def run(  # noqa: PLR0913  # pylint: disable=too-many-statements,too-many-argume
         poc_finding_id,
         test_reduction=test_reduction,
     )
+
+    # Crash corpus collection: gather PoC inputs for regression testing
+    if pocs:
+        from ai_vuln_harness.stages.crash_corpus import collect_crash_corpus
+
+        corpus_result = collect_crash_corpus(pocs, findings, output_dir)
+        state.put_meta("crash_corpus_count", str(corpus_result.get("file_count", 0)))
+
     exploit_synthesis_records = _run_exploit_synthesis_stage(
         findings,
         snippet_db,
@@ -2411,6 +2470,51 @@ def _clear_model_limits_cache(pkg_dir: Path, refresh_models: bool) -> None:
     p = pkg_dir / "config/model_limits.json"
     if p.exists():
         p.unlink()
+
+
+def _inject_prior_findings(packs: list[dict], paths: list[str]) -> None:
+    """Load prior findings.json files and inject them as known_entries.
+
+    Hunters skip findings already discovered in prior runs and focus on
+    new ground.  Each prior finding becomes a ``known_entries`` item with
+    enough context for the hunter to recognise and skip it.
+    """
+    prior: list[dict] = []
+    for p_str in paths:
+        p = Path(p_str)
+        if not p.exists():
+            logger.warning("prior-findings: %s not found, skipping", p)
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                prior.extend(data)
+            elif isinstance(data, dict) and "findings" in data:
+                prior.extend(data["findings"])
+        except Exception as exc:
+            logger.warning("prior-findings: failed to load %s: %s", p, exc)
+
+    if not prior:
+        logger.info("prior-findings: no prior findings loaded")
+        return
+
+    for pack in packs:
+        domain = pack.get("agent", "")
+        relevant = [
+            f
+            for f in prior
+            if f.get("class") == domain or f.get("attack_class") == domain
+        ]
+        if relevant:
+            existing = pack.get("known_entries", [])
+            existing.extend(relevant)
+            pack["known_entries"] = existing
+
+    logger.info(
+        "prior-findings: injected %d prior findings across %d packs",
+        len(prior),
+        len(packs),
+    )
 
 
 def _inject_cve_entries(
@@ -2592,6 +2696,9 @@ def run_all(  # noqa: PLR0913
     _historical_context: bool = False,
     _enable_fts_suppressions: bool = False,
     _rag_catalog: str | None = None,
+    enable_independent_verify: bool = False,
+    prior_findings_paths: list[str] | None = None,
+    target_template: str | None = None,
 ) -> dict:
     reports: list[dict] = []
     for mode in _SINGLE_MODES:
@@ -2655,6 +2762,9 @@ def run_all(  # noqa: PLR0913
             _historical_context=_historical_context,
             _enable_fts_suppressions=_enable_fts_suppressions,
             _rag_catalog=_rag_catalog,
+            enable_independent_verify=enable_independent_verify,
+            prior_findings_paths=prior_findings_paths,
+            target_template=target_template,
         )
         report["mode_run"] = mode
         reports.append(report)
@@ -2817,6 +2927,9 @@ def _build_run_kwargs(args: argparse.Namespace, *, target_mode: bool = False) ->
         "_no_cve_corpus": args.no_cve_corpus,
         "no_rag_kb": args.no_rag_kb,
         "no_evidence": args.no_evidence,
+        "enable_independent_verify": args.enable_independent_verify,
+        "prior_findings_paths": args.prior_findings,
+        "target_template": args.target_template,
     }
 
 
@@ -3025,6 +3138,29 @@ def main() -> None:  # pylint: disable=too-many-statements
         default="standard",
         help="Output review risk level (default: standard). "
         "'strict' also blocks on warn-tier patterns like exploit terminology.",
+    )
+    parser.add_argument(
+        "--target-template",
+        type=str,
+        default=None,
+        choices=list(TEMPLATES.keys()) if TEMPLATES else None,
+        help="Target-specific context template (auto-detected if not set). "
+        "Injects hunt guidance for the codebase type.",
+    )
+    parser.add_argument(
+        "--enable-independent-verify",
+        action="store_true",
+        help="Enable independent verification phase: fresh agents verify every "
+        "factual claim in confirmed findings against actual source code.",
+    )
+    parser.add_argument(
+        "--prior-findings",
+        type=str,
+        action="append",
+        dest="prior_findings",
+        default=None,
+        help="Path to a prior findings.json to skip known bugs and target gaps. "
+        "Can be specified multiple times for multiple prior runs.",
     )
     parser.add_argument(
         "--zero-day",

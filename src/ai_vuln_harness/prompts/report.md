@@ -79,6 +79,29 @@ control would require.
 One of: CRITICAL / HIGH / MEDIUM / LOW / NOT-A-BUG. Two-sentence justification
 weighing: WRITE vs READ, reachability, mitigations, controllability.
 
+## Intended behavior
+
+State what the developer was trying to build — the intended, non-vulnerable
+business logic. This makes the defect legible by contrasting what the code
+should do vs what it actually does. Include this in the output as
+`intended_behavior`.
+
+## Conditions for exploitation
+
+List the factual prerequisites for exploitation as `conditions` array.
+Each entry has a `kind` (authentication_level, authorization_role,
+user_interaction, system_configuration, network_routing,
+environmental_dependency, data_state, timing_dependency, third_party_dependency)
+and a `description`. Empty array if exploitable by default.
+
+## Baseline comparable
+
+Identify comparable mainstream software with the same pattern. Include as
+`baseline_comparable` with `name`, `has_same_pattern`, `exploited_there`,
+`notes`. If the comparable has the same pattern and it has been exploited
+there, that strengthens the finding. If nobody has exploited it in 20 years,
+understand why.
+
 ## Rules
 
 - Include `bucket_rationale` on each finding

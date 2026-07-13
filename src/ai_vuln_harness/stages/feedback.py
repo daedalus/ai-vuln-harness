@@ -83,6 +83,7 @@ def build_feedback_tasks(
     already_covered: set[str] | None = None,
     max_tasks: int = 10,
     scope_notes: str | None = None,
+    enable_variant_hunter: bool = False,
 ) -> list[dict]:
     covered = already_covered or set()
     all_files = {str(s.get("file") or "") for s in all_snippets if s.get("file")}
@@ -101,5 +102,20 @@ def build_feedback_tasks(
         )
         if task is not None:
             tasks.append(task)
+
+    # P5: Variant Hunter — search untouched files for same pattern
+    if enable_variant_hunter and traced_findings:
+        from ai_vuln_harness.stages.variant_hunter import build_variant_tasks
+
+        confirmed = [f for f in traced_findings if f.get("status") == "confirmed"]
+        if confirmed:
+            remaining = max_tasks - len(tasks)
+            variant_tasks = build_variant_tasks(
+                confirmed,
+                all_files,
+                covered,
+                max_tasks=max(remaining, 5),
+            )
+            tasks.extend(variant_tasks)
 
     return tasks

@@ -233,6 +233,45 @@
           }
         }
       }
+    },
+    "intended_behavior": {
+      "type": "string",
+      "description": "What was the developer trying to build? The intended, non-vulnerable business logic. Makes the defect legible by contrasting what the code should do vs what it actually does."
+    },
+    "conditions": {
+      "type": "array",
+      "description": "Factual prerequisites for exploitation. Empty array if exploitable by default.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "authentication_level",
+              "authorization_role",
+              "user_interaction",
+              "system_configuration",
+              "network_routing",
+              "environmental_dependency",
+              "data_state",
+              "timing_dependency",
+              "third_party_dependency"
+            ]
+          },
+          "description": {"type": "string"}
+        },
+        "required": ["kind", "description"]
+      }
+    },
+    "baseline_comparable": {
+      "type": "object",
+      "description": "Comparable mainstream software with the same pattern. If it has been exploited there, the finding is stronger.",
+      "properties": {
+        "name": {"type": "string"},
+        "has_same_pattern": {"type": "boolean"},
+        "exploited_there": {"type": "boolean"},
+        "notes": {"type": "string"}
+      }
     }
   }
 }

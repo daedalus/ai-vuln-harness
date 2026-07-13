@@ -59,12 +59,42 @@ Calibrate based on the strongest evidence actually obtained, not the perceived s
 - **medium** (0.3–0.79): plausible path with some direct evidence, but incomplete call chain, configuration, version, or boundary details.
 - **low** (0.0–0.29): weak or indirect static support, significant ambiguity, or missing context.
 
+## Intended behavior
+
+For every confirmed finding, state what the developer was trying to build — the intended, non-vulnerable business logic. This makes the defect legible by contrasting what the code should do vs what it actually does. Example: "The function parses a user-supplied length field to allocate a buffer. The intent is to safely read a variable-length message. The defect is that the length field is not validated against a maximum before allocation."
+
+## Conditions for exploitation
+
+List the factual prerequisites for exploitation. Use these categories:
+- `authentication_level`: what auth is required (none, session, API key, mTLS)
+- `authorization_role`: what role is required (anonymous, user, admin)
+- `user_interaction`: whether the victim must take action (none, click link, upload file)
+- `system_configuration`: non-default config required (debug mode, specific flag)
+- `network_routing`: network position required (local, same-VPN, internet-facing)
+- `environmental_dependency`: runtime or environment requirement (specific OS, library version)
+- `data_state`: data must be in a specific state (fresh, stale, pre-populated)
+- `timing_dependency`: race condition or timing window required
+- `third_party_dependency`: external service or component required
+
+Empty array if exploitable by default with no special conditions.
+
+## Baseline comparable analysis
+
+Identify comparable mainstream software that has the same pattern. This calibrates severity:
+- If the comparable has the same pattern AND it has been exploited there → **stronger** finding
+- If the comparable has the same pattern and nobody has exploited it in 20 years → understand why before reporting
+- If no comparable exists (novel application), note that
+
+Do NOT hardcode a specific comparable. A CMS gets compared to other CMSes. An API gateway gets compared to other API gateways.
+
+Include in output: `baseline_comparable` with `name`, `has_same_pattern`, `exploited_there`, `notes`.
+
 ## Output format
 
 **Primary format — JSON** (preferred):
 
 ```json
-{"status": "confirmed|rejected|needs-more-info", "reason": "...", "criteria": {"evidentiary": "PASS|FAIL|N/A", "reproducible": "PASS|FAIL|N/A", "not_by_design": "PASS|FAIL|N/A", "project_code": "PASS|FAIL|N/A", "consistent": "PASS|FAIL|N/A"}}
+{"status": "confirmed|rejected|needs-more-info", "reason": "...", "criteria": {"evidentiary": "PASS|FAIL|N/A", "reproducible": "PASS|FAIL|N/A", "not_by_design": "PASS|FAIL|N/A", "project_code": "PASS|FAIL|N/A", "consistent": "PASS|FAIL|N/A"}, "intended_behavior": "what the code was supposed to do", "conditions": [{"kind": "authentication_level", "description": "none"}], "baseline_comparable": {"name": "comparable-software", "has_same_pattern": true, "exploited_there": false, "notes": "..."}}
 ```
 
 **Fallback format — XML** (only if your JSON keeps being rejected by the parser):

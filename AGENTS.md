@@ -20,10 +20,15 @@ Multi-agent vulnerability research pipeline following the Project Glasswing / Cl
 
 ## Pipeline Stages
 
-INGESTOR → RECON → COORDINATOR → HUNT → LOCALIZATION → VALIDATE → FUZZ_ORCHESTRATOR → GAPFILL → VOTING → SHIELD → SUPPRESSIONS → CHAINS → POC → TRACE → EXPOSURE → FEEDBACK → REPORT
+INGESTOR → RECON → COORDINATOR → HUNT → LOCALIZATION → VALIDATE → FUZZ_ORCHESTRATOR → GAPFILL → VOTING → SHIELD → SUPPRESSIONS → [INDEPENDENT_VERIFY] → CHAINS → POC → TRACE → EXPOSURE → FEEDBACK → REPORT
+
+`INDEPENDENT_VERIFY` is optional (enabled via `--enable-independent-verify`). When enabled, fresh agents verify every factual claim in confirmed findings against actual source code after suppressions and before chain synthesis.
 
 ## Recent Changes
 
+- **Independent Verification Phase** (`--enable-independent-verify`): New optional stage between SUPPRESSIONS and CHAINS. Fresh agents verify file paths, line numbers, function names, execution payloads, and remediation code against source code. Catches blind spots that adversarial VALIDATE misses.
+- **Prior-Run Awareness** (`--prior-findings PATH`): Load existing findings.json from prior runs. Hunters skip known findings and target coverage gaps. Can be specified multiple times.
+- **12 Hunting Methodology Principles** (`hunt.md`): Added attacker-thinking framework (sad path, boundaries, component assumptions, wrong order, concurrent ops, parser disagreement, round-trip, config, privilege, leaked context, parameter overrides, unverified claims).
 - **User-Agent fix** (`runtime.py:637`): Added `User-Agent: vuln-harness/1.0` header to LLM API calls. opencode.ai/Cloudflare blocks the default `Python-urllib/3.x` UA with HTTP 403.
 - **cache indicator** (`run.py:801`): Hunt log lines now show `cache=HIT` or `cache=MISS` per pack.
 - **`--repo-head N`** (`run.py:2498`): Limit scan to last N+1 commits. `0` = HEAD only, `1` = HEAD~1..HEAD. Converts to `base_commit="HEAD~{N+1}"` and reuses the existing diff filter.
@@ -39,6 +44,8 @@ INGESTOR → RECON → COORDINATOR → HUNT → LOCALIZATION → VALIDATE → FU
 - `--skip-health` — skip LLM health check on startup
 - `--no-fetch-cves` — skip OSV.dev CVE fetching
 - `--repo-head N` — limit to recent N+1 git commits
+- `--enable-independent-verify` — enable independent verification phase
+- `--prior-findings PATH` — load prior findings.json (repeatable)
 
 ## Model Providers
 
